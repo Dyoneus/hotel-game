@@ -1,0 +1,93 @@
+{
+  "name": "hotel-game",
+  "servePort": 34872,
+  "tree": {
+    "$className": "DataModel",
+
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$ignoreUnknownInstances": true,
+
+      "AdminCommandServer": {
+        "$path": "src/ServerScriptService/AdminCommandServer.server.lua"
+      },
+      "AdminConfig": {
+        "$path": "src/ServerScriptService/AdminConfig.lua"
+      },
+      "AdminDataTools": {
+        "$path": "src/ServerScriptService/AdminDataTools.lua"
+      },
+      "FurnitureActionServer": {
+        "$path": "src/ServerScriptService/FurnitureActionServer.server.lua"
+      },
+      "FurnitureCatalogServer": {
+        "$path": "src/ServerScriptService/FurnitureCatalogServer.server.lua"
+      },
+      "FurnitureClickServer": {
+        "$path": "src/ServerScriptService/FurnitureClickServer.server.lua"
+      },
+      "PlayerRoomServer": {
+        "$path": "src/ServerScriptService/PlayerRoomServer.server.lua"
+      },
+      "RoomModeServer": {
+        "$path": "src/ServerScriptService/RoomModeServer.server.lua"
+      },
+      "RoomPersistence": {
+        "$path": "src/ServerScriptService/RoomPersistence.lua"
+      }
+    },
+
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "$ignoreUnknownInstances": true,
+
+        "ClickToMoveController": {
+          "$path": "src/StarterPlayerScripts/ClickToMoveController.client.lua"
+        },
+        "ControlModeController": {
+          "$path": "src/StarterPlayerScripts/ControlModeController.client.lua"
+        },
+        "FixedHotelCamera": {
+          "$path": "src/StarterPlayerScripts/FixedHotelCamera.client.lua"
+        }
+      }
+    },
+
+    "StarterGui": {
+      "$className": "StarterGui",
+      "$ignoreUnknownInstances": true,
+
+      "AdminPanelGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/AdminPanelGui"
+      },
+      "CharacterCreationGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/CharacterCreationGui"
+      },
+      "FurnitureCatalogGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/FurnitureCatalogGui"
+      },
+      "RoomCreationGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomCreationGui"
+      },
+      "RoomNavigatorGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomNavigatorGui"
+      },
+      "RoomModeGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomModeGui"
+      },
+      "TutorialGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/TutorialGui"
+      }
+    }
+  }
+}
