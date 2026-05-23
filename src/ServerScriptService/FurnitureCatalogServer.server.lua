@@ -1,0 +1,719 @@
+-- Explorer/ServerScriptService/FurnitureCatalogServer.lua
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
+local HttpService = game:GetService("HttpService")
+
+local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
+
+local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
+local activeRooms = workspace:WaitForChild("ActiveRooms")
+
+local furnitureTemplates = ReplicatedStorage:FindFirstChild("FurnitureTemplates")
+
+if not furnitureTemplates then
+	furnitureTemplates = Instance.new("Folder")
+	furnitureTemplates.Name = "FurnitureTemplates"
+	furnitureTemplates.Parent = ReplicatedStorage
+
+	warn(
+		"[FurnitureCatalogServer] ReplicatedStorage.FurnitureTemplates was missing, " ..
+			"so an empty folder was created. Add models such as Chair_01 inside it."
+	)
+end
+
+local GRID_SIZE = 2
+local PLACE_COOLDOWN_SECONDS = 0.75
+
+-- Lets furniture sit directly beside other furniture without edge-touch
+-- being treated as a collision.
+local OVERLAP_SHRINK = 0.08
+local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
+
+local CATALOG = {
+	{
+		Id = "Chair_01",
+		TemplateName = "Chair_01",
+		DisplayName = "Starter Chair",
+		Description = "A basic chair for sitting.",
+		MaxPerRoom = 12,
+	},
+	{
+		Id = "Table_01",
+		TemplateName = "Table_01",
+		DisplayName = "Starter Table",
+		Description = "A simple table decoration.",
+		MaxPerRoom = 8,
+	},
+	{
+		Id = "Bed_01",
+		TemplateName = "Bed_01",
+		DisplayName = "Starter Bed",
+		Description = "A basic bed. Sleep action can be added later.",
+		MaxPerRoom = 4,
+	},
+}
+
+local catalogById = {}
+
+for _, item in ipairs(CATALOG) do
+	catalogById[item.Id] = item
+end
+
+local function getOrCreateRemoteEvent(name)
+	local existing = remoteEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("RemoteEvent") then
+			error(name .. " exists but is not a RemoteEvent.")
+		end
+
+		return existing
+	end
+
+	local remote = Instance.new("RemoteEvent")
+	remote.Name = name
+	remote.Parent = remoteEvents
+
+	return remote
+end
+
+local furnitureCatalogRequest = getOrCreateRemoteEvent("FurnitureCatalogRequest")
+local furnitureCatalogResult = getOrCreateRemoteEvent("FurnitureCatalogResult")
+
+local lastPlaceRequestAtByUserId = {}
+
+local helperPartNames = {
+	CollisionBuffer = true,
+	SitPoint = true,
+	SleepPoint = true,
+	PlayPoint = true,
+	EnterPoint = true,
+	TalkPoint = true,
+	ClickHitbox = true,
+	RoomAnchor = true,
+	DoorSpawn = true,
+}
+
+local function sendResult(player, kind, success, message, data)
+	if not player or player.Parent ~= Players then
+		return
+	end
+
+	furnitureCatalogResult:FireClient(player, {
+		Kind = tostring(kind or "Unknown"),
+		Success = success == true,
+		Message = tostring(message or ""),
+		Data = data or {},
+	})
+end
+
+local function getCurrentRoomModel(player)
+	local roomName = player:GetAttribute("CurrentRoomName")
+
+	if typeof(roomName) ~= "string" or roomName == "" then
+		return nil
+	end
+
+	local roomModel = activeRooms:FindFirstChild(roomName)
+
+	if not roomModel or not roomModel:IsA("Model") then
+		return nil
+	end
+
+	return roomModel
+end
+
+local function getRoomFolder(roomModel)
+	return roomModel and roomModel:FindFirstChild("Room")
+end
+
+local function getFurnitureFolder(roomModel)
+	return roomModel and roomModel:FindFirstChild("Furniture")
+end
+
+local function getWalkableFloor(roomModel)
+	local roomFolder = getRoomFolder(roomModel)
+
+	if not roomFolder then
+		return nil
+	end
+
+	local floor = roomFolder:FindFirstChild("WalkableFloor")
+
+	if floor and floor:IsA("BasePart") then
+		return floor
+	end
+
+	return nil
+end
+
+local function isRoomOwner(player, roomModel)
+	return roomModel
+		and roomModel:GetAttribute("OwnerUserId") == player.UserId
+end
+
+local function canUseCatalog(player)
+	local roomModel = getCurrentRoomModel(player)
+
+	if not roomModel then
+		return false, nil
+	end
+
+	if player:GetAttribute("RoomMode") ~= "Edit" then
+		return false, roomModel
+	end
+
+	if not isRoomOwner(player, roomModel) then
+		return false, roomModel
+	end
+
+	return true, roomModel
+end
+
+local function checkPlaceCooldown(player)
+	local now = os.clock()
+	local previous = lastPlaceRequestAtByUserId[player.UserId]
+
+	if previous and now - previous < PLACE_COOLDOWN_SECONDS then
+		return false
+	end
+
+	lastPlaceRequestAtByUserId[player.UserId] = now
+	return true
+end
+
+local function getTemplate(templateName)
+	if typeof(templateName) ~= "string" or templateName == "" then
+		return nil
+	end
+
+	local template = furnitureTemplates:FindFirstChild(templateName)
+
+	if template and template:IsA("Model") then
+		return template
+	end
+
+	return nil
+end
+
+local function getPublicCatalog()
+	local publicItems = {}
+
+	for _, item in ipairs(CATALOG) do
+		if getTemplate(item.TemplateName) then
+			table.insert(publicItems, {
+				Id = item.Id,
+				TemplateName = item.TemplateName,
+				DisplayName = item.DisplayName,
+				Description = item.Description,
+				MaxPerRoom = item.MaxPerRoom,
+			})
+		end
+	end
+
+	return publicItems
+end
+
+local function shouldUsePartForPlacementBounds(instance)
+	if not instance:IsA("BasePart") then
+		return false
+	end
+
+	if helperPartNames[instance.Name] then
+		return false
+	end
+
+	return true
+end
+
+local function getPlacementBoundsParts(model)
+	local parts = {}
+
+	if not model then
+		return parts
+	end
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and descendant.Name == PLACEMENT_BOUNDS_PART_NAME then
+
+			table.insert(parts, descendant)
+		end
+	end
+
+	return parts
+end
+
+local function getPlacementCheckParts(model)
+	local placementBoundsParts = getPlacementBoundsParts(model)
+
+	if #placementBoundsParts > 0 then
+		return placementBoundsParts
+	end
+
+	local fallbackParts = {}
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if shouldUsePartForPlacementBounds(descendant) then
+			table.insert(fallbackParts, descendant)
+		end
+	end
+
+	return fallbackParts
+end
+
+local function modelHasPlacementBounds(model)
+	return #getPlacementBoundsParts(model) > 0
+end
+
+local function getFurnitureModelFromDescendant(instance, furnitureFolder)
+	local current = instance
+
+	while current and current ~= furnitureFolder do
+		if current:IsA("Model") and current.Parent == furnitureFolder then
+			return current
+		end
+
+		current = current.Parent
+	end
+
+	return nil
+end
+
+local function shouldIgnoreTouchedFurniturePart(touchingPart, furnitureFolder)
+	local touchedFurnitureModel = getFurnitureModelFromDescendant(
+		touchingPart,
+		furnitureFolder
+	)
+
+	if not touchedFurnitureModel then
+		return false
+	end
+
+	if modelHasPlacementBounds(touchedFurnitureModel)
+		and touchingPart.Name ~= PLACEMENT_BOUNDS_PART_NAME then
+
+		return true
+	end
+
+	return false
+end
+
+local function getOverlapCheckSize(size)
+	return Vector3.new(
+		math.max(size.X - OVERLAP_SHRINK, 0.05),
+		math.max(size.Y - OVERLAP_SHRINK, 0.05),
+		math.max(size.Z - OVERLAP_SHRINK, 0.05)
+	)
+end
+
+local function partFitsInsideFloor(part, floor)
+	local floorHalfX = floor.Size.X / 2
+	local floorHalfZ = floor.Size.Z / 2
+
+	local partHalfX = part.Size.X / 2
+	local partHalfZ = part.Size.Z / 2
+
+	local corners = {
+		Vector3.new(-partHalfX, 0, -partHalfZ),
+		Vector3.new(-partHalfX, 0, partHalfZ),
+		Vector3.new(partHalfX, 0, -partHalfZ),
+		Vector3.new(partHalfX, 0, partHalfZ),
+	}
+
+	for _, localCorner in ipairs(corners) do
+		local worldCorner = part.CFrame:PointToWorldSpace(localCorner)
+		local floorLocalCorner = floor.CFrame:PointToObjectSpace(worldCorner)
+
+		if math.abs(floorLocalCorner.X) > floorHalfX then
+			return false
+		end
+
+		if math.abs(floorLocalCorner.Z) > floorHalfZ then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function modelFitsInsideRoom(model, floor)
+	local placementParts = getPlacementCheckParts(model)
+
+	if #placementParts == 0 then
+		return false
+	end
+
+	for _, descendant in ipairs(placementParts) do
+		if not partFitsInsideFloor(descendant, floor) then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function modelBlockedAtCurrentCFrame(roomModel, model)
+	local roomFolder = getRoomFolder(roomModel)
+	local furnitureFolder = getFurnitureFolder(roomModel)
+
+	if not roomFolder or not furnitureFolder then
+		return true
+	end
+
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+	overlapParams.FilterDescendantsInstances = { model }
+
+	for _, descendant in ipairs(getPlacementCheckParts(model)) do
+		local touchingParts = workspace:GetPartBoundsInBox(
+			descendant.CFrame,
+			getOverlapCheckSize(descendant.Size),
+			overlapParams
+		)
+
+		for _, touchingPart in ipairs(touchingParts) do
+			if touchingPart.Name == "WalkableFloor" then
+				continue
+			end
+
+			if helperPartNames[touchingPart.Name] then
+				continue
+			end
+
+			if touchingPart:IsDescendantOf(furnitureFolder) then
+				if shouldIgnoreTouchedFurniturePart(touchingPart, furnitureFolder) then
+					continue
+				end
+
+				if touchingPart.Name ~= PLACEMENT_BOUNDS_PART_NAME
+					and touchingPart:IsA("BasePart")
+					and touchingPart.CanCollide == false then
+
+					continue
+				end
+
+				return true
+			end
+
+			if touchingPart:IsDescendantOf(roomFolder) then
+				if touchingPart.Name:find("Boundary")
+					or touchingPart.Name:find("Wall") then
+
+					return true
+				end
+
+				if touchingPart:IsA("BasePart") and touchingPart.CanCollide then
+					return true
+				end
+			end
+		end
+	end
+
+	return false
+end
+
+local function modelWouldOverlapCharacter(roomModel, model)
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		if otherPlayer:GetAttribute("CurrentRoomName") == roomModel.Name then
+			local character = otherPlayer.Character
+
+			if character then
+				local overlapParams = OverlapParams.new()
+				overlapParams.FilterType = Enum.RaycastFilterType.Include
+				overlapParams.FilterDescendantsInstances = { character }
+
+				for _, descendant in ipairs(getPlacementCheckParts(model)) do
+					local touchingParts = workspace:GetPartBoundsInBox(
+						descendant.CFrame,
+						getOverlapCheckSize(descendant.Size),
+						overlapParams
+					)
+
+					if #touchingParts > 0 then
+						return true
+					end
+				end
+			end
+		end
+	end
+
+	return false
+end
+
+local function countCatalogItemInRoom(furnitureFolder, templateName)
+	local count = 0
+
+	for _, furnitureModel in ipairs(furnitureFolder:GetChildren()) do
+		if furnitureModel:IsA("Model") then
+			if furnitureModel:GetAttribute("TemplateId") == templateName then
+				count += 1
+			end
+		end
+	end
+
+	return count
+end
+
+local function findPlacementCFrame(roomModel, furnitureModel)
+	local floor = getWalkableFloor(roomModel)
+
+	if not floor then
+		return nil
+	end
+
+	local originalPivot = furnitureModel:GetPivot()
+	local originalRotation = originalPivot - originalPivot.Position
+
+	local boundingCFrame, boundingSize = furnitureModel:GetBoundingBox()
+	local bottomY = boundingCFrame.Position.Y - boundingSize.Y / 2
+	local floorTopY = floor.Position.Y + floor.Size.Y / 2
+	local pivotYOffsetFromBottom = originalPivot.Position.Y - bottomY
+
+	local maxXSteps = math.max(
+		0,
+		math.floor((floor.Size.X / 2 - GRID_SIZE) / GRID_SIZE)
+	)
+
+	local maxZSteps = math.max(
+		0,
+		math.floor((floor.Size.Z / 2 - GRID_SIZE) / GRID_SIZE)
+	)
+
+	local maxRadius = math.max(maxXSteps, maxZSteps)
+
+	for radius = 0, maxRadius do
+		for xStep = -radius, radius do
+			for zStep = -radius, radius do
+				local isOuterRing = math.abs(xStep) == radius
+					or math.abs(zStep) == radius
+
+				if isOuterRing
+					and math.abs(xStep) <= maxXSteps
+					and math.abs(zStep) <= maxZSteps then
+
+					local localFloorPosition = Vector3.new(
+						xStep * GRID_SIZE,
+						0,
+						zStep * GRID_SIZE
+					)
+
+					local worldPosition = floor.CFrame:PointToWorldSpace(localFloorPosition)
+
+					local candidateCFrame =
+						CFrame.new(
+							worldPosition.X,
+							floorTopY + pivotYOffsetFromBottom,
+							worldPosition.Z
+						)
+						* originalRotation
+
+					furnitureModel:PivotTo(candidateCFrame)
+
+					if modelFitsInsideRoom(furnitureModel, floor)
+						and not modelBlockedAtCurrentCFrame(roomModel, furnitureModel)
+						and not modelWouldOverlapCharacter(roomModel, furnitureModel) then
+
+						return candidateCFrame
+					end
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+local function normalizeRotationY(rotationY)
+	if typeof(rotationY) ~= "number" then
+		return 0
+	end
+
+	rotationY = math.floor((rotationY / 90) + 0.5) * 90
+	rotationY = rotationY % 360
+
+	return rotationY
+end
+
+local function getRequestedPlacementCFrame(roomModel, furnitureModel, targetPosition, rotationY)
+	if typeof(targetPosition) ~= "Vector3" then
+		return nil
+	end
+
+	local floor = getWalkableFloor(roomModel)
+
+	if not floor then
+		return nil
+	end
+
+	local snappedX = math.floor((targetPosition.X / GRID_SIZE) + 0.5) * GRID_SIZE
+	local snappedZ = math.floor((targetPosition.Z / GRID_SIZE) + 0.5) * GRID_SIZE
+
+	local originalPivot = furnitureModel:GetPivot()
+	local originalRotation = originalPivot - originalPivot.Position
+
+	local boundingCFrame, boundingSize = furnitureModel:GetBoundingBox()
+	local bottomY = boundingCFrame.Position.Y - boundingSize.Y / 2
+	local floorTopY = floor.Position.Y + floor.Size.Y / 2
+	local pivotYOffsetFromBottom = originalPivot.Position.Y - bottomY
+
+	local yawRotation = CFrame.Angles(0, math.rad(normalizeRotationY(rotationY)), 0)
+
+	return CFrame.new(
+		snappedX,
+		floorTopY + pivotYOffsetFromBottom,
+		snappedZ
+	) * yawRotation * originalRotation
+end
+
+local function createPersistentId(player, templateName)
+	return templateName
+		.. "_"
+		.. tostring(player.UserId)
+		.. "_"
+		.. HttpService:GenerateGUID(false)
+end
+
+local function handlePlaceItem(player, payload)
+	if not checkPlaceCooldown(player) then
+		sendResult(player, "PlaceItem", false, "Slow down before placing another item.")
+		return
+	end
+
+	if typeof(payload) ~= "table" then
+		sendResult(player, "PlaceItem", false, "Invalid catalog request.")
+		return
+	end
+
+	local itemId = payload.ItemId
+
+	if typeof(itemId) ~= "string" then
+		sendResult(player, "PlaceItem", false, "Invalid item.")
+		return
+	end
+
+	local item = catalogById[itemId]
+
+	if not item then
+		sendResult(player, "PlaceItem", false, "Unknown catalog item.")
+		return
+	end
+
+	local canUse, roomModel = canUseCatalog(player)
+
+	if not canUse then
+		sendResult(player, "PlaceItem", false, "Enter Edit Mode in your own room first.")
+		return
+	end
+
+	local furnitureFolder = getFurnitureFolder(roomModel)
+
+	if not furnitureFolder then
+		sendResult(player, "PlaceItem", false, "This room has no Furniture folder.")
+		return
+	end
+
+	if item.MaxPerRoom then
+		local currentCount = countCatalogItemInRoom(furnitureFolder, item.TemplateName)
+
+		if currentCount >= item.MaxPerRoom then
+			sendResult(
+				player,
+				"PlaceItem",
+				false,
+				"You already placed the maximum amount of this item."
+			)
+			return
+		end
+	end
+
+	local template = getTemplate(item.TemplateName)
+
+	if not template then
+		sendResult(player, "PlaceItem", false, "Missing furniture template: " .. item.TemplateName)
+		return
+	end
+
+	local targetPosition = payload.TargetPosition
+
+	if typeof(targetPosition) ~= "Vector3" then
+		sendResult(player, "PlaceItem", false, "Click a valid floor tile to place this furniture.")
+		return
+	end
+
+	local furnitureClone = template:Clone()
+	furnitureClone.Name = template.Name
+	furnitureClone:SetAttribute("TemplateId", item.TemplateName)
+	furnitureClone:SetAttribute("PersistentId", createPersistentId(player, item.TemplateName))
+
+	local placementCFrame = getRequestedPlacementCFrame(
+		roomModel,
+		furnitureClone,
+		targetPosition,
+		payload.RotationY
+	)
+
+	if not placementCFrame then
+		furnitureClone:Destroy()
+		sendResult(player, "PlaceItem", false, "Invalid placement position.")
+		return
+	end
+
+	furnitureClone:PivotTo(placementCFrame)
+
+	local floor = getWalkableFloor(roomModel)
+
+	if not floor or not modelFitsInsideRoom(furnitureClone, floor) then
+		furnitureClone:Destroy()
+		sendResult(player, "PlaceItem", false, "Furniture must stay inside the room.")
+		return
+	end
+
+	if modelBlockedAtCurrentCFrame(roomModel, furnitureClone) then
+		furnitureClone:Destroy()
+		sendResult(player, "PlaceItem", false, "That spot is blocked.")
+		return
+	end
+
+	if modelWouldOverlapCharacter(roomModel, furnitureClone) then
+		furnitureClone:Destroy()
+		sendResult(player, "PlaceItem", false, "Cannot place furniture on top of a player.")
+		return
+	end
+
+	furnitureClone.Parent = furnitureFolder
+
+	RoomPersistence.CaptureRoomState(player, roomModel)
+
+	sendResult(
+		player,
+		"PlaceItem",
+		true,
+		item.DisplayName .. " placed. Use Move to reposition it.",
+		{
+			ItemId = item.Id,
+			PersistentId = furnitureClone:GetAttribute("PersistentId"),
+		}
+	)
+end
+
+furnitureCatalogRequest.OnServerEvent:Connect(function(player, actionName, payload)
+	if actionName == "GetCatalog" then
+		sendResult(player, "Catalog", true, "Catalog loaded.", {
+			Items = getPublicCatalog(),
+		})
+		return
+	end
+
+	if actionName == "PlaceItem" then
+		handlePlaceItem(player, payload)
+		return
+	end
+
+	sendResult(player, "Unknown", false, "Unknown catalog action.")
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	lastPlaceRequestAtByUserId[player.UserId] = nil
+end)
