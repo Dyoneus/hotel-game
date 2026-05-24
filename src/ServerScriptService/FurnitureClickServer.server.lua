@@ -7,6 +7,7 @@ local furnitureMenuRequest = remoteEvents:WaitForChild("FurnitureMenuRequest")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
 
 local connectedClickDetectors = {}
+local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
 
 local ignoredPartNames = {
 	CollisionBuffer = true,
@@ -69,7 +70,7 @@ local function isFurnitureClickablePart(part)
 		return false
 	end
 
-	if part.Transparency >= 1 then
+	if part.Transparency >= 1 and part.Name ~= PLACEMENT_BOUNDS_PART_NAME then
 		return false
 	end
 
