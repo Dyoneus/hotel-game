@@ -87,6 +87,10 @@
         "$className": "ScreenGui",
         "$path": "src/StarterGui/CharacterCreationGui"
       },
+      "CurrencyGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/CurrencyGui"
+      },
       "FurnitureCatalogGui": {
         "$className": "ScreenGui",
         "$path": "src/StarterGui/FurnitureCatalogGui"
