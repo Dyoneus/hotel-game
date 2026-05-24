@@ -9,6 +9,7 @@ local RoomPersistence = {}
 
 local DATASTORE_NAME = "PlayerProfiles_v1"
 local SAVE_DELAY_SECONDS = 12
+local STARTER_DOLLARS = 150
 
 local profileStore = DataStoreService:GetDataStore(DATASTORE_NAME)
 
@@ -26,6 +27,7 @@ local function createDefaultProfile()
 		OnboardingStep = "CharacterCreation",
 
 		CurrentLayoutId = nil,
+		StarterDollarsGranted = false,
 
 		RoomState = nil,
 		Inventory = {},
@@ -258,6 +260,10 @@ local function fillDefaults(profile)
 
 	ensureInventory(profile)
 	ensureCurrencies(profile)
+
+	if profile.StarterDollarsGranted ~= true then
+		profile.StarterDollarsGranted = false
+	end
 
 	return profile
 end
@@ -701,6 +707,30 @@ end
 
 function RoomPersistence.SetDollars(player, amount, reason)
 	return RoomPersistence.SetCurrency(player, "Dollars", amount, reason)
+end
+
+function RoomPersistence.GrantStarterDollarsIfNeeded(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local currentDollars = getCurrencyBalance(profile, "Dollars")
+
+	if profile.StarterDollarsGranted == true then
+		return true, "Starter Dollars already granted.", currentDollars
+	end
+
+	local newBalance = currentDollars + STARTER_DOLLARS
+
+	setCurrencyBalance(profile, "Dollars", newBalance)
+	profile.StarterDollarsGranted = true
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Starter Dollars granted.", newBalance
 end
 
 function RoomPersistence.GetInventorySnapshot(player)

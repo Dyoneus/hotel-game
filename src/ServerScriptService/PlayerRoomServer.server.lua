@@ -331,6 +331,13 @@ Players.PlayerAdded:Connect(function(player)
 		return
 	end
 
+	local grantedStarterDollars, starterDollarsMessage =
+		RoomPersistence.GrantStarterDollarsIfNeeded(player)
+
+	if not grantedStarterDollars then
+		warn("Starter Dollars grant failed for", player.Name, starterDollarsMessage)
+	end
+
 	player:SetAttribute("ProfileCreated", profile.ProfileCreated == true)
 	player:SetAttribute("CharacterCreatedThisSession", profile.CharacterCreated == true)
 
