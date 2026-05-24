@@ -22,6 +22,7 @@ end
 
 local requestInFlight = false
 local refreshQueued = false
+local queuedRefreshForce = false
 local lastInventoryRequestAt = -math.huge
 local requestSerial = 0
 local hasLoadedInventory = false
@@ -79,6 +80,7 @@ end
 
 local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
 local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
+local inventoryLocalDelta = getOrCreateClientEvent("InventoryLocalDelta")
 
 local openButton = Instance.new("TextButton")
 openButton.Name = "OpenInventoryButton"
@@ -212,6 +214,20 @@ local function setStatus(text, success)
 	else
 		statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
 	end
+end
+
+local function isNonNegativeCount(value)
+	return typeof(value) == "number"
+		and value == value
+		and value >= 0
+		and value < math.huge
+end
+
+local function isFiniteNumber(value)
+	return typeof(value) == "number"
+		and value == value
+		and value > -math.huge
+		and value < math.huge
 end
 
 local function clearRows()
@@ -356,6 +372,93 @@ local function renderInventory(inventory, inventoryDetails)
 	end)
 end
 
+local function applyInventoryLocalDelta(payload)
+	if typeof(payload) ~= "table" then
+		return
+	end
+
+	local templateId = payload.TemplateId
+
+	if typeof(templateId) ~= "string" or templateId == "" or not templateId:match("%S") then
+		return
+	end
+
+	if typeof(latestInventory) ~= "table" then
+		latestInventory = {}
+	end
+
+	if typeof(latestInventoryDetails) ~= "table" then
+		latestInventoryDetails = {}
+	end
+
+	local currentTotal = 0
+
+	if isNonNegativeCount(latestInventory[templateId]) then
+		currentTotal = math.floor(latestInventory[templateId])
+	end
+
+	local existingDetails = latestInventoryDetails[templateId]
+	local untradable = 0
+
+	if typeof(existingDetails) == "table" and isNonNegativeCount(existingDetails.Untradable) then
+		untradable = math.min(math.floor(existingDetails.Untradable), currentTotal)
+	end
+
+	local total = nil
+
+	if isFiniteNumber(payload.DeltaTotal) then
+		local deltaTotal = math.floor(payload.DeltaTotal)
+		local newTotal = math.max(currentTotal + deltaTotal, 0)
+
+		if deltaTotal < 0 then
+			local removeCount = math.min(-deltaTotal, currentTotal)
+
+			if payload.ConsumeUntradableFirst == true then
+				local removeUntradable = math.min(untradable, removeCount)
+				untradable -= removeUntradable
+			end
+		end
+
+		if isFiniteNumber(payload.DeltaUntradable) then
+			untradable += math.floor(payload.DeltaUntradable)
+		end
+
+		total = newTotal
+	elseif isNonNegativeCount(payload.Total) then
+		total = math.floor(payload.Total)
+
+		if isNonNegativeCount(payload.Untradable) then
+			untradable = math.floor(payload.Untradable)
+		elseif isNonNegativeCount(payload.Tradable) then
+			untradable = total - math.floor(payload.Tradable)
+		end
+	else
+		return
+	end
+
+	total = math.max(total, 0)
+	untradable = math.clamp(untradable, 0, total)
+	local tradable = total - untradable
+
+	if total > 0 then
+		latestInventory[templateId] = total
+		latestInventoryDetails[templateId] = {
+			Total = total,
+			Tradable = tradable,
+			Untradable = untradable,
+		}
+	else
+		latestInventory[templateId] = nil
+		latestInventoryDetails[templateId] = nil
+	end
+
+	hasLoadedInventory = true
+
+	if panel.Visible then
+		renderInventory(latestInventory, latestInventoryDetails)
+	end
+end
+
 local requestInventoryRefresh = nil
 
 local function setRequestInFlight(isInFlight)
@@ -372,35 +475,40 @@ local function setRequestInFlight(isInFlight)
 	end
 end
 
-local function queueInventoryRefresh(reason, delaySeconds)
+local function queueInventoryRefresh(reason, delaySeconds, force)
 	if refreshQueued then
+		queuedRefreshForce = queuedRefreshForce or force == true
 		return
 	end
 
 	refreshQueued = true
+	queuedRefreshForce = force == true
 
 	task.delay(delaySeconds, function()
 		refreshQueued = false
+		local shouldForce = queuedRefreshForce
+		queuedRefreshForce = false
 
 		if requestInventoryRefresh then
-			requestInventoryRefresh(reason or "queued")
+			requestInventoryRefresh(reason or "queued", shouldForce)
 		end
 	end)
 end
 
-requestInventoryRefresh = function(reason)
+requestInventoryRefresh = function(reason, force)
 	if requestInFlight then
-		queueInventoryRefresh(reason, LOCAL_REQUEST_COOLDOWN_SECONDS)
+		queueInventoryRefresh(reason, force == true and 0.05 or LOCAL_REQUEST_COOLDOWN_SECONDS, force)
 		return
 	end
 
 	local now = os.clock()
 	local elapsed = now - lastInventoryRequestAt
 
-	if elapsed < LOCAL_REQUEST_COOLDOWN_SECONDS then
+	if force ~= true and elapsed < LOCAL_REQUEST_COOLDOWN_SECONDS then
 		queueInventoryRefresh(
 			reason,
-			LOCAL_REQUEST_COOLDOWN_SECONDS - elapsed + 0.05
+			LOCAL_REQUEST_COOLDOWN_SECONDS - elapsed + 0.05,
+			force
 		)
 		return
 	end
@@ -430,6 +538,10 @@ local function setPanelVisible(isVisible)
 	updateOpenButton()
 
 	if isVisible then
+		if hasLoadedInventory then
+			renderInventory(latestInventory, latestInventoryDetails)
+		end
+
 		requestInventoryRefresh("open")
 	end
 end
@@ -446,8 +558,25 @@ refreshButton.MouseButton1Click:Connect(function()
 	requestInventoryRefresh("manual")
 end)
 
-inventoryRefreshRequested.Event:Connect(function()
-	requestInventoryRefresh("event")
+inventoryRefreshRequested.Event:Connect(function(options)
+	local reason = "event"
+	local force = false
+
+	if typeof(options) == "table" then
+		if typeof(options.Reason) == "string" and options.Reason ~= "" then
+			reason = options.Reason
+		end
+
+		force = options.Force == true or options.Priority == true
+	elseif typeof(options) == "string" and options ~= "" then
+		reason = options
+	end
+
+	requestInventoryRefresh(reason, force)
+end)
+
+inventoryLocalDelta.Event:Connect(function(payload)
+	applyInventoryLocalDelta(payload)
 end)
 
 inventoryResult.OnClientEvent:Connect(function(response)

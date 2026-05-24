@@ -664,6 +664,7 @@ local function handlePlaceItem(player, payload, options)
 
 	local remainingCount = nil
 	local placedTradable = true
+	local placementInventoryDetails = nil
 
 	if consumeInventory then
 		local templateId = item.TemplateName or item.Id
@@ -688,6 +689,7 @@ local function handlePlaceItem(player, payload, options)
 		end
 
 		remainingCount = newCount
+		placementInventoryDetails = inventoryDetails
 		placedTradable = not (
 			typeof(inventoryDetails) == "table"
 			and typeof(inventoryDetails.ConsumedUntradableCount) == "number"
@@ -729,6 +731,7 @@ local function handlePlaceItem(player, payload, options)
 				TemplateId = item.TemplateName,
 				Source = "Inventory",
 				RemainingCount = remainingCount,
+				InventoryDetails = placementInventoryDetails,
 			}
 		)
 		return

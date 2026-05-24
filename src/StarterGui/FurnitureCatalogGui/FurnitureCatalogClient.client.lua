@@ -95,6 +95,67 @@ end
 
 local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
 local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
+local inventoryLocalDelta = getOrCreateClientEvent("InventoryLocalDelta")
+
+local function fireInventoryOptimisticPlacementDelta(itemData)
+	if typeof(itemData) ~= "table" then
+		return
+	end
+
+	local templateId = itemData.TemplateName or itemData.Id
+
+	if typeof(templateId) ~= "string" or templateId == "" then
+		return
+	end
+
+	inventoryLocalDelta:Fire({
+		TemplateId = templateId,
+		DeltaTotal = -1,
+		ConsumeUntradableFirst = true,
+		Optimistic = true,
+		Reason = "PlaceInventoryItemPending",
+	})
+end
+
+local function fireInventoryLocalDeltaFromPlacementData(data)
+	if typeof(data) ~= "table" then
+		return
+	end
+
+	local templateId = data.TemplateId
+
+	if typeof(templateId) ~= "string" or templateId == "" then
+		return
+	end
+
+	local total = data.RemainingCount
+	local details = data.InventoryDetails
+
+	if typeof(details) == "table" and typeof(details.Total) == "number" then
+		total = details.Total
+	end
+
+	if typeof(total) ~= "number" then
+		return
+	end
+
+	local payload = {
+		TemplateId = templateId,
+		Total = total,
+	}
+
+	if typeof(details) == "table" then
+		if typeof(details.Tradable) == "number" then
+			payload.Tradable = details.Tradable
+		end
+
+		if typeof(details.Untradable) == "number" then
+			payload.Untradable = details.Untradable
+		end
+	end
+
+	inventoryLocalDelta:Fire(payload)
+end
 
 local function getCurrentRoomModel()
 	local roomName = player:GetAttribute("CurrentRoomName")
@@ -944,6 +1005,10 @@ local function confirmCatalogPlacement()
 		RotationY = placementRotationY,
 	}
 
+	if actionName == "PlaceInventoryItem" then
+		fireInventoryOptimisticPlacementDelta(placingItemData)
+	end
+
 	furnitureCatalogRequest:FireServer(actionName, payload)
 	clearPlacementPreviewVisualsOnly()
 	setStatus("Placing...")
@@ -1125,11 +1190,17 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 
 		if success then
 			if placedFromInventory then
+				fireInventoryLocalDeltaFromPlacementData(data)
 				inventoryRefreshRequested:Fire()
 			else
 				-- Refresh in case future catalog limits hide or update items.
 				furnitureCatalogRequest:FireServer("GetCatalog", {})
 			end
+		elseif placedFromInventory then
+			inventoryRefreshRequested:Fire({
+				Reason = "PlaceInventoryItemFailed",
+				Force = true,
+			})
 		end
 
 		return

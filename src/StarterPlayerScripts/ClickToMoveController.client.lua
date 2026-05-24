@@ -47,6 +47,43 @@ local function getOrCreateClientEvent(name)
 end
 
 local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
+local inventoryLocalDelta = getOrCreateClientEvent("InventoryLocalDelta")
+
+local function fireInventoryLocalDeltaFromPickUpResult(response)
+	local templateId = response.TemplateId
+
+	if typeof(templateId) ~= "string" or templateId == "" then
+		return
+	end
+
+	local total = response.NewCount
+	local details = response.InventoryDetails
+
+	if typeof(details) == "table" and typeof(details.Total) == "number" then
+		total = details.Total
+	end
+
+	if typeof(total) ~= "number" then
+		return
+	end
+
+	local payload = {
+		TemplateId = templateId,
+		Total = total,
+	}
+
+	if typeof(details) == "table" then
+		if typeof(details.Tradable) == "number" then
+			payload.Tradable = details.Tradable
+		end
+
+		if typeof(details.Untradable) == "number" then
+			payload.Untradable = details.Untradable
+		end
+	end
+
+	inventoryLocalDelta:Fire(payload)
+end
 
 local furnitureMenuGui = playerGui:WaitForChild("FurnitureMenuGui")
 local menuFrame = furnitureMenuGui:WaitForChild("MenuFrame")
@@ -157,15 +194,15 @@ local function getDefaultFurnitureAction(furnitureModel)
 	return defaultAction
 end
 
-local function getFurnitureTemplateId(furnitureModel)
+local function resolveFurniturePickupTemplateId(furnitureModel)
 	if typeof(furnitureModel) ~= "Instance" then
-		return nil
+		return nil, false
 	end
 
 	local templateId = furnitureModel:GetAttribute("TemplateId")
 
 	if typeof(templateId) == "string" and templateId ~= "" and templateId:match("%S") then
-		return templateId
+		return templateId, false
 	end
 
 	local pickupTemplateId = furnitureModel:GetAttribute("PickupTemplateId")
@@ -174,20 +211,38 @@ local function getFurnitureTemplateId(furnitureModel)
 		and pickupTemplateId ~= ""
 		and pickupTemplateId:match("%S") then
 
-		return pickupTemplateId
+		return pickupTemplateId, true
 	end
 
 	local persistentId = furnitureModel:GetAttribute("PersistentId")
 
 	if typeof(persistentId) == "string" and persistentId ~= "" and persistentId:match("%S") then
-		return persistentId
+		return persistentId, true
 	end
 
-	if furnitureModel.Name ~= "" then
-		return furnitureModel.Name
+	if furnitureModel.Name ~= "" and furnitureModel.Name:match("%S") then
+		return furnitureModel.Name, true
 	end
 
-	return nil
+	return nil, false
+end
+
+local function getFurnitureTemplateId(furnitureModel)
+	local templateId = resolveFurniturePickupTemplateId(furnitureModel)
+
+	return templateId
+end
+
+local function isFurniturePickupOptimisticallyUntradable(furnitureModel, resolvedThroughFallback)
+	if furnitureModel:GetAttribute("Tradable") == false then
+		return true
+	end
+
+	if furnitureModel:GetAttribute("IsTradable") == false then
+		return true
+	end
+
+	return resolvedThroughFallback == true
 end
 
 local function actionRequiresStanding(actionName)
@@ -1545,12 +1600,26 @@ pickUpButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	if not getFurnitureTemplateId(selectedFurniture) then
+	local templateId, resolvedThroughFallback = resolveFurniturePickupTemplateId(selectedFurniture)
+
+	if not templateId then
 		warn("Cannot pick up starter furniture.")
 		closeFurnitureMenu()
 		return
 	end
 
+	local optimisticPayload = {
+		TemplateId = templateId,
+		DeltaTotal = 1,
+		Optimistic = true,
+		Reason = "PickUpPending",
+	}
+
+	if isFurniturePickupOptimisticallyUntradable(selectedFurniture, resolvedThroughFallback) then
+		optimisticPayload.DeltaUntradable = 1
+	end
+
+	inventoryLocalDelta:Fire(optimisticPayload)
 	furnitureActionRequest:FireServer("PickUp", selectedFurniture)
 	closeFurnitureMenu()
 end)
@@ -1569,8 +1638,13 @@ furnitureActionResult.OnClientEvent:Connect(function(response)
 	if response.Success == true then
 		print(message)
 		closeFurnitureMenu()
+		fireInventoryLocalDeltaFromPickUpResult(response)
 		inventoryRefreshRequested:Fire()
 	else
 		warn(message)
+		inventoryRefreshRequested:Fire({
+			Reason = "PickUpFailed",
+			Force = true,
+		})
 	end
 end)

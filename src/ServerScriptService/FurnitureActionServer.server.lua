@@ -100,7 +100,7 @@ local function canEditRoom(player)
 		and isRoomOwner(player)
 end
 
-local function sendPickUpResult(player, success, message, templateId, newCount, tradable)
+local function sendPickUpResult(player, success, message, templateId, newCount, tradable, inventoryDetails)
 	if not player or player.Parent ~= Players then
 		return
 	end
@@ -112,6 +112,7 @@ local function sendPickUpResult(player, success, message, templateId, newCount, 
 		TemplateId = templateId,
 		NewCount = newCount,
 		Tradable = tradable == true,
+		InventoryDetails = inventoryDetails,
 	})
 end
 
@@ -1310,7 +1311,7 @@ local function pickUpFurniture(player, furnitureModel)
 	end
 
 	local isTradable = isPickupTradable(furnitureModel, resolvedThroughFallback)
-	local added, message, newCount = RoomPersistence.AddInventoryItem(player, templateId, 1, {
+	local added, message, newCount, inventoryDetails = RoomPersistence.AddInventoryItem(player, templateId, 1, {
 		Tradable = isTradable,
 	})
 
@@ -1353,7 +1354,8 @@ local function pickUpFurniture(player, furnitureModel)
 		resultMessage,
 		templateId,
 		newCount,
-		isTradable
+		isTradable,
+		inventoryDetails
 	)
 end
 
