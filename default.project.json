@@ -75,6 +75,10 @@
         "$className": "ScreenGui",
         "$path": "src/StarterGui/FurnitureCatalogGui"
       },
+      "InventoryGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/InventoryGui"
+      },
       "RoomCreationGui": {
         "$className": "ScreenGui",
         "$path": "src/StarterGui/RoomCreationGui"

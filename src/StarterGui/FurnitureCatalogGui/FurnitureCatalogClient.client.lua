@@ -6,6 +6,7 @@ local ContextActionService = game:GetService("ContextActionService")
 
 local player = Players.LocalPlayer
 local mouse = player:GetMouse()
+local playerGui = player:WaitForChild("PlayerGui")
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local furnitureCatalogRequest = remoteEvents:WaitForChild("FurnitureCatalogRequest")
@@ -37,6 +38,7 @@ local placementPreviewHighlight = nil
 local placementIsValid = false
 local placementRotationY = 0
 local placementBaseRotation = CFrame.new()
+local placementSource = nil
 
 local PLACEMENT_GRID_SIZE = 2
 local OVERLAP_SHRINK = 0.08
@@ -60,6 +62,38 @@ local function createStroke(parent, color, thickness, transparency)
 	stroke.Parent = parent
 	return stroke
 end
+
+local function getOrCreateClientEvent(name)
+	local clientEvents = playerGui:FindFirstChild("ClientEvents")
+
+	if clientEvents then
+		if not clientEvents:IsA("Folder") then
+			error("PlayerGui.ClientEvents exists but is not a Folder.")
+		end
+	else
+		clientEvents = Instance.new("Folder")
+		clientEvents.Name = "ClientEvents"
+		clientEvents.Parent = playerGui
+	end
+
+	local existing = clientEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("BindableEvent") then
+			error(name .. " exists but is not a BindableEvent.")
+		end
+
+		return existing
+	end
+
+	local bindableEvent = Instance.new("BindableEvent")
+	bindableEvent.Name = name
+	bindableEvent.Parent = clientEvents
+
+	return bindableEvent
+end
+
+local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
 
 local function getCurrentRoomModel()
 	local roomName = player:GetAttribute("CurrentRoomName")
@@ -253,6 +287,22 @@ local function setPlacementHint(text)
 
 	placementHintLabel.Text = text
 	placementHintLabel.Visible = text ~= ""
+end
+
+local function getActivePlacementHint(isBlocked)
+	if placementSource == "Inventory" then
+		if isBlocked then
+			return "That spot is blocked. Move cursor. R rotate. C cancel"
+		end
+
+		return "Placing owned item. Click to place. R rotate. C cancel"
+	end
+
+	if isBlocked then
+		return "That spot is blocked. Move cursor. R rotate. C cancel"
+	end
+
+	return "Click to place. R rotate. C cancel"
 end
 
 local helperPartNames = {
@@ -701,7 +751,7 @@ local function handleCatalogPlacementAction(actionName, inputState)
 	if actionName == CATALOG_ROTATE_ACTION then
 		placementRotationY = (placementRotationY + 90) % 360
 		setStatus("Rotated preview.")
-		setPlacementHint("Click to place • R to rotate • C to cancel")
+		setPlacementHint(getActivePlacementHint(false))
 		return Enum.ContextActionResult.Sink
 	end
 
@@ -751,6 +801,7 @@ destroyCatalogPlacementPreview = function()
 	placementIsValid = false
 	placementRotationY = 0
 	placementBaseRotation = CFrame.new()
+	placementSource = nil
 	requestInFlight = false
 
 	setPlacementHint("")
@@ -773,7 +824,10 @@ local function createCatalogPlacementPreview(itemData)
 		return
 	end
 
+	local source = itemData.Source == "Inventory" and "Inventory" or "Catalog"
+
 	placingItemData = itemData
+	placementSource = source
 	placementRotationY = 0
 	placementBaseRotation = CFrame.new()
 	player:SetAttribute("CatalogPlacementActive", true)
@@ -817,8 +871,13 @@ local function createCatalogPlacementPreview(itemData)
 	panel.Visible = false
 	openButton.Visible = false
 
-	setStatus("Move your cursor over the floor. Click to place, R to rotate, C to cancel.")
-	setPlacementHint("Click to place • R to rotate • C to cancel")
+	if placementSource == "Inventory" then
+		setStatus("Move your cursor over the floor to place an owned item.")
+	else
+		setStatus("Move your cursor over the floor. Click to place, R to rotate, C to cancel.")
+	end
+
+	setPlacementHint(getActivePlacementHint(false))
 end
 
 local function updateCatalogPlacementPreview()
@@ -853,7 +912,7 @@ local function confirmCatalogPlacement()
 
 	if not placementIsValid then
 		setStatus("That spot is blocked.")
-		setPlacementHint("That spot is blocked • Move cursor • R to rotate • C to cancel")
+		setPlacementHint(getActivePlacementHint(true))
 		return
 	end
 
@@ -864,7 +923,13 @@ local function confirmCatalogPlacement()
 
 	setStatus("Placing " .. tostring(placingItemData.DisplayName or itemId) .. "...")
 
-	furnitureCatalogRequest:FireServer("PlaceItem", {
+	local actionName = "PlaceItem"
+
+	if placementSource == "Inventory" then
+		actionName = "PlaceInventoryItem"
+	end
+
+	furnitureCatalogRequest:FireServer(actionName, {
 		ItemId = itemId,
 		TargetPosition = targetPosition,
 		RotationY = placementRotationY,
@@ -984,6 +1049,29 @@ closeButton.MouseButton1Click:Connect(function()
 	setPanelVisible(false)
 end)
 
+startInventoryPlacement.Event:Connect(function(itemData)
+	if typeof(itemData) ~= "table" then
+		return
+	end
+
+	if requestInFlight then
+		return
+	end
+
+	local currentRoomName = player:GetAttribute("CurrentRoomName")
+
+	if (player:GetAttribute("ControlMode") or "Hotel") ~= "Hotel"
+		or typeof(currentRoomName) ~= "string"
+		or currentRoomName == ""
+		or player:GetAttribute("RoomMode") ~= "Edit" then
+
+		setStatus("Enter Edit Mode to place furniture.")
+		return
+	end
+
+	createCatalogPlacementPreview(itemData)
+end)
+
 RunService.RenderStepped:Connect(updateCatalogPlacementPreview)
 
 mouse.Button1Down:Connect(function()
@@ -1015,15 +1103,20 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 		return
 	end
 
-	if kind == "PlaceItem" then
+	if kind == "PlaceItem" or kind == "PlaceInventoryItem" then
 		requestInFlight = false
 		setStatus(message)
 
 		if success then
+			local placedFromInventory = kind == "PlaceInventoryItem"
+				or (typeof(data) == "table" and data.Source == "Inventory")
+
 			destroyCatalogPlacementPreview()
 
-			-- Refresh in case future catalog limits hide or update items.
-			furnitureCatalogRequest:FireServer("GetCatalog", {})
+			if not placedFromInventory then
+				-- Refresh in case future catalog limits hide or update items.
+				furnitureCatalogRequest:FireServer("GetCatalog", {})
+			end
 		end
 
 		return

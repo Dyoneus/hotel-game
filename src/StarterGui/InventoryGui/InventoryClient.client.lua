@@ -1,0 +1,404 @@
+-- StarterGui/InventoryGui/InventoryClient.lua
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
+local inventoryRequest = remoteEvents:WaitForChild("InventoryRequest")
+local inventoryResult = remoteEvents:WaitForChild("InventoryResult")
+
+local gui = script.Parent
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 155
+
+for _, child in ipairs(gui:GetChildren()) do
+	if child ~= script then
+		child:Destroy()
+	end
+end
+
+local requestInFlight = false
+local latestInventory = {}
+
+local function createCorner(parent, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius)
+	corner.Parent = parent
+	return corner
+end
+
+local function createStroke(parent, color, thickness, transparency)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color
+	stroke.Thickness = thickness
+	stroke.Transparency = transparency or 0
+	stroke.Parent = parent
+	return stroke
+end
+
+local function getOrCreateClientEvent(name)
+	local clientEvents = playerGui:FindFirstChild("ClientEvents")
+
+	if clientEvents then
+		if not clientEvents:IsA("Folder") then
+			error("PlayerGui.ClientEvents exists but is not a Folder.")
+		end
+	else
+		clientEvents = Instance.new("Folder")
+		clientEvents.Name = "ClientEvents"
+		clientEvents.Parent = playerGui
+	end
+
+	local existing = clientEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("BindableEvent") then
+			error(name .. " exists but is not a BindableEvent.")
+		end
+
+		return existing
+	end
+
+	local bindableEvent = Instance.new("BindableEvent")
+	bindableEvent.Name = name
+	bindableEvent.Parent = clientEvents
+
+	return bindableEvent
+end
+
+local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
+
+local openButton = Instance.new("TextButton")
+openButton.Name = "OpenInventoryButton"
+openButton.AnchorPoint = Vector2.new(1, 1)
+openButton.Position = UDim2.new(1, -20, 1, -128)
+openButton.Size = UDim2.fromOffset(150, 44)
+openButton.BackgroundColor3 = Color3.fromRGB(80, 120, 90)
+openButton.BorderSizePixel = 0
+openButton.Text = "Inventory"
+openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+openButton.TextScaled = true
+openButton.Font = Enum.Font.GothamBold
+openButton.Visible = false
+openButton.Parent = gui
+
+createCorner(openButton, 10)
+createStroke(openButton, Color3.fromRGB(255, 255, 255), 1, 0.25)
+
+local panel = Instance.new("Frame")
+panel.Name = "InventoryPanel"
+panel.AnchorPoint = Vector2.new(1, 0.5)
+panel.Position = UDim2.new(1, -24, 0.5, 0)
+panel.Size = UDim2.fromOffset(360, 420)
+panel.BackgroundColor3 = Color3.fromRGB(245, 245, 238)
+panel.BorderSizePixel = 0
+panel.Visible = false
+panel.Parent = gui
+
+createCorner(panel, 16)
+createStroke(panel, Color3.fromRGB(255, 255, 255), 2, 0.1)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Name = "TitleLabel"
+titleLabel.Position = UDim2.fromOffset(18, 14)
+titleLabel.Size = UDim2.new(1, -70, 0, 36)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "Inventory"
+titleLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+titleLabel.TextScaled = true
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.Parent = panel
+
+local closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseButton"
+closeButton.AnchorPoint = Vector2.new(1, 0)
+closeButton.Position = UDim2.new(1, -18, 0, 18)
+closeButton.Size = UDim2.fromOffset(34, 34)
+closeButton.BackgroundColor3 = Color3.fromRGB(160, 70, 70)
+closeButton.BorderSizePixel = 0
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.TextScaled = true
+closeButton.Font = Enum.Font.GothamBold
+closeButton.Parent = panel
+
+createCorner(closeButton, 8)
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Name = "StatusLabel"
+statusLabel.Position = UDim2.fromOffset(18, 56)
+statusLabel.Size = UDim2.new(1, -36, 0, 34)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = ""
+statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
+statusLabel.TextWrapped = true
+statusLabel.TextScaled = true
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.Parent = panel
+
+local listFrame = Instance.new("ScrollingFrame")
+listFrame.Name = "InventoryList"
+listFrame.Position = UDim2.fromOffset(18, 104)
+listFrame.Size = UDim2.new(1, -36, 1, -164)
+listFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+listFrame.BorderSizePixel = 0
+listFrame.ScrollBarThickness = 6
+listFrame.CanvasSize = UDim2.fromOffset(0, 0)
+listFrame.Parent = panel
+
+createCorner(listFrame, 12)
+createStroke(listFrame, Color3.fromRGB(220, 220, 220), 1, 0)
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding = UDim.new(0, 8)
+listLayout.Parent = listFrame
+
+local listPadding = Instance.new("UIPadding")
+listPadding.PaddingTop = UDim.new(0, 10)
+listPadding.PaddingBottom = UDim.new(0, 10)
+listPadding.PaddingLeft = UDim.new(0, 10)
+listPadding.PaddingRight = UDim.new(0, 10)
+listPadding.Parent = listFrame
+
+local refreshButton = Instance.new("TextButton")
+refreshButton.Name = "RefreshButton"
+refreshButton.AnchorPoint = Vector2.new(0.5, 1)
+refreshButton.Position = UDim2.new(0.5, 0, 1, -22)
+refreshButton.Size = UDim2.fromOffset(180, 38)
+refreshButton.BackgroundColor3 = Color3.fromRGB(70, 120, 190)
+refreshButton.BorderSizePixel = 0
+refreshButton.Text = "Refresh"
+refreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+refreshButton.TextScaled = true
+refreshButton.Font = Enum.Font.GothamBold
+refreshButton.Parent = panel
+
+createCorner(refreshButton, 9)
+
+local function shouldShowInventoryButton()
+	local currentRoomName = player:GetAttribute("CurrentRoomName")
+
+	return player:GetAttribute("OnboardingStep") == "Complete"
+		and (player:GetAttribute("ControlMode") or "Hotel") == "Hotel"
+		and typeof(currentRoomName) == "string"
+		and currentRoomName ~= ""
+end
+
+local function updateOpenButton()
+	openButton.Visible = (not panel.Visible) and shouldShowInventoryButton()
+end
+
+local function setStatus(text, success)
+	statusLabel.Text = tostring(text or "")
+
+	if success == true then
+		statusLabel.TextColor3 = Color3.fromRGB(50, 110, 60)
+	elseif success == false then
+		statusLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
+	else
+		statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
+	end
+end
+
+local function clearRows()
+	for _, child in ipairs(listFrame:GetChildren()) do
+		if child:IsA("Frame") or child:IsA("TextButton") or child:IsA("TextLabel") then
+			child:Destroy()
+		end
+	end
+end
+
+local function createEmptyState()
+	local emptyLabel = Instance.new("TextLabel")
+	emptyLabel.Name = "EmptyInventoryLabel"
+	emptyLabel.Size = UDim2.new(1, -4, 0, 52)
+	emptyLabel.BackgroundTransparency = 1
+	emptyLabel.Text = "Inventory is empty."
+	emptyLabel.TextColor3 = Color3.fromRGB(95, 95, 95)
+	emptyLabel.TextScaled = true
+	emptyLabel.TextWrapped = true
+	emptyLabel.Font = Enum.Font.Gotham
+	emptyLabel.Parent = listFrame
+end
+
+local function createInventoryRow(templateId, count, layoutOrder)
+	local row = Instance.new("TextButton")
+	row.Name = tostring(templateId)
+	row.LayoutOrder = layoutOrder
+	row.Size = UDim2.new(1, -4, 0, 48)
+	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
+	row.BorderSizePixel = 0
+	row.Text = ""
+	row.AutoButtonColor = true
+	row.Parent = listFrame
+
+	createCorner(row, 10)
+	createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
+
+	local itemLabel = Instance.new("TextLabel")
+	itemLabel.Name = "ItemLabel"
+	itemLabel.Position = UDim2.fromOffset(12, 0)
+	itemLabel.Size = UDim2.new(1, -24, 1, 0)
+	itemLabel.BackgroundTransparency = 1
+	itemLabel.Text = tostring(templateId) .. " x " .. tostring(count)
+	itemLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+	itemLabel.TextScaled = true
+	itemLabel.TextXAlignment = Enum.TextXAlignment.Left
+	itemLabel.Font = Enum.Font.GothamBold
+	itemLabel.Parent = row
+
+	row.MouseButton1Click:Connect(function()
+		if count <= 0 then
+			return
+		end
+
+		local currentRoomName = player:GetAttribute("CurrentRoomName")
+
+		if (player:GetAttribute("ControlMode") or "Hotel") ~= "Hotel"
+			or typeof(currentRoomName) ~= "string"
+			or currentRoomName == ""
+			or player:GetAttribute("RoomMode") ~= "Edit" then
+
+			setStatus("Enter Edit Mode to place furniture.", false)
+			return
+		end
+
+		panel.Visible = false
+		updateOpenButton()
+
+		startInventoryPlacement:Fire({
+			Id = templateId,
+			TemplateName = templateId,
+			DisplayName = templateId,
+			Source = "Inventory",
+		})
+	end)
+end
+
+local function renderInventory(inventory)
+	latestInventory = inventory or {}
+	clearRows()
+
+	local entries = {}
+
+	if typeof(latestInventory) == "table" then
+		for templateId, count in pairs(latestInventory) do
+			if typeof(templateId) == "string" and typeof(count) == "number" and count > 0 then
+				table.insert(entries, {
+					TemplateId = templateId,
+					Count = count,
+				})
+			end
+		end
+	end
+
+	table.sort(entries, function(a, b)
+		return a.TemplateId < b.TemplateId
+	end)
+
+	if #entries == 0 then
+		createEmptyState()
+	else
+		for index, entry in ipairs(entries) do
+			createInventoryRow(entry.TemplateId, entry.Count, index)
+		end
+	end
+
+	task.defer(function()
+		listFrame.CanvasSize = UDim2.fromOffset(
+			0,
+			listLayout.AbsoluteContentSize.Y + 20
+		)
+	end)
+end
+
+local function setRequestInFlight(isInFlight)
+	requestInFlight = isInFlight
+	refreshButton.Active = not isInFlight
+	refreshButton.AutoButtonColor = not isInFlight
+
+	if isInFlight then
+		refreshButton.Text = "Loading..."
+		refreshButton.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+	else
+		refreshButton.Text = "Refresh"
+		refreshButton.BackgroundColor3 = Color3.fromRGB(70, 120, 190)
+	end
+end
+
+local function requestInventory()
+	if requestInFlight then
+		return
+	end
+
+	setRequestInFlight(true)
+	setStatus("Loading inventory.", nil)
+
+	inventoryRequest:FireServer("GetInventory")
+
+	task.delay(6, function()
+		if requestInFlight then
+			setRequestInFlight(false)
+			setStatus("Inventory request timed out.", false)
+		end
+	end)
+end
+
+local function setPanelVisible(isVisible)
+	panel.Visible = isVisible
+	updateOpenButton()
+
+	if isVisible then
+		requestInventory()
+	end
+end
+
+openButton.MouseButton1Click:Connect(function()
+	setPanelVisible(true)
+end)
+
+closeButton.MouseButton1Click:Connect(function()
+	setPanelVisible(false)
+end)
+
+refreshButton.MouseButton1Click:Connect(function()
+	requestInventory()
+end)
+
+inventoryResult.OnClientEvent:Connect(function(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	setRequestInFlight(false)
+
+	local success = response.Success == true
+	local message = tostring(response.Message or "")
+
+	if success and typeof(response.Inventory) == "table" then
+		renderInventory(response.Inventory)
+		setStatus(message ~= "" and message or "Inventory loaded.", true)
+	else
+		setStatus(message ~= "" and message or "Could not load inventory.", false)
+	end
+end)
+
+local function handleVisibilityChanged()
+	if panel.Visible and not shouldShowInventoryButton() then
+		setPanelVisible(false)
+	else
+		updateOpenButton()
+	end
+end
+
+player:GetAttributeChangedSignal("OnboardingStep"):Connect(handleVisibilityChanged)
+player:GetAttributeChangedSignal("ControlMode"):Connect(handleVisibilityChanged)
+player:GetAttributeChangedSignal("CurrentRoomName"):Connect(handleVisibilityChanged)
+
+renderInventory({})
+task.defer(updateOpenButton)

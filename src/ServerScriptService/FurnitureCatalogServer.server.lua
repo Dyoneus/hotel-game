@@ -55,9 +55,11 @@ local CATALOG = {
 }
 
 local catalogById = {}
+local catalogByTemplateName = {}
 
 for _, item in ipairs(CATALOG) do
 	catalogById[item.Id] = item
+	catalogByTemplateName[item.TemplateName] = item
 end
 
 local function getOrCreateRemoteEvent(name)
@@ -575,42 +577,47 @@ local function createPersistentId(player, templateName)
 		.. HttpService:GenerateGUID(false)
 end
 
-local function handlePlaceItem(player, payload)
+local function handlePlaceItem(player, payload, options)
+	options = options or {}
+
+	local resultKind = options.ResultKind or "PlaceItem"
+	local consumeInventory = options.ConsumeInventory == true
+
 	if not checkPlaceCooldown(player) then
-		sendResult(player, "PlaceItem", false, "Slow down before placing another item.")
+		sendResult(player, resultKind, false, "Slow down before placing another item.")
 		return
 	end
 
 	if typeof(payload) ~= "table" then
-		sendResult(player, "PlaceItem", false, "Invalid catalog request.")
+		sendResult(player, resultKind, false, "Invalid catalog request.")
 		return
 	end
 
 	local itemId = payload.ItemId
 
 	if typeof(itemId) ~= "string" then
-		sendResult(player, "PlaceItem", false, "Invalid item.")
+		sendResult(player, resultKind, false, "Invalid item.")
 		return
 	end
 
-	local item = catalogById[itemId]
+	local item = catalogById[itemId] or catalogByTemplateName[itemId]
 
 	if not item then
-		sendResult(player, "PlaceItem", false, "Unknown catalog item.")
+		sendResult(player, resultKind, false, "Unknown catalog item.")
 		return
 	end
 
 	local canUse, roomModel = canUseCatalog(player)
 
 	if not canUse then
-		sendResult(player, "PlaceItem", false, "Enter Edit Mode in your own room first.")
+		sendResult(player, resultKind, false, "Enter Edit Mode in your own room first.")
 		return
 	end
 
 	local furnitureFolder = getFurnitureFolder(roomModel)
 
 	if not furnitureFolder then
-		sendResult(player, "PlaceItem", false, "This room has no Furniture folder.")
+		sendResult(player, resultKind, false, "This room has no Furniture folder.")
 		return
 	end
 
@@ -620,7 +627,7 @@ local function handlePlaceItem(player, payload)
 		if currentCount >= item.MaxPerRoom then
 			sendResult(
 				player,
-				"PlaceItem",
+				resultKind,
 				false,
 				"You already placed the maximum amount of this item."
 			)
@@ -631,14 +638,14 @@ local function handlePlaceItem(player, payload)
 	local template = getTemplate(item.TemplateName)
 
 	if not template then
-		sendResult(player, "PlaceItem", false, "Missing furniture template: " .. item.TemplateName)
+		sendResult(player, resultKind, false, "Missing furniture template: " .. item.TemplateName)
 		return
 	end
 
 	local targetPosition = payload.TargetPosition
 
 	if typeof(targetPosition) ~= "Vector3" then
-		sendResult(player, "PlaceItem", false, "Click a valid floor tile to place this furniture.")
+		sendResult(player, resultKind, false, "Click a valid floor tile to place this furniture.")
 		return
 	end
 
@@ -656,7 +663,7 @@ local function handlePlaceItem(player, payload)
 
 	if not placementCFrame then
 		furnitureClone:Destroy()
-		sendResult(player, "PlaceItem", false, "Invalid placement position.")
+		sendResult(player, resultKind, false, "Invalid placement position.")
 		return
 	end
 
@@ -666,25 +673,67 @@ local function handlePlaceItem(player, payload)
 
 	if not floor or not modelFitsInsideRoom(furnitureClone, floor) then
 		furnitureClone:Destroy()
-		sendResult(player, "PlaceItem", false, "Furniture must stay inside the room.")
+		sendResult(player, resultKind, false, "Furniture must stay inside the room.")
 		return
 	end
 
 	if modelBlockedAtCurrentCFrame(roomModel, furnitureClone) then
 		furnitureClone:Destroy()
-		sendResult(player, "PlaceItem", false, "That spot is blocked.")
+		sendResult(player, resultKind, false, "That spot is blocked.")
 		return
 	end
 
 	if modelWouldOverlapCharacter(roomModel, furnitureClone) then
 		furnitureClone:Destroy()
-		sendResult(player, "PlaceItem", false, "Cannot place furniture on top of a player.")
+		sendResult(player, resultKind, false, "Cannot place furniture on top of a player.")
 		return
+	end
+
+	local remainingCount = nil
+
+	if consumeInventory then
+		local templateId = item.TemplateName or item.Id
+		local removed, _, newCount = RoomPersistence.RemoveInventoryItem(player, templateId, 1)
+
+		if not removed then
+			furnitureClone:Destroy()
+			sendResult(
+				player,
+				resultKind,
+				false,
+				"You do not own enough of that item.",
+				{
+					ItemId = item.Id,
+					TemplateId = templateId,
+					Source = "Inventory",
+					RemainingCount = newCount or 0,
+				}
+			)
+			return
+		end
+
+		remainingCount = newCount
 	end
 
 	furnitureClone.Parent = furnitureFolder
 
 	RoomPersistence.CaptureRoomState(player, roomModel)
+
+	if consumeInventory then
+		sendResult(
+			player,
+			resultKind,
+			true,
+			item.DisplayName .. " placed from inventory.",
+			{
+				ItemId = item.Id,
+				TemplateId = item.TemplateName,
+				Source = "Inventory",
+				RemainingCount = remainingCount,
+			}
+		)
+		return
+	end
 
 	sendResult(
 		player,
@@ -708,6 +757,14 @@ furnitureCatalogRequest.OnServerEvent:Connect(function(player, actionName, paylo
 
 	if actionName == "PlaceItem" then
 		handlePlaceItem(player, payload)
+		return
+	end
+
+	if actionName == "PlaceInventoryItem" then
+		handlePlaceItem(player, payload, {
+			ResultKind = "PlaceInventoryItem",
+			ConsumeInventory = true,
+		})
 		return
 	end
 
