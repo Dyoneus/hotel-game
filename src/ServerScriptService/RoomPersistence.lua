@@ -28,6 +28,7 @@ local function createDefaultProfile()
 		CurrentLayoutId = nil,
 
 		RoomState = nil,
+		Inventory = {},
 
 		UpdatedAt = os.time(),
 	}
@@ -47,6 +48,46 @@ local function deepCopy(value)
 	return copy
 end
 
+local function isValidTemplateId(templateId)
+	return typeof(templateId) == "string"
+		and templateId ~= ""
+		and templateId:match("%S") ~= nil
+end
+
+local function isPositiveInteger(value)
+	return typeof(value) == "number"
+		and value == value
+		and value > 0
+		and value < math.huge
+		and value == math.floor(value)
+end
+
+local function normalizeInventory(inventory)
+	local normalized = {}
+
+	if typeof(inventory) ~= "table" then
+		return normalized
+	end
+
+	for templateId, count in pairs(inventory) do
+		if isValidTemplateId(templateId) and isPositiveInteger(count) then
+			normalized[templateId] = count
+		end
+	end
+
+	return normalized
+end
+
+local function ensureInventory(profile)
+	if typeof(profile.Inventory) ~= "table" then
+		profile.Inventory = {}
+		return profile.Inventory
+	end
+
+	profile.Inventory = normalizeInventory(profile.Inventory)
+	return profile.Inventory
+end
+
 local function fillDefaults(profile)
 	local defaults = createDefaultProfile()
 
@@ -59,6 +100,8 @@ local function fillDefaults(profile)
 			profile[key] = defaultValue
 		end
 	end
+
+	ensureInventory(profile)
 
 	return profile
 end
@@ -350,6 +393,80 @@ end
 
 function RoomPersistence.GetProfile(player)
 	return profilesByPlayer[player]
+end
+
+function RoomPersistence.GetInventorySnapshot(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return {}
+	end
+
+	return deepCopy(ensureInventory(profile))
+end
+
+function RoomPersistence.AddInventoryItem(player, templateId, amount)
+	if not isValidTemplateId(templateId) then
+		return false, "Invalid TemplateId.", nil
+	end
+
+	if not isPositiveInteger(amount) then
+		return false, "Amount must be a positive integer.", nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local inventory = ensureInventory(profile)
+	local currentCount = inventory[templateId] or 0
+	local newCount = currentCount + amount
+
+	inventory[templateId] = newCount
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Inventory item added.", newCount
+end
+
+function RoomPersistence.RemoveInventoryItem(player, templateId, amount)
+	if not isValidTemplateId(templateId) then
+		return false, "Invalid TemplateId.", nil
+	end
+
+	if not isPositiveInteger(amount) then
+		return false, "Amount must be a positive integer.", nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local inventory = ensureInventory(profile)
+	local currentCount = inventory[templateId] or 0
+
+	if currentCount < amount then
+		return false, "Not enough inventory.", currentCount
+	end
+
+	local newCount = currentCount - amount
+
+	if newCount > 0 then
+		inventory[templateId] = newCount
+	else
+		inventory[templateId] = nil
+	end
+
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Inventory item removed.", newCount
 end
 
 function RoomPersistence.QueueSave(player)
