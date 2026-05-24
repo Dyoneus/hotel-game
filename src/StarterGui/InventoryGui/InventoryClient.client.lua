@@ -71,6 +71,7 @@ local function getOrCreateClientEvent(name)
 end
 
 local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
+local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
 
 local openButton = Instance.new("TextButton")
 openButton.Name = "OpenInventoryButton"
@@ -237,7 +238,7 @@ local function createInventoryRow(templateId, count, details, layoutOrder)
 	local row = Instance.new("TextButton")
 	row.Name = tostring(templateId)
 	row.LayoutOrder = layoutOrder
-	row.Size = UDim2.new(1, -4, 0, untradableCount > 0 and 64 or 48)
+	row.Size = UDim2.new(1, -4, 0, 64)
 	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
 	row.BorderSizePixel = 0
 	row.Text = ""
@@ -247,31 +248,42 @@ local function createInventoryRow(templateId, count, details, layoutOrder)
 	createCorner(row, 10)
 	createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
 
-	local itemLabel = Instance.new("TextLabel")
-	itemLabel.Name = "ItemLabel"
-	itemLabel.Position = UDim2.fromOffset(12, 0)
-	itemLabel.Size = UDim2.new(1, -24, 0, untradableCount > 0 and 36 or 48)
-	itemLabel.BackgroundTransparency = 1
-	itemLabel.Text = tostring(templateId) .. " x " .. tostring(count)
-	itemLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-	itemLabel.TextScaled = true
-	itemLabel.TextXAlignment = Enum.TextXAlignment.Left
-	itemLabel.Font = Enum.Font.GothamBold
-	itemLabel.Parent = row
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "NameLabel"
+	nameLabel.Position = UDim2.fromOffset(12, 8)
+	nameLabel.Size = UDim2.new(1, -100, 0, 26)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = tostring(templateId)
+	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+	nameLabel.TextSize = 18
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = row
 
-	if untradableCount > 0 then
-		local noteLabel = Instance.new("TextLabel")
-		noteLabel.Name = "UntradableLabel"
-		noteLabel.Position = UDim2.fromOffset(12, 34)
-		noteLabel.Size = UDim2.new(1, -24, 0, 22)
-		noteLabel.BackgroundTransparency = 1
-		noteLabel.Text = "Untradable: " .. tostring(untradableCount)
-		noteLabel.TextColor3 = Color3.fromRGB(105, 105, 105)
-		noteLabel.TextScaled = true
-		noteLabel.TextXAlignment = Enum.TextXAlignment.Left
-		noteLabel.Font = Enum.Font.Gotham
-		noteLabel.Parent = row
-	end
+	local countLabel = Instance.new("TextLabel")
+	countLabel.Name = "CountLabel"
+	countLabel.Position = UDim2.new(1, -82, 0, 8)
+	countLabel.Size = UDim2.fromOffset(70, 26)
+	countLabel.BackgroundTransparency = 1
+	countLabel.Text = "x" .. tostring(count)
+	countLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+	countLabel.TextSize = 18
+	countLabel.TextXAlignment = Enum.TextXAlignment.Right
+	countLabel.Font = Enum.Font.GothamBold
+	countLabel.Parent = row
+
+	local noteLabel = Instance.new("TextLabel")
+	noteLabel.Name = "UntradableLabel"
+	noteLabel.Position = UDim2.fromOffset(12, 36)
+	noteLabel.Size = UDim2.new(1, -24, 0, 18)
+	noteLabel.BackgroundTransparency = 1
+	noteLabel.Text = untradableCount > 0 and "Untradable: " .. tostring(untradableCount) or ""
+	noteLabel.TextColor3 = Color3.fromRGB(105, 105, 105)
+	noteLabel.TextSize = 13
+	noteLabel.TextXAlignment = Enum.TextXAlignment.Left
+	noteLabel.Font = Enum.Font.Gotham
+	noteLabel.Parent = row
 
 	row.MouseButton1Click:Connect(function()
 		if count <= 0 then
@@ -390,6 +402,10 @@ closeButton.MouseButton1Click:Connect(function()
 end)
 
 refreshButton.MouseButton1Click:Connect(function()
+	requestInventory()
+end)
+
+inventoryRefreshRequested.Event:Connect(function()
 	requestInventory()
 end)
 

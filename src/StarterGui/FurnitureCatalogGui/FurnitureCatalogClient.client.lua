@@ -94,6 +94,7 @@ local function getOrCreateClientEvent(name)
 end
 
 local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
+local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
 
 local function getCurrentRoomModel()
 	local roomName = player:GetAttribute("CurrentRoomName")
@@ -748,6 +749,10 @@ local function handleCatalogPlacementAction(actionName, inputState)
 		return Enum.ContextActionResult.Pass
 	end
 
+	if requestInFlight then
+		return Enum.ContextActionResult.Sink
+	end
+
 	if actionName == CATALOG_ROTATE_ACTION then
 		placementRotationY = (placementRotationY + 90) % 360
 		setStatus("Rotated preview.")
@@ -784,16 +789,20 @@ local function bindCatalogPlacementControls()
 	)
 end
 
-destroyCatalogPlacementPreview = function()
-	if placementPreview then
-		placementPreview:Destroy()
-		placementPreview = nil
-	end
-
+local function clearPlacementPreviewVisualsOnly()
 	if placementPreviewHighlight then
 		placementPreviewHighlight:Destroy()
 		placementPreviewHighlight = nil
 	end
+
+	if placementPreview then
+		placementPreview:Destroy()
+		placementPreview = nil
+	end
+end
+
+destroyCatalogPlacementPreview = function()
+	clearPlacementPreviewVisualsOnly()
 
 	unbindCatalogPlacementControls()
 
@@ -929,11 +938,15 @@ local function confirmCatalogPlacement()
 		actionName = "PlaceInventoryItem"
 	end
 
-	furnitureCatalogRequest:FireServer(actionName, {
+	local payload = {
 		ItemId = itemId,
 		TargetPosition = targetPosition,
 		RotationY = placementRotationY,
-	})
+	}
+
+	furnitureCatalogRequest:FireServer(actionName, payload)
+	clearPlacementPreviewVisualsOnly()
+	setStatus("Placing...")
 end
 
 local function clearItemRows()
@@ -1104,16 +1117,16 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 	end
 
 	if kind == "PlaceItem" or kind == "PlaceInventoryItem" then
-		requestInFlight = false
+		local placedFromInventory = kind == "PlaceInventoryItem"
+			or (typeof(data) == "table" and data.Source == "Inventory")
+
+		destroyCatalogPlacementPreview()
 		setStatus(message)
 
 		if success then
-			local placedFromInventory = kind == "PlaceInventoryItem"
-				or (typeof(data) == "table" and data.Source == "Inventory")
-
-			destroyCatalogPlacementPreview()
-
-			if not placedFromInventory then
+			if placedFromInventory then
+				inventoryRefreshRequested:Fire()
+			else
 				-- Refresh in case future catalog limits hide or update items.
 				furnitureCatalogRequest:FireServer("GetCatalog", {})
 			end

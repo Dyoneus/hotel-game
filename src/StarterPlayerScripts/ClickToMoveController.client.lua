@@ -15,6 +15,39 @@ local furnitureActionResult = remoteEvents:WaitForChild("FurnitureActionResult")
 local furnitureMenuRequest = remoteEvents:WaitForChild("FurnitureMenuRequest")
 
 local playerGui = player:WaitForChild("PlayerGui")
+
+local function getOrCreateClientEvent(name)
+	local clientEvents = playerGui:FindFirstChild("ClientEvents")
+
+	if clientEvents then
+		if not clientEvents:IsA("Folder") then
+			error("PlayerGui.ClientEvents exists but is not a Folder.")
+		end
+	else
+		clientEvents = Instance.new("Folder")
+		clientEvents.Name = "ClientEvents"
+		clientEvents.Parent = playerGui
+	end
+
+	local existing = clientEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("BindableEvent") then
+			error(name .. " exists but is not a BindableEvent.")
+		end
+
+		return existing
+	end
+
+	local bindableEvent = Instance.new("BindableEvent")
+	bindableEvent.Name = name
+	bindableEvent.Parent = clientEvents
+
+	return bindableEvent
+end
+
+local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
+
 local furnitureMenuGui = playerGui:WaitForChild("FurnitureMenuGui")
 local menuFrame = furnitureMenuGui:WaitForChild("MenuFrame")
 menuFrame.AnchorPoint = Vector2.new(0.5, 1)
@@ -1535,6 +1568,7 @@ furnitureActionResult.OnClientEvent:Connect(function(response)
 
 	if response.Success == true then
 		print(message)
+		inventoryRefreshRequested:Fire()
 	else
 		warn(message)
 	end
