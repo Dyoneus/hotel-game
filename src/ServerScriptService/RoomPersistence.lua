@@ -337,6 +337,8 @@ function RoomPersistence.ApplyRoomState(roomModel, roomState)
 		end
 	end
 
+	local restoredFurnitureModels = {}
+
 	for _, savedItem in ipairs(roomState.Furniture) do
 		if typeof(savedItem) == "table" then
 			local relativeCFrame = arrayToCFrame(savedItem.RelativeCFrame)
@@ -393,12 +395,20 @@ function RoomPersistence.ApplyRoomState(roomModel, roomState)
 			end
 
 			if furnitureModel then
+				restoredFurnitureModels[furnitureModel] = true
+
 				if typeof(savedItem.Tradable) == "boolean" then
 					furnitureModel:SetAttribute("Tradable", savedItem.Tradable)
 				end
 
 				furnitureModel:PivotTo(roomAnchor.CFrame * relativeCFrame)
 			end
+		end
+	end
+
+	for _, furnitureModel in ipairs(furnitureFolder:GetChildren()) do
+		if furnitureModel:IsA("Model") and not restoredFurnitureModels[furnitureModel] then
+			furnitureModel:Destroy()
 		end
 	end
 end
