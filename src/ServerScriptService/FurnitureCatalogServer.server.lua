@@ -5,6 +5,8 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local HttpService = game:GetService("HttpService")
 
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
+local shared = ReplicatedStorage:WaitForChild("Shared")
+local FurnitureCatalogConfig = require(shared:WaitForChild("FurnitureCatalogConfig"))
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
@@ -30,34 +32,10 @@ local PLACE_COOLDOWN_SECONDS = 0.75
 local OVERLAP_SHRINK = 0.08
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
 
-local CATALOG = {
-	{
-		Id = "Chair_01",
-		TemplateName = "Chair_01",
-		DisplayName = "Starter Chair",
-		Description = "A basic chair for sitting.",
-		MaxPerRoom = 12,
-	},
-	{
-		Id = "Table_01",
-		TemplateName = "Table_01",
-		DisplayName = "Starter Table",
-		Description = "A simple table decoration.",
-		MaxPerRoom = 8,
-	},
-	{
-		Id = "Bed_01",
-		TemplateName = "Bed_01",
-		DisplayName = "Starter Bed",
-		Description = "A basic bed. Sleep action can be added later.",
-		MaxPerRoom = 4,
-	},
-}
-
 local catalogById = {}
 local catalogByTemplateName = {}
 
-for _, item in ipairs(CATALOG) do
+for _, item in ipairs(FurnitureCatalogConfig.GetItemsArray()) do
 	catalogById[item.Id] = item
 	catalogByTemplateName[item.TemplateName] = item
 end
@@ -202,15 +180,9 @@ end
 local function getPublicCatalog()
 	local publicItems = {}
 
-	for _, item in ipairs(CATALOG) do
+	for _, item in ipairs(FurnitureCatalogConfig.GetPublicCatalog()) do
 		if getTemplate(item.TemplateName) then
-			table.insert(publicItems, {
-				Id = item.Id,
-				TemplateName = item.TemplateName,
-				DisplayName = item.DisplayName,
-				Description = item.Description,
-				MaxPerRoom = item.MaxPerRoom,
-			})
+			table.insert(publicItems, item)
 		end
 	end
 
