@@ -96,6 +96,32 @@ end
 local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
 local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
 local inventoryLocalDelta = getOrCreateClientEvent("InventoryLocalDelta")
+local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
+local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
+local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
+
+local MENU_NAME = "Shop"
+local anyMajorMenuOpen = false
+local openMajorMenuName = nil
+
+local function setLocalMajorMenuState(isOpen, menuName)
+	if isOpen then
+		anyMajorMenuOpen = true
+		openMajorMenuName = menuName
+	elseif openMajorMenuName == menuName then
+		anyMajorMenuOpen = false
+		openMajorMenuName = nil
+	end
+
+	if updateOpenButton then
+		updateOpenButton()
+	end
+end
+
+local function publishMajorMenuState(isOpen)
+	setLocalMajorMenuState(isOpen, MENU_NAME)
+	majorMenuStateChanged:Fire(isOpen, MENU_NAME)
+end
 
 local function fireInventoryOptimisticPlacementDelta(itemData)
 	if typeof(itemData) ~= "table" then
@@ -130,6 +156,52 @@ local function fireInventoryLocalDeltaFromPlacementData(data)
 
 	local total = data.RemainingCount
 	local details = data.InventoryDetails
+
+	if typeof(details) == "table" and typeof(details.Total) == "number" then
+		total = details.Total
+	end
+
+	if typeof(total) ~= "number" then
+		return
+	end
+
+	local payload = {
+		TemplateId = templateId,
+		Total = total,
+	}
+
+	if typeof(details) == "table" then
+		if typeof(details.Tradable) == "number" then
+			payload.Tradable = details.Tradable
+		end
+
+		if typeof(details.Untradable) == "number" then
+			payload.Untradable = details.Untradable
+		end
+	end
+
+	inventoryLocalDelta:Fire(payload)
+end
+
+local function fireInventoryLocalDeltaFromAddToInventoryResult(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	local data = response.Data
+	local templateId = response.TemplateId
+	local total = response.NewCount
+	local details = response.InventoryDetails
+
+	if typeof(data) == "table" then
+		templateId = templateId or data.TemplateId
+		total = total or data.NewCount
+		details = details or data.InventoryDetails
+	end
+
+	if typeof(templateId) ~= "string" or templateId == "" then
+		return
+	end
 
 	if typeof(details) == "table" and typeof(details.Total) == "number" then
 		total = details.Total
@@ -214,11 +286,16 @@ local function isCurrentRoomOwner()
 end
 
 local function shouldShowCatalogButton()
+	return player:GetAttribute("OnboardingStep") == "Complete"
+		and (player:GetAttribute("ControlMode") or "Hotel") == "Hotel"
+end
+
+local function canContinueInventoryPlacement()
 	local currentRoomName = player:GetAttribute("CurrentRoomName")
 
-	return typeof(currentRoomName) == "string"
+	return (player:GetAttribute("ControlMode") or "Hotel") == "Hotel"
+		and typeof(currentRoomName) == "string"
 		and currentRoomName ~= ""
-		and (player:GetAttribute("ControlMode") or "Hotel") == "Hotel"
 		and player:GetAttribute("RoomMode") == "Edit"
 end
 
@@ -229,7 +306,7 @@ openButton.Position = UDim2.new(1, -20, 1, -74)
 openButton.Size = UDim2.fromOffset(150, 44)
 openButton.BackgroundColor3 = Color3.fromRGB(60, 110, 170)
 openButton.BorderSizePixel = 0
-openButton.Text = "Catalog"
+openButton.Text = "Shop"
 openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 openButton.TextScaled = true
 openButton.Font = Enum.Font.GothamBold
@@ -257,7 +334,7 @@ titleLabel.Name = "TitleLabel"
 titleLabel.Position = UDim2.fromOffset(18, 14)
 titleLabel.Size = UDim2.new(1, -70, 0, 36)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Furniture Catalog"
+titleLabel.Text = "Furniture Shop"
 titleLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
 titleLabel.TextScaled = true
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -284,7 +361,7 @@ statusLabel.Name = "StatusLabel"
 statusLabel.Position = UDim2.fromOffset(18, 56)
 statusLabel.Size = UDim2.new(1, -36, 0, 42)
 statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Place furniture into your room. Use Move after placing."
+statusLabel.Text = "Choose furniture to add to your Inventory."
 statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
 statusLabel.TextWrapped = true
 statusLabel.TextScaled = true
@@ -336,8 +413,26 @@ listPadding.PaddingRight = UDim.new(0, 10)
 listPadding.Parent = itemList
 
 local function setPanelVisible(isVisible)
+	local wasVisible = panel.Visible
+
+	if isVisible then
+		publishMajorMenuState(true)
+		majorMenuOpened:Fire(MENU_NAME)
+	end
+
 	panel.Visible = isVisible
-	openButton.Visible = (not isVisible) and shouldShowCatalogButton()
+
+	if updateOpenButton then
+		updateOpenButton()
+	else
+		openButton.Visible = (not isVisible)
+			and not anyMajorMenuOpen
+			and shouldShowCatalogButton()
+	end
+
+	if not isVisible and (wasVisible or openMajorMenuName == MENU_NAME) then
+		publishMajorMenuState(false)
+	end
 end
 
 local function setStatus(text)
@@ -938,7 +1033,7 @@ local function createCatalogPlacementPreview(itemData)
 
 	setPlacementPreviewValidity(false)
 
-	panel.Visible = false
+	setPanelVisible(false)
 	openButton.Visible = false
 
 	if placementSource == "Inventory" then
@@ -986,6 +1081,12 @@ local function confirmCatalogPlacement()
 		return
 	end
 
+	if placementSource ~= "Inventory" then
+		setStatus("Open Inventory to place furniture.")
+		destroyCatalogPlacementPreview()
+		return
+	end
+
 	requestInFlight = true
 
 	local itemId = placingItemData.Id
@@ -993,23 +1094,15 @@ local function confirmCatalogPlacement()
 
 	setStatus("Placing " .. tostring(placingItemData.DisplayName or itemId) .. "...")
 
-	local actionName = "PlaceItem"
-
-	if placementSource == "Inventory" then
-		actionName = "PlaceInventoryItem"
-	end
-
 	local payload = {
 		ItemId = itemId,
 		TargetPosition = targetPosition,
 		RotationY = placementRotationY,
 	}
 
-	if actionName == "PlaceInventoryItem" then
-		fireInventoryOptimisticPlacementDelta(placingItemData)
-	end
+	fireInventoryOptimisticPlacementDelta(placingItemData)
 
-	furnitureCatalogRequest:FireServer(actionName, payload)
+	furnitureCatalogRequest:FireServer("PlaceInventoryItem", payload)
 	clearPlacementPreviewVisualsOnly()
 	setStatus("Placing...")
 end
@@ -1026,7 +1119,7 @@ local function createItemRow(itemData, layoutOrder)
 	local row = Instance.new("TextButton")
 	row.Name = tostring(itemData.Id)
 	row.LayoutOrder = layoutOrder
-	row.Size = UDim2.new(1, -4, 0, 78)
+	row.Size = UDim2.new(1, -4, 0, 100)
 	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
 	row.BorderSizePixel = 0
 	row.Text = ""
@@ -1051,14 +1144,51 @@ local function createItemRow(itemData, layoutOrder)
 	local descriptionLabel = Instance.new("TextLabel")
 	descriptionLabel.Name = "DescriptionLabel"
 	descriptionLabel.Position = UDim2.fromOffset(12, 36)
-	descriptionLabel.Size = UDim2.new(1, -24, 0, 20)
+	descriptionLabel.Size = UDim2.new(1, -24, 0, 24)
 	descriptionLabel.BackgroundTransparency = 1
-	descriptionLabel.Text = tostring(itemData.Description or "Place this item.")
+	descriptionLabel.Text = tostring(itemData.Description or "Add this item to your Inventory.")
 	descriptionLabel.TextColor3 = Color3.fromRGB(95, 95, 95)
 	descriptionLabel.TextScaled = true
+	descriptionLabel.TextWrapped = true
 	descriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
 	descriptionLabel.Font = Enum.Font.Gotham
 	descriptionLabel.Parent = row
+
+	local metadataParts = {}
+
+	if typeof(itemData.Category) == "string" and itemData.Category ~= "" then
+		table.insert(metadataParts, itemData.Category)
+	end
+
+	if typeof(itemData.Price) == "number" then
+		table.insert(metadataParts, "Price: " .. tostring(itemData.Price) .. " coins")
+	end
+
+	if itemData.Featured == true then
+		table.insert(metadataParts, "Featured")
+	end
+
+	if itemData.IsLimited == true then
+		table.insert(metadataParts, "Limited")
+
+		if typeof(itemData.RemainingStock) == "number" then
+			table.insert(metadataParts, "Stock: " .. tostring(itemData.RemainingStock))
+		elseif typeof(itemData.LimitedQuantity) == "number" then
+			table.insert(metadataParts, "Stock: " .. tostring(itemData.LimitedQuantity))
+		end
+	end
+
+	local metadataLabel = Instance.new("TextLabel")
+	metadataLabel.Name = "MetadataLabel"
+	metadataLabel.Position = UDim2.fromOffset(12, 66)
+	metadataLabel.Size = UDim2.new(1, -150, 0, 20)
+	metadataLabel.BackgroundTransparency = 1
+	metadataLabel.Text = table.concat(metadataParts, " | ")
+	metadataLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+	metadataLabel.TextScaled = true
+	metadataLabel.TextXAlignment = Enum.TextXAlignment.Left
+	metadataLabel.Font = Enum.Font.GothamMedium
+	metadataLabel.Parent = row
 
 	local placeLabel = Instance.new("TextLabel")
 	placeLabel.Name = "PlaceLabel"
@@ -1066,7 +1196,7 @@ local function createItemRow(itemData, layoutOrder)
 	placeLabel.Position = UDim2.new(1, -12, 1, -8)
 	placeLabel.Size = UDim2.fromOffset(120, 20)
 	placeLabel.BackgroundTransparency = 1
-	placeLabel.Text = "Click to place"
+	placeLabel.Text = "Add to Inventory"
 	placeLabel.TextColor3 = Color3.fromRGB(70, 150, 255)
 	placeLabel.TextScaled = true
 	placeLabel.TextXAlignment = Enum.TextXAlignment.Right
@@ -1078,7 +1208,12 @@ local function createItemRow(itemData, layoutOrder)
 			return
 		end
 
-		createCatalogPlacementPreview(itemData)
+		requestInFlight = true
+		setStatus("Adding " .. tostring(itemData.DisplayName or itemData.Id) .. " to Inventory...")
+
+		furnitureCatalogRequest:FireServer("AddToInventory", {
+			ItemId = itemData.Id,
+		})
 	end)
 end
 
@@ -1087,9 +1222,9 @@ local function renderCatalog(items)
 	clearItemRows()
 
 	if #latestCatalogItems == 0 then
-		setStatus("No furniture templates found in ReplicatedStorage/FurnitureTemplates.")
+		setStatus("No shop items found. Check ReplicatedStorage/FurnitureTemplates.")
 	else
-		setStatus("Click an item to place it. Then use Move to reposition it.")
+		setStatus("Select an item to add it to Inventory.")
 	end
 
 	for index, itemData in ipairs(latestCatalogItems) do
@@ -1110,7 +1245,7 @@ updateOpenButton = function()
 		return
 	end
 
-	if panel.Visible then
+	if panel.Visible or anyMajorMenuOpen then
 		openButton.Visible = false
 	else
 		openButton.Visible = shouldShowCatalogButton()
@@ -1119,12 +1254,40 @@ end
 
 openButton.MouseButton1Click:Connect(function()
 	setPanelVisible(true)
-	setStatus("Loading catalog...")
+	setStatus("Loading shop...")
 	furnitureCatalogRequest:FireServer("GetCatalog", {})
 end)
 
 closeButton.MouseButton1Click:Connect(function()
 	setPanelVisible(false)
+end)
+
+majorMenuOpened.Event:Connect(function(menuName)
+	if menuName == MENU_NAME then
+		return
+	end
+
+	if panel.Visible then
+		setPanelVisible(false)
+	end
+
+	if placingItemData then
+		destroyCatalogPlacementPreview()
+	end
+end)
+
+closeMajorMenus.Event:Connect(function()
+	if panel.Visible then
+		setPanelVisible(false)
+	end
+
+	if placingItemData then
+		destroyCatalogPlacementPreview()
+	end
+end)
+
+majorMenuStateChanged.Event:Connect(function(isOpen, menuName)
+	setLocalMajorMenuState(isOpen == true, menuName)
 end)
 
 startInventoryPlacement.Event:Connect(function(itemData)
@@ -1136,12 +1299,7 @@ startInventoryPlacement.Event:Connect(function(itemData)
 		return
 	end
 
-	local currentRoomName = player:GetAttribute("CurrentRoomName")
-
-	if (player:GetAttribute("ControlMode") or "Hotel") ~= "Hotel"
-		or typeof(currentRoomName) ~= "string"
-		or currentRoomName == ""
-		or player:GetAttribute("RoomMode") ~= "Edit" then
+	if not canContinueInventoryPlacement() then
 
 		setStatus("Enter Edit Mode to place furniture.")
 		return
@@ -1181,6 +1339,18 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 		return
 	end
 
+	if kind == "AddToInventory" then
+		requestInFlight = false
+		setStatus(message)
+
+		if success then
+			fireInventoryLocalDeltaFromAddToInventoryResult(response)
+			inventoryRefreshRequested:Fire()
+		end
+
+		return
+	end
+
 	if kind == "PlaceItem" or kind == "PlaceInventoryItem" then
 		local placedFromInventory = kind == "PlaceInventoryItem"
 			or (typeof(data) == "table" and data.Source == "Inventory")
@@ -1211,7 +1381,20 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 end)
 
 local function handleCatalogVisibilityChanged()
-	if placingItemData and not shouldShowCatalogButton() then
+	local canShowShop = shouldShowCatalogButton()
+
+	if panel.Visible and not canShowShop then
+		setPanelVisible(false)
+	end
+
+	if placingItemData
+		and (
+			not canShowShop
+			or (
+				placementSource == "Inventory"
+				and not canContinueInventoryPlacement()
+			)
+		) then
 		destroyCatalogPlacementPreview()
 	end
 

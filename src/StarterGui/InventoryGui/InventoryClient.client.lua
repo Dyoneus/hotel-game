@@ -81,6 +81,13 @@ end
 local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
 local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
 local inventoryLocalDelta = getOrCreateClientEvent("InventoryLocalDelta")
+local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
+local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
+local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
+
+local MENU_NAME = "Inventory"
+local anyMajorMenuOpen = false
+local openMajorMenuName = nil
 
 local openButton = Instance.new("TextButton")
 openButton.Name = "OpenInventoryButton"
@@ -201,7 +208,26 @@ local function shouldShowInventoryButton()
 end
 
 local function updateOpenButton()
-	openButton.Visible = (not panel.Visible) and shouldShowInventoryButton()
+	openButton.Visible = (not panel.Visible)
+		and not anyMajorMenuOpen
+		and shouldShowInventoryButton()
+end
+
+local function setLocalMajorMenuState(isOpen, menuName)
+	if isOpen then
+		anyMajorMenuOpen = true
+		openMajorMenuName = menuName
+	elseif openMajorMenuName == menuName then
+		anyMajorMenuOpen = false
+		openMajorMenuName = nil
+	end
+
+	updateOpenButton()
+end
+
+local function publishMajorMenuState(isOpen)
+	setLocalMajorMenuState(isOpen, MENU_NAME)
+	majorMenuStateChanged:Fire(isOpen, MENU_NAME)
 end
 
 local function setStatus(text, success)
@@ -534,6 +560,13 @@ requestInventoryRefresh = function(reason, force)
 end
 
 local function setPanelVisible(isVisible)
+	local wasVisible = panel.Visible
+
+	if isVisible then
+		publishMajorMenuState(true)
+		majorMenuOpened:Fire(MENU_NAME)
+	end
+
 	panel.Visible = isVisible
 	updateOpenButton()
 
@@ -543,6 +576,8 @@ local function setPanelVisible(isVisible)
 		end
 
 		requestInventoryRefresh("open")
+	elseif wasVisible or openMajorMenuName == MENU_NAME then
+		publishMajorMenuState(false)
 	end
 end
 
@@ -577,6 +612,22 @@ end)
 
 inventoryLocalDelta.Event:Connect(function(payload)
 	applyInventoryLocalDelta(payload)
+end)
+
+majorMenuOpened.Event:Connect(function(menuName)
+	if menuName ~= MENU_NAME and panel.Visible then
+		setPanelVisible(false)
+	end
+end)
+
+closeMajorMenus.Event:Connect(function()
+	if panel.Visible then
+		setPanelVisible(false)
+	end
+end)
+
+majorMenuStateChanged.Event:Connect(function(isOpen, menuName)
+	setLocalMajorMenuState(isOpen == true, menuName)
 end)
 
 inventoryResult.OnClientEvent:Connect(function(response)

@@ -1,6 +1,7 @@
 --Explorer/StarterGui/RoomNavigatorGui/RoomCreationClient.lua
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -41,6 +42,44 @@ local function createStroke(parent, color, thickness, transparency)
 	stroke.Parent = parent
 	return stroke
 end
+
+local function getOrCreateClientEvent(name)
+	local clientEvents = playerGui:FindFirstChild("ClientEvents")
+
+	if clientEvents then
+		if not clientEvents:IsA("Folder") then
+			error("PlayerGui.ClientEvents exists but is not a Folder.")
+		end
+	else
+		clientEvents = Instance.new("Folder")
+		clientEvents.Name = "ClientEvents"
+		clientEvents.Parent = playerGui
+	end
+
+	local existing = clientEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("BindableEvent") then
+			error(name .. " exists but is not a BindableEvent.")
+		end
+
+		return existing
+	end
+
+	local bindableEvent = Instance.new("BindableEvent")
+	bindableEvent.Name = name
+	bindableEvent.Parent = clientEvents
+
+	return bindableEvent
+end
+
+local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
+local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
+local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
+
+local MENU_NAME = "Rooms"
+local anyMajorMenuOpen = false
+local openMajorMenuName = nil
 
 local openButton = Instance.new("TextButton")
 openButton.Name = "OpenRoomsButton"
@@ -159,9 +198,47 @@ closeButton.Parent = panel
 
 createCorner(closeButton, 8)
 
+local function shouldShowRoomsButton()
+	return player:GetAttribute("OnboardingStep") == "Complete"
+end
+
+local function updateOpenButton()
+	openButton.Visible = (not panel.Visible)
+		and not anyMajorMenuOpen
+		and shouldShowRoomsButton()
+end
+
+local function setLocalMajorMenuState(isOpen, menuName)
+	if isOpen then
+		anyMajorMenuOpen = true
+		openMajorMenuName = menuName
+	elseif openMajorMenuName == menuName then
+		anyMajorMenuOpen = false
+		openMajorMenuName = nil
+	end
+
+	updateOpenButton()
+end
+
+local function publishMajorMenuState(isOpen)
+	setLocalMajorMenuState(isOpen, MENU_NAME)
+	majorMenuStateChanged:Fire(isOpen, MENU_NAME)
+end
+
 local function setPanelVisible(isVisible)
+	local wasVisible = panel.Visible
+
+	if isVisible then
+		publishMajorMenuState(true)
+		majorMenuOpened:Fire(MENU_NAME)
+	end
+
 	panel.Visible = isVisible
-	openButton.Visible = not isVisible
+	updateOpenButton()
+
+	if not isVisible and (wasVisible or openMajorMenuName == MENU_NAME) then
+		publishMajorMenuState(false)
+	end
 end
 
 local function updateJoinButton()
@@ -308,6 +385,22 @@ closeButton.MouseButton1Click:Connect(function()
 	setPanelVisible(false)
 end)
 
+majorMenuOpened.Event:Connect(function(menuName)
+	if menuName ~= MENU_NAME and panel.Visible then
+		setPanelVisible(false)
+	end
+end)
+
+closeMajorMenus.Event:Connect(function()
+	if panel.Visible then
+		setPanelVisible(false)
+	end
+end)
+
+majorMenuStateChanged.Event:Connect(function(isOpen, menuName)
+	setLocalMajorMenuState(isOpen == true, menuName)
+end)
+
 refreshButton.MouseButton1Click:Connect(function()
 	roomListRequest:FireServer()
 end)
@@ -328,11 +421,7 @@ roomListUpdate.OnClientEvent:Connect(function(roomList, currentRoomName)
 
 	-- Only show the Rooms button when the player should have access to navigator.
 	-- For now, hide it during onboarding/tutorial flow.
-	if player:GetAttribute("OnboardingStep") == "Complete" then
-		openButton.Visible = true
-	else
-		openButton.Visible = false
-	end
+	updateOpenButton()
 end)
 
 joinRoomResult.OnClientEvent:Connect(function(success, message, roomName)
@@ -363,5 +452,13 @@ roomCreationResult.OnClientEvent:Connect(function(status)
 		-- New player is choosing a starter room.
 		setPanelVisible(false)
 		openButton.Visible = false
+	end
+end)
+
+player:GetAttributeChangedSignal("OnboardingStep"):Connect(function()
+	if panel.Visible and not shouldShowRoomsButton() then
+		setPanelVisible(false)
+	else
+		updateOpenButton()
 	end
 end)

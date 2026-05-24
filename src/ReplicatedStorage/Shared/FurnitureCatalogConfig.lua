@@ -9,6 +9,8 @@ local ITEMS = {
 		MaxPerRoom = 12,
 		Category = "Seating",
 		Price = 25,
+		Featured = true,
+		IsLimited = false,
 	},
 	{
 		Id = "Table_01",
@@ -18,6 +20,8 @@ local ITEMS = {
 		MaxPerRoom = 8,
 		Category = "Tables",
 		Price = 50,
+		Featured = false,
+		IsLimited = false,
 	},
 	{
 		Id = "Bed_01",
@@ -27,6 +31,8 @@ local ITEMS = {
 		MaxPerRoom = 4,
 		Category = "Beds",
 		Price = 100,
+		Featured = false,
+		IsLimited = false,
 	},
 }
 
@@ -38,6 +44,10 @@ local PUBLIC_FIELDS = {
 	"MaxPerRoom",
 	"Category",
 	"Price",
+	"Featured",
+	"IsLimited",
+	"LimitedQuantity",
+	"RemainingStock",
 }
 
 local itemsById = {}

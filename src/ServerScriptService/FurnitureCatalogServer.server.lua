@@ -26,6 +26,7 @@ end
 
 local GRID_SIZE = 2
 local PLACE_COOLDOWN_SECONDS = 0.75
+local ADD_TO_INVENTORY_COOLDOWN_SECONDS = 0.5
 
 -- Lets furniture sit directly beside other furniture without edge-touch
 -- being treated as a collision.
@@ -62,6 +63,7 @@ local furnitureCatalogRequest = getOrCreateRemoteEvent("FurnitureCatalogRequest"
 local furnitureCatalogResult = getOrCreateRemoteEvent("FurnitureCatalogResult")
 
 local lastPlaceRequestAtByUserId = {}
+local lastAddToInventoryRequestAtByUserId = {}
 
 local helperPartNames = {
 	CollisionBuffer = true,
@@ -160,6 +162,18 @@ local function checkPlaceCooldown(player)
 	end
 
 	lastPlaceRequestAtByUserId[player.UserId] = now
+	return true
+end
+
+local function checkAddToInventoryCooldown(player)
+	local now = os.clock()
+	local previous = lastAddToInventoryRequestAtByUserId[player.UserId]
+
+	if previous and now - previous < ADD_TO_INVENTORY_COOLDOWN_SECONDS then
+		return false
+	end
+
+	lastAddToInventoryRequestAtByUserId[player.UserId] = now
 	return true
 end
 
@@ -549,6 +563,97 @@ local function createPersistentId(player, templateName)
 		.. HttpService:GenerateGUID(false)
 end
 
+local function sendAddToInventoryResult(player, success, message, item, templateId, newCount, inventoryDetails)
+	if not player or player.Parent ~= Players then
+		return
+	end
+
+	local data = {
+		ItemId = item and item.Id or nil,
+		TemplateId = templateId,
+		NewCount = newCount,
+		InventoryDetails = inventoryDetails,
+	}
+
+	furnitureCatalogResult:FireClient(player, {
+		Kind = "AddToInventory",
+		Success = success == true,
+		Message = tostring(message or ""),
+		ItemId = data.ItemId,
+		TemplateId = data.TemplateId,
+		NewCount = data.NewCount,
+		InventoryDetails = data.InventoryDetails,
+		Data = data,
+	})
+end
+
+local function handleAddToInventory(player, payload)
+	if not checkAddToInventoryCooldown(player) then
+		sendAddToInventoryResult(player, false, "Slow down before getting another item.")
+		return
+	end
+
+	if typeof(payload) ~= "table" then
+		sendAddToInventoryResult(player, false, "Invalid catalog request.")
+		return
+	end
+
+	local itemId = payload.ItemId
+
+	if typeof(itemId) ~= "string" then
+		sendAddToInventoryResult(player, false, "Invalid item.")
+		return
+	end
+
+	local item = FurnitureCatalogConfig.GetItem(itemId)
+
+	if not item then
+		sendAddToInventoryResult(player, false, "Unknown catalog item.")
+		return
+	end
+
+	local templateId = item.TemplateName or item.Id
+
+	if not getTemplate(templateId) then
+		sendAddToInventoryResult(
+			player,
+			false,
+			"Missing furniture template: " .. tostring(templateId),
+			item,
+			templateId
+		)
+		return
+	end
+
+	local added, message, newCount, inventoryDetails =
+		RoomPersistence.AddInventoryItem(player, templateId, 1, {
+			Tradable = true,
+		})
+
+	if not added then
+		sendAddToInventoryResult(
+			player,
+			false,
+			message or "Could not add item to inventory.",
+			item,
+			templateId,
+			newCount,
+			inventoryDetails
+		)
+		return
+	end
+
+	sendAddToInventoryResult(
+		player,
+		true,
+		tostring(item.DisplayName or item.Id) .. " added to Inventory.",
+		item,
+		templateId,
+		newCount,
+		inventoryDetails
+	)
+end
+
 local function handlePlaceItem(player, payload, options)
 	options = options or {}
 
@@ -758,7 +863,12 @@ furnitureCatalogRequest.OnServerEvent:Connect(function(player, actionName, paylo
 	end
 
 	if actionName == "PlaceItem" then
-		handlePlaceItem(player, payload)
+		sendResult(player, "PlaceItem", false, "Catalog items are now added to Inventory first.")
+		return
+	end
+
+	if actionName == "AddToInventory" then
+		handleAddToInventory(player, payload)
 		return
 	end
 
@@ -775,4 +885,5 @@ end)
 
 Players.PlayerRemoving:Connect(function(player)
 	lastPlaceRequestAtByUserId[player.UserId] = nil
+	lastAddToInventoryRequestAtByUserId[player.UserId] = nil
 end)
