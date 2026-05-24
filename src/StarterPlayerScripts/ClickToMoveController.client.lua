@@ -1014,11 +1014,21 @@ local function playerIsInSameRoom(otherPlayer)
 end
 
 local function isPreviewBlockedByPlayer(previewModel)
+	local ignoredCharacter = nil
+
+	if movingFurniture then
+		local occupyingHumanoid = getFurnitureOccupantHumanoid(movingFurniture)
+
+		if occupyingHumanoid then
+			ignoredCharacter = occupyingHumanoid.Parent
+		end
+	end
+
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
 		if playerIsInSameRoom(otherPlayer) then
 			local character = otherPlayer.Character
 
-			if character then
+			if character and character ~= ignoredCharacter then
 				local overlapParams = OverlapParams.new()
 				overlapParams.FilterType = Enum.RaycastFilterType.Include
 				overlapParams.FilterDescendantsInstances = { character }
@@ -1257,10 +1267,9 @@ local function openFurnitureMenu(furnitureModel)
 	local occupied = isFurnitureOccupiedLocally(furnitureModel)
 
 	sitButton.Visible = false
-	moveButton.Visible = editing and not occupied
-	rotateButton.Visible = editing and not occupied
+	moveButton.Visible = editing
+	rotateButton.Visible = editing
 	pickUpButton.Visible = editing
-		and not occupied
 		and getFurnitureTemplateId(furnitureModel) ~= nil
 
 	if editing and occupied then
@@ -1556,12 +1565,6 @@ moveButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	if isFurnitureOccupiedLocally(selectedFurniture) then
-		warn("Cannot move occupied furniture.")
-		closeFurnitureMenu()
-		return
-	end
-
 	movingFurniture = selectedFurniture
 
 	-- Create preview first because createPlacementPreview() calls destroyPlacementPreview().
@@ -1580,23 +1583,11 @@ rotateButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	if isFurnitureOccupiedLocally(selectedFurniture) then
-		warn("Cannot rotate occupied furniture.")
-		closeFurnitureMenu()
-		return
-	end
-
 	furnitureActionRequest:FireServer("Rotate", selectedFurniture)
 end)
 
 pickUpButton.MouseButton1Click:Connect(function()
 	if not selectedFurniture then
-		return
-	end
-
-	if isFurnitureOccupiedLocally(selectedFurniture) then
-		warn("Cannot pick up occupied furniture.")
-		closeFurnitureMenu()
 		return
 	end
 

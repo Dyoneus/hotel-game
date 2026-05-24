@@ -382,6 +382,143 @@ local function getInteractionWorldPosition(furnitureModel, pointName)
 	return pointCFrame.Position
 end
 
+local function getCharacterRootPartFromHumanoid(humanoid)
+	if not humanoid then
+		return nil, nil
+	end
+
+	local character = humanoid.Parent
+
+	if not character then
+		return nil, nil
+	end
+
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+
+	if not rootPart then
+		return nil, nil
+	end
+
+	return character, rootPart
+end
+
+local function getOccupiedSeatCFrame(furnitureModel, humanoid, seatPart)
+	local humanoidSeatPart = humanoid and humanoid.SeatPart
+
+	if humanoidSeatPart
+		and humanoidSeatPart:IsA("BasePart")
+		and humanoidSeatPart:IsDescendantOf(furnitureModel) then
+
+		return humanoidSeatPart.CFrame
+	end
+
+	if seatPart
+		and seatPart:IsA("BasePart")
+		and seatPart:IsDescendantOf(furnitureModel)
+		and (seatPart:IsA("Seat") or seatPart:IsA("VehicleSeat")) then
+
+		return seatPart.CFrame
+	end
+
+	return nil
+end
+
+local function findNamedSeatCFrame(furnitureModel)
+	for _, descendant in ipairs(furnitureModel:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant.Name == "Seat" then
+			return descendant.CFrame, descendant
+		end
+	end
+
+	return nil, nil
+end
+
+local function getStandFloor(player)
+	local roomFolder = getCurrentRoomFolder(player)
+
+	if not roomFolder then
+		return nil
+	end
+
+	local floor = roomFolder:FindFirstChild("WalkableFloor")
+
+	if floor and floor:IsA("BasePart") then
+		return floor
+	end
+
+	return nil
+end
+
+local function getFurnitureStandCFrame(player, furnitureModel, humanoid, rootPart, seatPart)
+	local baseCFrame = getOccupiedSeatCFrame(furnitureModel, humanoid, seatPart)
+
+	if not baseCFrame then
+		local seatCFrame = findNamedSeatCFrame(furnitureModel)
+
+		if seatCFrame then
+			baseCFrame = seatCFrame
+		end
+	end
+
+	if not baseCFrame then
+		baseCFrame = getInteractionWorldCFrame(furnitureModel, "SitPoint")
+	end
+
+	if not baseCFrame then
+		baseCFrame = furnitureModel:GetPivot()
+	end
+
+	local rotation = baseCFrame - baseCFrame.Position
+	local sourcePosition = baseCFrame.Position
+	local targetY = sourcePosition.Y + 3
+	local floor = getStandFloor(player)
+
+	if floor then
+		local floorTopY = floor.Position.Y + floor.Size.Y / 2
+		local rootHalfY = rootPart.Size.Y / 2
+
+		targetY = math.max(
+			sourcePosition.Y,
+			floorTopY + humanoid.HipHeight + rootHalfY + 0.1
+		)
+	end
+
+	local position = Vector3.new(sourcePosition.X, targetY, sourcePosition.Z)
+
+	return CFrame.new(position) * rotation
+end
+
+local function standOccupantFromFurniture(player, furnitureModel, humanoid, seatPart, standCFrame)
+	local character, rootPart = getCharacterRootPartFromHumanoid(humanoid)
+
+	if not character or not rootPart then
+		return false
+	end
+
+	standCFrame = standCFrame
+		or getFurnitureStandCFrame(player, furnitureModel, humanoid, rootPart, seatPart)
+
+	humanoid.Sit = false
+	humanoid.PlatformStand = false
+	humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+
+	task.wait(0.03)
+
+	rootPart.AssemblyLinearVelocity = Vector3.zero
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+	character:PivotTo(standCFrame)
+
+	task.wait(0.03)
+
+	if rootPart.Parent then
+		rootPart.AssemblyLinearVelocity = Vector3.zero
+		rootPart.AssemblyAngularVelocity = Vector3.zero
+		rootPart.CFrame = standCFrame
+	end
+
+	return true
+end
+
 local function snapToGrid(value)
 	return math.floor((value / GRID_SIZE) + 0.5) * GRID_SIZE
 end
@@ -1119,14 +1256,14 @@ local function playerIsInSameRoom(editorPlayer, otherPlayer)
 	return editorPlayer:GetAttribute("CurrentRoomName") == otherPlayer:GetAttribute("CurrentRoomName")
 end
 
-local function modelWouldOverlapCharacter(editorPlayer, furnitureModel, targetCFrame)
+local function modelWouldOverlapCharacter(editorPlayer, furnitureModel, targetCFrame, characterToIgnore)
 	local currentPivot = furnitureModel:GetPivot()
 
 	for _, otherPlayer in ipairs(Players:GetPlayers()) do
 		if playerIsInSameRoom(editorPlayer, otherPlayer) then
 			local character = otherPlayer.Character
 
-			if character then
+			if character and character ~= characterToIgnore then
 				local overlapParams = OverlapParams.new()
 				overlapParams.FilterType = Enum.RaycastFilterType.Include
 				overlapParams.FilterDescendantsInstances = { character }
@@ -1154,6 +1291,22 @@ local function modelWouldOverlapCharacter(editorPlayer, furnitureModel, targetCF
 	return false, nil
 end
 
+local function modelWouldOverlapStandCFrame(furnitureModel, targetCFrame, standCFrame)
+	local modelBounds = getModelXZBoundsAtCFrame(furnitureModel, targetCFrame)
+
+	if not modelBounds or not standCFrame then
+		return false
+	end
+
+	local position = standCFrame.Position
+	local buffer = 1
+
+	return position.X >= modelBounds.minX - buffer
+		and position.X <= modelBounds.maxX + buffer
+		and position.Z >= modelBounds.minZ - buffer
+		and position.Z <= modelBounds.maxZ + buffer
+end
+
 local function moveFurniture(player, furnitureModel, targetPosition)
 	if not canEditRoom(player) then
 		warn("Move denied: player is not in edit mode or is not room owner")
@@ -1162,16 +1315,6 @@ local function moveFurniture(player, furnitureModel, targetPosition)
 	
 	if not isValidFurnitureForPlayer(player, furnitureModel) then
 		warn("Invalid furniture move request")
-		return
-	end
-
-	local occupied, occupyingHumanoid = isFurnitureOccupied(furnitureModel)
-
-	if occupied then
-		warn(
-			"Furniture move blocked: furniture is occupied by",
-			getOccupantNameFromHumanoid(occupyingHumanoid)
-		)
 		return
 	end
 
@@ -1211,12 +1354,40 @@ local function moveFurniture(player, furnitureModel, targetPosition)
 		warn("Furniture move blocked: model would overlap something")
 		return
 	end
-	
-	local overlapsPlayer, blockingPlayer = modelWouldOverlapCharacter(player, furnitureModel, targetCFrame)
+
+	local occupied, occupyingHumanoid, occupiedSeatPart = isFurnitureOccupied(furnitureModel)
+	local occupyingCharacter = nil
+	local occupantStandCFrame = nil
+
+	if occupied and occupyingHumanoid then
+		local occupyingRootPart = nil
+
+		occupyingCharacter, occupyingRootPart = getCharacterRootPartFromHumanoid(occupyingHumanoid)
+
+		if not occupyingRootPart then
+			warn("Furniture move blocked: could not safely stand seated occupant")
+			return
+		end
+
+		occupantStandCFrame =
+			getFurnitureStandCFrame(player, furnitureModel, occupyingHumanoid, occupyingRootPart, occupiedSeatPart)
+	end
+
+	local overlapsPlayer, blockingPlayer =
+		modelWouldOverlapCharacter(player, furnitureModel, targetCFrame, occupyingCharacter)
 
 	if overlapsPlayer then
 		warn("Furniture move blocked: would overlap player", blockingPlayer and blockingPlayer.Name)
 		return
+	end
+
+	if occupied and modelWouldOverlapStandCFrame(furnitureModel, targetCFrame, occupantStandCFrame) then
+		warn("Furniture move blocked: target overlaps seated player's stand position")
+		return
+	end
+
+	if occupied and occupyingHumanoid then
+		standOccupantFromFurniture(player, furnitureModel, occupyingHumanoid, occupiedSeatPart, occupantStandCFrame)
 	end
 
 	furnitureModel:PivotTo(targetCFrame)
@@ -1235,14 +1406,11 @@ local function rotateFurniture(player, furnitureModel)
 		return
 	end
 	
-	local occupied, occupyingHumanoid = isFurnitureOccupied(furnitureModel)
+	local _, occupyingHumanoid = isFurnitureOccupied(furnitureModel)
+	local occupyingCharacter = nil
 
-	if occupied then
-		warn(
-			"Furniture rotate blocked: furniture is occupied by",
-			getOccupantNameFromHumanoid(occupyingHumanoid)
-		)
-		return
+	if occupyingHumanoid then
+		occupyingCharacter = occupyingHumanoid.Parent
 	end
 
 	local currentPivot = furnitureModel:GetPivot()
@@ -1260,7 +1428,8 @@ local function rotateFurniture(player, furnitureModel)
 		return
 	end
 
-	local overlapsPlayer, blockingPlayer = modelWouldOverlapCharacter(player, furnitureModel, targetCFrame)
+	local overlapsPlayer, blockingPlayer =
+		modelWouldOverlapCharacter(player, furnitureModel, targetCFrame, occupyingCharacter)
 
 	if overlapsPlayer then
 		warn("Furniture rotate blocked: would overlap player", blockingPlayer and blockingPlayer.Name)
@@ -1290,24 +1459,22 @@ local function pickUpFurniture(player, furnitureModel)
 		return
 	end
 
-	local occupied, occupyingHumanoid = isFurnitureOccupied(furnitureModel)
-
-	if occupied then
-		sendPickUpResult(
-			player,
-			false,
-			"Pick Up denied: furniture is occupied by "
-				.. getOccupantNameFromHumanoid(occupyingHumanoid)
-				.. "."
-		)
-		return
-	end
+	local occupied, occupyingHumanoid, occupiedSeatPart = isFurnitureOccupied(furnitureModel)
 
 	local templateId, resolvedThroughFallback = resolvePickupTemplateId(furnitureModel)
 
 	if not templateId then
 		sendPickUpResult(player, false, "This furniture cannot be picked up.")
 		return
+	end
+
+	if occupied and occupyingHumanoid then
+		local _, occupantRootPart = getCharacterRootPartFromHumanoid(occupyingHumanoid)
+
+		if not occupantRootPart then
+			sendPickUpResult(player, false, "Could not safely stand the seated player.", templateId)
+			return
+		end
 	end
 
 	local isTradable = isPickupTradable(furnitureModel, resolvedThroughFallback)
@@ -1325,6 +1492,10 @@ local function pickUpFurniture(player, furnitureModel)
 			isTradable
 		)
 		return
+	end
+
+	if occupied and occupyingHumanoid then
+		standOccupantFromFurniture(player, furnitureModel, occupyingHumanoid, occupiedSeatPart)
 	end
 
 	furnitureModel:Destroy()
