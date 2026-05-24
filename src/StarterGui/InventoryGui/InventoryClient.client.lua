@@ -22,6 +22,7 @@ end
 
 local requestInFlight = false
 local latestInventory = {}
+local latestInventoryDetails = {}
 
 local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -226,11 +227,17 @@ local function createEmptyState()
 	emptyLabel.Parent = listFrame
 end
 
-local function createInventoryRow(templateId, count, layoutOrder)
+local function createInventoryRow(templateId, count, details, layoutOrder)
+	local untradableCount = 0
+
+	if typeof(details) == "table" and typeof(details.Untradable) == "number" then
+		untradableCount = details.Untradable
+	end
+
 	local row = Instance.new("TextButton")
 	row.Name = tostring(templateId)
 	row.LayoutOrder = layoutOrder
-	row.Size = UDim2.new(1, -4, 0, 48)
+	row.Size = UDim2.new(1, -4, 0, untradableCount > 0 and 64 or 48)
 	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
 	row.BorderSizePixel = 0
 	row.Text = ""
@@ -243,7 +250,7 @@ local function createInventoryRow(templateId, count, layoutOrder)
 	local itemLabel = Instance.new("TextLabel")
 	itemLabel.Name = "ItemLabel"
 	itemLabel.Position = UDim2.fromOffset(12, 0)
-	itemLabel.Size = UDim2.new(1, -24, 1, 0)
+	itemLabel.Size = UDim2.new(1, -24, 0, untradableCount > 0 and 36 or 48)
 	itemLabel.BackgroundTransparency = 1
 	itemLabel.Text = tostring(templateId) .. " x " .. tostring(count)
 	itemLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
@@ -251,6 +258,20 @@ local function createInventoryRow(templateId, count, layoutOrder)
 	itemLabel.TextXAlignment = Enum.TextXAlignment.Left
 	itemLabel.Font = Enum.Font.GothamBold
 	itemLabel.Parent = row
+
+	if untradableCount > 0 then
+		local noteLabel = Instance.new("TextLabel")
+		noteLabel.Name = "UntradableLabel"
+		noteLabel.Position = UDim2.fromOffset(12, 34)
+		noteLabel.Size = UDim2.new(1, -24, 0, 22)
+		noteLabel.BackgroundTransparency = 1
+		noteLabel.Text = "Untradable: " .. tostring(untradableCount)
+		noteLabel.TextColor3 = Color3.fromRGB(105, 105, 105)
+		noteLabel.TextScaled = true
+		noteLabel.TextXAlignment = Enum.TextXAlignment.Left
+		noteLabel.Font = Enum.Font.Gotham
+		noteLabel.Parent = row
+	end
 
 	row.MouseButton1Click:Connect(function()
 		if count <= 0 then
@@ -280,8 +301,9 @@ local function createInventoryRow(templateId, count, layoutOrder)
 	end)
 end
 
-local function renderInventory(inventory)
+local function renderInventory(inventory, inventoryDetails)
 	latestInventory = inventory or {}
+	latestInventoryDetails = inventoryDetails or {}
 	clearRows()
 
 	local entries = {}
@@ -292,6 +314,7 @@ local function renderInventory(inventory)
 				table.insert(entries, {
 					TemplateId = templateId,
 					Count = count,
+					Details = latestInventoryDetails[templateId],
 				})
 			end
 		end
@@ -305,7 +328,7 @@ local function renderInventory(inventory)
 		createEmptyState()
 	else
 		for index, entry in ipairs(entries) do
-			createInventoryRow(entry.TemplateId, entry.Count, index)
+			createInventoryRow(entry.TemplateId, entry.Count, entry.Details, index)
 		end
 	end
 
@@ -381,7 +404,7 @@ inventoryResult.OnClientEvent:Connect(function(response)
 	local message = tostring(response.Message or "")
 
 	if success and typeof(response.Inventory) == "table" then
-		renderInventory(response.Inventory)
+		renderInventory(response.Inventory, response.InventoryDetails)
 		setStatus(message ~= "" and message or "Inventory loaded.", true)
 	else
 		setStatus(message ~= "" and message or "Could not load inventory.", false)

@@ -29,6 +29,7 @@ local function createDefaultProfile()
 
 		RoomState = nil,
 		Inventory = {},
+		InventoryUntradable = {},
 
 		UpdatedAt = os.time(),
 	}
@@ -62,7 +63,15 @@ local function isPositiveInteger(value)
 		and value == math.floor(value)
 end
 
-local function normalizeInventory(inventory)
+local function isNonNegativeInteger(value)
+	return typeof(value) == "number"
+		and value == value
+		and value >= 0
+		and value < math.huge
+		and value == math.floor(value)
+end
+
+local function normalizeInventoryCounts(inventory)
 	local normalized = {}
 
 	if typeof(inventory) ~= "table" then
@@ -70,7 +79,7 @@ local function normalizeInventory(inventory)
 	end
 
 	for templateId, count in pairs(inventory) do
-		if isValidTemplateId(templateId) and isPositiveInteger(count) then
+		if isValidTemplateId(templateId) and isNonNegativeInteger(count) and count > 0 then
 			normalized[templateId] = count
 		end
 	end
@@ -79,13 +88,36 @@ local function normalizeInventory(inventory)
 end
 
 local function ensureInventory(profile)
-	if typeof(profile.Inventory) ~= "table" then
-		profile.Inventory = {}
-		return profile.Inventory
+	local inventory = normalizeInventoryCounts(profile.Inventory)
+	local untradable = normalizeInventoryCounts(profile.InventoryUntradable)
+
+	for templateId, untradableCount in pairs(untradable) do
+		local totalCount = inventory[templateId] or 0
+
+		if totalCount <= 0 then
+			untradable[templateId] = nil
+		elseif untradableCount > totalCount then
+			untradable[templateId] = totalCount
+		end
 	end
 
-	profile.Inventory = normalizeInventory(profile.Inventory)
-	return profile.Inventory
+	profile.Inventory = inventory
+	profile.InventoryUntradable = untradable
+
+	return profile.Inventory, profile.InventoryUntradable
+end
+
+local function getInventoryCountDetails(profile, templateId)
+	local inventory, untradable = ensureInventory(profile)
+	local total = inventory[templateId] or 0
+	local untradableCount = math.min(untradable[templateId] or 0, total)
+	local tradableCount = total - untradableCount
+
+	return {
+		Total = total,
+		Tradable = tradableCount,
+		Untradable = untradableCount,
+	}
 end
 
 local function fillDefaults(profile)
@@ -228,6 +260,7 @@ local function serializeRoom(roomModel)
 				-- TemplateId is needed for catalog-spawned furniture.
 				-- Starter layout furniture can leave this nil.
 				TemplateId = furnitureModel:GetAttribute("TemplateId"),
+				Tradable = furnitureModel:GetAttribute("Tradable"),
 
 				RelativeCFrame = cframeToArray(relativeCFrame),
 			})
@@ -360,6 +393,10 @@ function RoomPersistence.ApplyRoomState(roomModel, roomState)
 			end
 
 			if furnitureModel then
+				if typeof(savedItem.Tradable) == "boolean" then
+					furnitureModel:SetAttribute("Tradable", savedItem.Tradable)
+				end
+
 				furnitureModel:PivotTo(roomAnchor.CFrame * relativeCFrame)
 			end
 		end
@@ -405,7 +442,24 @@ function RoomPersistence.GetInventorySnapshot(player)
 	return deepCopy(ensureInventory(profile))
 end
 
-function RoomPersistence.AddInventoryItem(player, templateId, amount)
+function RoomPersistence.GetInventoryDetailsSnapshot(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return {}
+	end
+
+	local inventory = ensureInventory(profile)
+	local snapshot = {}
+
+	for templateId in pairs(inventory) do
+		snapshot[templateId] = getInventoryCountDetails(profile, templateId)
+	end
+
+	return snapshot
+end
+
+function RoomPersistence.AddInventoryItem(player, templateId, amount, options)
 	if not isValidTemplateId(templateId) then
 		return false, "Invalid TemplateId.", nil
 	end
@@ -420,19 +474,25 @@ function RoomPersistence.AddInventoryItem(player, templateId, amount)
 		return false, "Profile is not loaded.", nil
 	end
 
-	local inventory = ensureInventory(profile)
+	local inventory, untradable = ensureInventory(profile)
 	local currentCount = inventory[templateId] or 0
 	local newCount = currentCount + amount
 
 	inventory[templateId] = newCount
+
+	if typeof(options) == "table" and options.Tradable == false then
+		untradable[templateId] = (untradable[templateId] or 0) + amount
+	end
+
+	local details = getInventoryCountDetails(profile, templateId)
 	profile.UpdatedAt = os.time()
 
 	RoomPersistence.QueueSave(player)
 
-	return true, "Inventory item added.", newCount
+	return true, "Inventory item added.", newCount, details
 end
 
-function RoomPersistence.RemoveInventoryItem(player, templateId, amount)
+function RoomPersistence.RemoveInventoryItem(player, templateId, amount, options)
 	if not isValidTemplateId(templateId) then
 		return false, "Invalid TemplateId.", nil
 	end
@@ -447,14 +507,29 @@ function RoomPersistence.RemoveInventoryItem(player, templateId, amount)
 		return false, "Profile is not loaded.", nil
 	end
 
-	local inventory = ensureInventory(profile)
+	local inventory, untradable = ensureInventory(profile)
 	local currentCount = inventory[templateId] or 0
 
 	if currentCount < amount then
-		return false, "Not enough inventory.", currentCount
+		return false, "Not enough inventory.", currentCount, getInventoryCountDetails(profile, templateId)
+	end
+
+	local currentUntradable = untradable[templateId] or 0
+	local consumedUntradable = 0
+	local consumedTradable = 0
+
+	if typeof(options) == "table" and options.ConsumeTradableFirst == true then
+		local currentTradable = currentCount - currentUntradable
+
+		consumedTradable = math.min(amount, currentTradable)
+		consumedUntradable = amount - consumedTradable
+	else
+		consumedUntradable = math.min(amount, currentUntradable)
+		consumedTradable = amount - consumedUntradable
 	end
 
 	local newCount = currentCount - amount
+	local newUntradable = currentUntradable - consumedUntradable
 
 	if newCount > 0 then
 		inventory[templateId] = newCount
@@ -462,11 +537,22 @@ function RoomPersistence.RemoveInventoryItem(player, templateId, amount)
 		inventory[templateId] = nil
 	end
 
+	if newUntradable > 0 and newCount > 0 then
+		untradable[templateId] = math.min(newUntradable, newCount)
+	else
+		untradable[templateId] = nil
+	end
+
+	local details = getInventoryCountDetails(profile, templateId)
+	details.ConsumedTradable = consumedTradable > 0
+	details.ConsumedTradableCount = consumedTradable
+	details.ConsumedUntradableCount = consumedUntradable
+
 	profile.UpdatedAt = os.time()
 
 	RoomPersistence.QueueSave(player)
 
-	return true, "Inventory item removed.", newCount
+	return true, "Inventory item removed.", newCount, details
 end
 
 function RoomPersistence.QueueSave(player)

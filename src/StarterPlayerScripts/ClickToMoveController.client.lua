@@ -131,15 +131,30 @@ local function getFurnitureTemplateId(furnitureModel)
 
 	local templateId = furnitureModel:GetAttribute("TemplateId")
 
-	if typeof(templateId) ~= "string" then
-		return nil
+	if typeof(templateId) == "string" and templateId ~= "" and templateId:match("%S") then
+		return templateId
 	end
 
-	if templateId == "" or not templateId:match("%S") then
-		return nil
+	local pickupTemplateId = furnitureModel:GetAttribute("PickupTemplateId")
+
+	if typeof(pickupTemplateId) == "string"
+		and pickupTemplateId ~= ""
+		and pickupTemplateId:match("%S") then
+
+		return pickupTemplateId
 	end
 
-	return templateId
+	local persistentId = furnitureModel:GetAttribute("PersistentId")
+
+	if typeof(persistentId) == "string" and persistentId ~= "" and persistentId:match("%S") then
+		return persistentId
+	end
+
+	if furnitureModel.Name ~= "" then
+		return furnitureModel.Name
+	end
+
+	return nil
 end
 
 local function actionRequiresStanding(actionName)

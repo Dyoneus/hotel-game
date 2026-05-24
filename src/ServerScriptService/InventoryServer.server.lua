@@ -39,7 +39,7 @@ local inventoryResult = getOrCreateRemoteEvent("InventoryResult")
 local REQUEST_COOLDOWN_SECONDS = 0.5
 local lastRequestAtByUserId = {}
 
-local function sendResult(player, kind, success, message, inventory)
+local function sendResult(player, kind, success, message, inventory, inventoryDetails)
 	if not player or player.Parent ~= Players then
 		return
 	end
@@ -48,6 +48,7 @@ local function sendResult(player, kind, success, message, inventory)
 		Kind = tostring(kind or "Inventory"),
 		Success = success == true,
 		Inventory = inventory or {},
+		InventoryDetails = inventoryDetails or {},
 		Message = tostring(message or ""),
 	})
 end
@@ -72,8 +73,9 @@ inventoryRequest.OnServerEvent:Connect(function(player, actionName)
 
 	if actionName == "GetInventory" then
 		local snapshot = RoomPersistence.GetInventorySnapshot(player)
+		local detailsSnapshot = RoomPersistence.GetInventoryDetailsSnapshot(player)
 
-		sendResult(player, "Inventory", true, "Inventory loaded.", snapshot)
+		sendResult(player, "Inventory", true, "Inventory loaded.", snapshot, detailsSnapshot)
 		return
 	end
 

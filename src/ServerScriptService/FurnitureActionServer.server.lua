@@ -100,7 +100,7 @@ local function canEditRoom(player)
 		and isRoomOwner(player)
 end
 
-local function sendPickUpResult(player, success, message, templateId, newCount)
+local function sendPickUpResult(player, success, message, templateId, newCount, tradable)
 	if not player or player.Parent ~= Players then
 		return
 	end
@@ -111,7 +111,72 @@ local function sendPickUpResult(player, success, message, templateId, newCount)
 		Message = tostring(message or ""),
 		TemplateId = templateId,
 		NewCount = newCount,
+		Tradable = tradable == true,
 	})
+end
+
+local function isValidTemplateId(templateId)
+	return typeof(templateId) == "string"
+		and templateId ~= ""
+		and templateId:match("%S") ~= nil
+end
+
+local function templateExists(templateId)
+	if not isValidTemplateId(templateId) then
+		return false
+	end
+
+	local furnitureTemplates = ReplicatedStorage:FindFirstChild("FurnitureTemplates")
+
+	if not furnitureTemplates then
+		return false
+	end
+
+	local template = furnitureTemplates:FindFirstChild(templateId)
+
+	return template and template:IsA("Model")
+end
+
+local function resolvePickupTemplateId(furnitureModel)
+	local templateId = furnitureModel:GetAttribute("TemplateId")
+
+	if isValidTemplateId(templateId) then
+		return templateId, false
+	end
+
+	local pickupTemplateId = furnitureModel:GetAttribute("PickupTemplateId")
+
+	if isValidTemplateId(pickupTemplateId) then
+		return pickupTemplateId, true
+	end
+
+	local persistentId = furnitureModel:GetAttribute("PersistentId")
+
+	if templateExists(persistentId) then
+		return persistentId, true
+	end
+
+	if templateExists(furnitureModel.Name) then
+		return furnitureModel.Name, true
+	end
+
+	return nil, false
+end
+
+local function isPickupTradable(furnitureModel, resolvedThroughFallback)
+	if furnitureModel:GetAttribute("Tradable") == false then
+		return false
+	end
+
+	if furnitureModel:GetAttribute("IsTradable") == false then
+		return false
+	end
+
+	if resolvedThroughFallback then
+		return false
+	end
+
+	return true
 end
 
 local function getCurrentFurnitureFolder(player)
@@ -1237,17 +1302,27 @@ local function pickUpFurniture(player, furnitureModel)
 		return
 	end
 
-	local templateId = furnitureModel:GetAttribute("TemplateId")
+	local templateId, resolvedThroughFallback = resolvePickupTemplateId(furnitureModel)
 
-	if typeof(templateId) ~= "string" or templateId == "" or not templateId:match("%S") then
-		sendPickUpResult(player, false, "Only catalog furniture can be picked up.")
+	if not templateId then
+		sendPickUpResult(player, false, "This furniture cannot be picked up.")
 		return
 	end
 
-	local added, message, newCount = RoomPersistence.AddInventoryItem(player, templateId, 1)
+	local isTradable = isPickupTradable(furnitureModel, resolvedThroughFallback)
+	local added, message, newCount = RoomPersistence.AddInventoryItem(player, templateId, 1, {
+		Tradable = isTradable,
+	})
 
 	if not added then
-		sendPickUpResult(player, false, message or "Could not add item to inventory.", templateId)
+		sendPickUpResult(
+			player,
+			false,
+			message or "Could not add item to inventory.",
+			templateId,
+			nil,
+			isTradable
+		)
 		return
 	end
 
@@ -1277,7 +1352,8 @@ local function pickUpFurniture(player, furnitureModel)
 		true,
 		resultMessage,
 		templateId,
-		newCount
+		newCount,
+		isTradable
 	)
 end
 

@@ -653,6 +653,7 @@ local function handlePlaceItem(player, payload, options)
 	furnitureClone.Name = template.Name
 	furnitureClone:SetAttribute("TemplateId", item.TemplateName)
 	furnitureClone:SetAttribute("PersistentId", createPersistentId(player, item.TemplateName))
+	furnitureClone:SetAttribute("Tradable", true)
 
 	local placementCFrame = getRequestedPlacementCFrame(
 		roomModel,
@@ -690,10 +691,12 @@ local function handlePlaceItem(player, payload, options)
 	end
 
 	local remainingCount = nil
+	local placedTradable = true
 
 	if consumeInventory then
 		local templateId = item.TemplateName or item.Id
-		local removed, _, newCount = RoomPersistence.RemoveInventoryItem(player, templateId, 1)
+		local removed, _, newCount, inventoryDetails =
+			RoomPersistence.RemoveInventoryItem(player, templateId, 1)
 
 		if not removed then
 			furnitureClone:Destroy()
@@ -713,7 +716,14 @@ local function handlePlaceItem(player, payload, options)
 		end
 
 		remainingCount = newCount
+		placedTradable = not (
+			typeof(inventoryDetails) == "table"
+			and typeof(inventoryDetails.ConsumedUntradableCount) == "number"
+			and inventoryDetails.ConsumedUntradableCount > 0
+		)
 	end
+
+	furnitureClone:SetAttribute("Tradable", placedTradable)
 
 	furnitureClone.Parent = furnitureFolder
 
