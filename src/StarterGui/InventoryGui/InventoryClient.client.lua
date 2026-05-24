@@ -11,6 +11,23 @@ local inventoryResult = remoteEvents:WaitForChild("InventoryResult")
 local setRoomModeRequest = remoteEvents:WaitForChild("SetRoomModeRequest")
 local roomModeResult = remoteEvents:WaitForChild("RoomModeResult")
 
+local furnitureCatalogConfig = nil
+local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+
+if sharedFolder then
+	local configModule = sharedFolder:FindFirstChild("FurnitureCatalogConfig")
+
+	if configModule and configModule:IsA("ModuleScript") then
+		local ok, result = pcall(require, configModule)
+
+		if ok and typeof(result) == "table" then
+			furnitureCatalogConfig = result
+		else
+			warn("Inventory category config failed to load.", result)
+		end
+	end
+end
+
 local gui = script.Parent
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
@@ -30,12 +47,19 @@ local requestSerial = 0
 local hasLoadedInventory = false
 local latestInventory = {}
 local latestInventoryDetails = {}
-local editModeRequestPending = false
+local inventoryRequestedEditMode = false
+local inventoryEnteredEditMode = false
+local inventoryExitEditWhenPlacementEnds = false
+local selectedInventoryCategory = "All"
+local dropdownOpen = false
+local currentInventoryCategories = { "All" }
 
 local LOCAL_REQUEST_COOLDOWN_SECONDS = 0.6
 local REQUEST_TIMEOUT_SECONDS = 6
 local EDIT_MODE_FAILURE_MESSAGE = "Enter your own room to place furniture."
 local EDIT_MODE_REQUIRED_MESSAGE = "Enter Edit Mode to place furniture."
+local INVENTORY_CATEGORY_ALL = "All"
+local INVENTORY_CATEGORY_OTHER = "Other"
 
 local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -93,6 +117,7 @@ local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
 local MENU_NAME = "Inventory"
 local anyMajorMenuOpen = false
 local openMajorMenuName = nil
+local renderInventory = nil
 
 local openButton = Instance.new("TextButton")
 openButton.Name = "OpenInventoryButton"
@@ -103,7 +128,7 @@ openButton.BackgroundColor3 = Color3.fromRGB(80, 120, 90)
 openButton.BorderSizePixel = 0
 openButton.Text = "Inventory"
 openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-openButton.TextScaled = true
+openButton.TextSize = 16
 openButton.Font = Enum.Font.GothamBold
 openButton.Visible = false
 openButton.Parent = gui
@@ -131,7 +156,7 @@ titleLabel.Size = UDim2.new(1, -70, 0, 36)
 titleLabel.BackgroundTransparency = 1
 titleLabel.Text = "Inventory"
 titleLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-titleLabel.TextScaled = true
+titleLabel.TextSize = 24
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.Parent = panel
@@ -145,7 +170,7 @@ closeButton.BackgroundColor3 = Color3.fromRGB(160, 70, 70)
 closeButton.BorderSizePixel = 0
 closeButton.Text = "X"
 closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeButton.TextScaled = true
+closeButton.TextSize = 18
 closeButton.Font = Enum.Font.GothamBold
 closeButton.Parent = panel
 
@@ -154,19 +179,56 @@ createCorner(closeButton, 8)
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Name = "StatusLabel"
 statusLabel.Position = UDim2.fromOffset(18, 56)
-statusLabel.Size = UDim2.new(1, -36, 0, 34)
+statusLabel.Size = UDim2.new(1, -36, 0, 28)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = ""
 statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
 statusLabel.TextWrapped = true
-statusLabel.TextScaled = true
+statusLabel.TextSize = 13
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.Parent = panel
 
+local categoryButton = Instance.new("TextButton")
+categoryButton.Name = "CategoryDropdownButton"
+categoryButton.Position = UDim2.fromOffset(18, 92)
+categoryButton.Size = UDim2.new(1, -36, 0, 32)
+categoryButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+categoryButton.BorderSizePixel = 0
+categoryButton.Text = "Category: All"
+categoryButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+categoryButton.TextSize = 14
+categoryButton.TextXAlignment = Enum.TextXAlignment.Left
+categoryButton.Font = Enum.Font.GothamBold
+categoryButton.ZIndex = 20
+categoryButton.Parent = panel
+
+createCorner(categoryButton, 8)
+createStroke(categoryButton, Color3.fromRGB(210, 215, 220), 1, 0)
+
+local categoryDropdown = Instance.new("ScrollingFrame")
+categoryDropdown.Name = "CategoryDropdownList"
+categoryDropdown.Position = UDim2.fromOffset(18, 128)
+categoryDropdown.Size = UDim2.new(1, -36, 0, 0)
+categoryDropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+categoryDropdown.BorderSizePixel = 0
+categoryDropdown.CanvasSize = UDim2.fromOffset(0, 0)
+categoryDropdown.ScrollBarThickness = 4
+categoryDropdown.Visible = false
+categoryDropdown.ZIndex = 30
+categoryDropdown.Parent = panel
+
+createCorner(categoryDropdown, 8)
+createStroke(categoryDropdown, Color3.fromRGB(210, 215, 220), 1, 0)
+
+local categoryDropdownLayout = Instance.new("UIListLayout")
+categoryDropdownLayout.SortOrder = Enum.SortOrder.LayoutOrder
+categoryDropdownLayout.Padding = UDim.new(0, 2)
+categoryDropdownLayout.Parent = categoryDropdown
+
 local listFrame = Instance.new("ScrollingFrame")
 listFrame.Name = "InventoryList"
-listFrame.Position = UDim2.fromOffset(18, 104)
-listFrame.Size = UDim2.new(1, -36, 1, -124)
+listFrame.Position = UDim2.fromOffset(18, 138)
+listFrame.Size = UDim2.new(1, -36, 1, -158)
 listFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 listFrame.BorderSizePixel = 0
 listFrame.ScrollBarThickness = 6
@@ -228,6 +290,166 @@ local function setStatus(text, success)
 	end
 end
 
+local function getCatalogItem(templateId)
+	if typeof(templateId) ~= "string" or not furnitureCatalogConfig then
+		return nil
+	end
+
+	if typeof(furnitureCatalogConfig.GetItem) ~= "function" then
+		return nil
+	end
+
+	local ok, item = pcall(furnitureCatalogConfig.GetItem, templateId)
+
+	if ok and typeof(item) == "table" then
+		return item
+	end
+
+	return nil
+end
+
+local function getInventoryCategory(templateId)
+	local item = getCatalogItem(templateId)
+
+	if item and typeof(item.Category) == "string" and item.Category ~= "" then
+		return item.Category
+	end
+
+	return INVENTORY_CATEGORY_OTHER
+end
+
+local function addCategory(categories, seenCategories, categoryName)
+	if typeof(categoryName) ~= "string" or categoryName == "" then
+		return
+	end
+
+	if seenCategories[categoryName] then
+		return
+	end
+
+	seenCategories[categoryName] = true
+	table.insert(categories, categoryName)
+end
+
+local function buildInventoryCategories(entries)
+	local categories = { INVENTORY_CATEGORY_ALL }
+	local seenCategories = {
+		[INVENTORY_CATEGORY_ALL] = true,
+	}
+
+	if furnitureCatalogConfig and typeof(furnitureCatalogConfig.GetItemsArray) == "function" then
+		local ok, configItems = pcall(furnitureCatalogConfig.GetItemsArray)
+
+		if ok and typeof(configItems) == "table" then
+			for _, item in ipairs(configItems) do
+				if typeof(item) == "table" then
+					addCategory(categories, seenCategories, item.Category)
+				end
+			end
+		end
+	end
+
+	local hasOther = false
+
+	for _, entry in ipairs(entries) do
+		if entry.Category == INVENTORY_CATEGORY_OTHER then
+			hasOther = true
+		else
+			addCategory(categories, seenCategories, entry.Category)
+		end
+	end
+
+	if hasOther then
+		addCategory(categories, seenCategories, INVENTORY_CATEGORY_OTHER)
+	end
+
+	return categories
+end
+
+local function categoryExists(categoryName, categories)
+	for _, existingCategory in ipairs(categories) do
+		if existingCategory == categoryName then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function updateCategoryButton()
+	categoryButton.Text = "  Category: " .. tostring(selectedInventoryCategory) .. " v"
+end
+
+local function clearCategoryDropdown()
+	for _, child in ipairs(categoryDropdown:GetChildren()) do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+end
+
+local function setDropdownOpen(isOpen)
+	dropdownOpen = isOpen == true
+	categoryDropdown.Visible = dropdownOpen
+
+	if dropdownOpen then
+		local dropdownHeight = math.min(#currentInventoryCategories * 30 + 8, 156)
+		categoryDropdown.Size = UDim2.new(1, -36, 0, dropdownHeight)
+	else
+		categoryDropdown.Size = UDim2.new(1, -36, 0, 0)
+	end
+end
+
+local function updateCategoryDropdown(categories)
+	currentInventoryCategories = categories or { INVENTORY_CATEGORY_ALL }
+
+	if not categoryExists(selectedInventoryCategory, currentInventoryCategories) then
+		selectedInventoryCategory = INVENTORY_CATEGORY_ALL
+	end
+
+	updateCategoryButton()
+	clearCategoryDropdown()
+
+	for index, categoryName in ipairs(currentInventoryCategories) do
+		local optionButton = Instance.new("TextButton")
+		optionButton.Name = tostring(categoryName) .. "CategoryOption"
+		optionButton.LayoutOrder = index
+		optionButton.Size = UDim2.new(1, -8, 0, 28)
+		optionButton.BackgroundColor3 = categoryName == selectedInventoryCategory
+			and Color3.fromRGB(70, 150, 255)
+			or Color3.fromRGB(245, 245, 245)
+		optionButton.BorderSizePixel = 0
+		optionButton.Text = tostring(categoryName)
+		optionButton.TextColor3 = categoryName == selectedInventoryCategory
+			and Color3.fromRGB(255, 255, 255)
+			or Color3.fromRGB(45, 45, 45)
+		optionButton.TextSize = 13
+		optionButton.Font = Enum.Font.GothamBold
+		optionButton.ZIndex = 31
+		optionButton.Parent = categoryDropdown
+
+		createCorner(optionButton, 6)
+
+		optionButton.MouseButton1Click:Connect(function()
+			selectedInventoryCategory = categoryName
+			setDropdownOpen(false)
+
+			if renderInventory then
+				renderInventory(latestInventory, latestInventoryDetails)
+			end
+		end)
+	end
+
+	task.defer(function()
+		categoryDropdown.CanvasSize = UDim2.fromOffset(
+			0,
+			categoryDropdownLayout.AbsoluteContentSize.Y + 8
+		)
+	end)
+
+	setDropdownOpen(dropdownOpen)
+end
+
 local function shouldRequestEditModeForInventory()
 	local currentRoomName = player:GetAttribute("CurrentRoomName")
 
@@ -238,12 +460,46 @@ local function shouldRequestEditModeForInventory()
 end
 
 local function requestEditModeForInventory()
-	if editModeRequestPending or not shouldRequestEditModeForInventory() then
+	if player:GetAttribute("RoomMode") == "Edit" then
+		inventoryRequestedEditMode = false
 		return
 	end
 
-	editModeRequestPending = true
+	if inventoryRequestedEditMode or not shouldRequestEditModeForInventory() then
+		return
+	end
+
+	inventoryRequestedEditMode = true
+	inventoryEnteredEditMode = false
 	setRoomModeRequest:FireServer("Edit")
+end
+
+local function requestPlayModeIfInventoryEnteredEditMode()
+	if not inventoryEnteredEditMode then
+		if inventoryRequestedEditMode then
+			return
+		end
+
+		inventoryExitEditWhenPlacementEnds = false
+		return
+	end
+
+	if player:GetAttribute("RoomMode") ~= "Edit" then
+		inventoryRequestedEditMode = false
+		inventoryEnteredEditMode = false
+		inventoryExitEditWhenPlacementEnds = false
+		return
+	end
+
+	if player:GetAttribute("CatalogPlacementActive") == true then
+		inventoryExitEditWhenPlacementEnds = true
+		return
+	end
+
+	inventoryRequestedEditMode = false
+	inventoryEnteredEditMode = false
+	inventoryExitEditWhenPlacementEnds = false
+	setRoomModeRequest:FireServer("Play")
 end
 
 local function isNonNegativeCount(value)
@@ -268,14 +524,14 @@ local function clearRows()
 	end
 end
 
-local function createEmptyState()
+local function createEmptyState(message)
 	local emptyLabel = Instance.new("TextLabel")
 	emptyLabel.Name = "EmptyInventoryLabel"
 	emptyLabel.Size = UDim2.new(1, -4, 0, 52)
 	emptyLabel.BackgroundTransparency = 1
-	emptyLabel.Text = "Inventory is empty."
+	emptyLabel.Text = tostring(message or "Inventory is empty.")
 	emptyLabel.TextColor3 = Color3.fromRGB(95, 95, 95)
-	emptyLabel.TextScaled = true
+	emptyLabel.TextSize = 15
 	emptyLabel.TextWrapped = true
 	emptyLabel.Font = Enum.Font.Gotham
 	emptyLabel.Parent = listFrame
@@ -363,10 +619,9 @@ local function createInventoryRow(templateId, count, details, layoutOrder)
 	end)
 end
 
-local function renderInventory(inventory, inventoryDetails)
+renderInventory = function(inventory, inventoryDetails)
 	latestInventory = inventory or {}
 	latestInventoryDetails = inventoryDetails or {}
-	clearRows()
 
 	local entries = {}
 
@@ -377,19 +632,38 @@ local function renderInventory(inventory, inventoryDetails)
 					TemplateId = templateId,
 					Count = count,
 					Details = latestInventoryDetails[templateId],
+					Category = getInventoryCategory(templateId),
 				})
 			end
 		end
 	end
+
+	local categories = buildInventoryCategories(entries)
+	updateCategoryDropdown(categories)
+	clearRows()
 
 	table.sort(entries, function(a, b)
 		return a.TemplateId < b.TemplateId
 	end)
 
 	if #entries == 0 then
-		createEmptyState()
+		createEmptyState("Inventory is empty.")
 	else
-		for index, entry in ipairs(entries) do
+		local visibleEntries = {}
+
+		for _, entry in ipairs(entries) do
+			if selectedInventoryCategory == INVENTORY_CATEGORY_ALL
+				or entry.Category == selectedInventoryCategory then
+
+				table.insert(visibleEntries, entry)
+			end
+		end
+
+		if #visibleEntries == 0 then
+			createEmptyState("No items in this category.")
+		end
+
+		for index, entry in ipairs(visibleEntries) do
 			createInventoryRow(entry.TemplateId, entry.Count, entry.Details, index)
 		end
 	end
@@ -553,6 +827,11 @@ local function setPanelVisible(isVisible)
 	local wasVisible = panel.Visible
 
 	if isVisible then
+		if not wasVisible then
+			selectedInventoryCategory = INVENTORY_CATEGORY_ALL
+			setDropdownOpen(false)
+		end
+
 		publishMajorMenuState(true)
 		majorMenuOpened:Fire(MENU_NAME)
 	end
@@ -568,7 +847,12 @@ local function setPanelVisible(isVisible)
 		requestEditModeForInventory()
 		requestInventoryRefresh("open")
 	elseif wasVisible or openMajorMenuName == MENU_NAME then
+		setDropdownOpen(false)
 		publishMajorMenuState(false)
+
+		if wasVisible then
+			requestPlayModeIfInventoryEnteredEditMode()
+		end
 	end
 end
 
@@ -578,6 +862,10 @@ end)
 
 closeButton.MouseButton1Click:Connect(function()
 	setPanelVisible(false)
+end)
+
+categoryButton.MouseButton1Click:Connect(function()
+	setDropdownOpen(not dropdownOpen)
 end)
 
 inventoryRefreshRequested.Event:Connect(function(options)
@@ -602,15 +890,24 @@ inventoryLocalDelta.Event:Connect(function(payload)
 end)
 
 roomModeResult.OnClientEvent:Connect(function(success, message, roomMode)
-	if not editModeRequestPending then
+	if not inventoryRequestedEditMode then
 		return
 	end
-
-	editModeRequestPending = false
 
 	if success == true or roomMode == "Edit" then
+		inventoryRequestedEditMode = false
+		inventoryEnteredEditMode = true
+
+		if not panel.Visible then
+			requestPlayModeIfInventoryEnteredEditMode()
+		end
+
 		return
 	end
+
+	inventoryRequestedEditMode = false
+	inventoryEnteredEditMode = false
+	inventoryExitEditWhenPlacementEnds = false
 
 	message = tostring(message or "")
 
@@ -621,6 +918,31 @@ roomModeResult.OnClientEvent:Connect(function(success, message, roomMode)
 
 	if panel.Visible then
 		setStatus(EDIT_MODE_FAILURE_MESSAGE, false)
+	end
+end)
+
+player:GetAttributeChangedSignal("RoomMode"):Connect(function()
+	local roomMode = player:GetAttribute("RoomMode")
+
+	if inventoryRequestedEditMode and roomMode == "Edit" then
+		inventoryRequestedEditMode = false
+		inventoryEnteredEditMode = true
+
+		if not panel.Visible then
+			requestPlayModeIfInventoryEnteredEditMode()
+		end
+	elseif inventoryEnteredEditMode and roomMode ~= "Edit" then
+		inventoryRequestedEditMode = false
+		inventoryEnteredEditMode = false
+		inventoryExitEditWhenPlacementEnds = false
+	end
+end)
+
+player:GetAttributeChangedSignal("CatalogPlacementActive"):Connect(function()
+	if inventoryExitEditWhenPlacementEnds
+		and player:GetAttribute("CatalogPlacementActive") ~= true then
+
+		requestPlayModeIfInventoryEnteredEditMode()
 	end
 end)
 
