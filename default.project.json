@@ -32,6 +32,9 @@
       "PlayerRoomServer": {
         "$path": "src/ServerScriptService/PlayerRoomServer.server.lua"
       },
+      "PlayerCollisionServer": {
+        "$path": "src/ServerScriptService/PlayerCollisionServer.server.lua"
+      },
       "RoomModeServer": {
         "$path": "src/ServerScriptService/RoomModeServer.server.lua"
       },
