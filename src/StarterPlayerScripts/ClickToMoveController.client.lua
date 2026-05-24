@@ -11,6 +11,7 @@ local mouse = player:GetMouse()
 local activeRooms = workspace:WaitForChild("ActiveRooms")
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local furnitureActionRequest = remoteEvents:WaitForChild("FurnitureActionRequest")
+local furnitureActionResult = remoteEvents:WaitForChild("FurnitureActionResult")
 local furnitureMenuRequest = remoteEvents:WaitForChild("FurnitureMenuRequest")
 
 local playerGui = player:WaitForChild("PlayerGui")
@@ -23,6 +24,43 @@ local sitButton = menuFrame:WaitForChild("SitButton")
 local closeButton = menuFrame:WaitForChild("CloseButton")
 local moveButton = menuFrame:WaitForChild("MoveButton")
 local rotateButton = menuFrame:WaitForChild("RotateButton")
+local pickUpButton = menuFrame:FindFirstChild("PickUpButton")
+
+if not pickUpButton then
+	local verticalStep = rotateButton.Size.Y.Offset
+
+	if verticalStep <= 0 then
+		verticalStep = 42
+	end
+
+	pickUpButton = rotateButton:Clone()
+	pickUpButton.Name = "PickUpButton"
+	pickUpButton.Text = "Pick Up"
+	pickUpButton.Position = UDim2.new(
+		rotateButton.Position.X.Scale,
+		rotateButton.Position.X.Offset,
+		rotateButton.Position.Y.Scale,
+		rotateButton.Position.Y.Offset + verticalStep + 6
+	)
+	pickUpButton.Parent = menuFrame
+
+	if menuFrame.Size.Y.Scale == 0 and pickUpButton.Position.Y.Scale == 0 then
+		local requiredHeight = pickUpButton.Position.Y.Offset
+			+ pickUpButton.Size.Y.Offset
+			+ 8
+
+		if requiredHeight > menuFrame.Size.Y.Offset then
+			menuFrame.Size = UDim2.new(
+				menuFrame.Size.X.Scale,
+				menuFrame.Size.X.Offset,
+				0,
+				requiredHeight
+			)
+		end
+	end
+end
+
+pickUpButton.Visible = false
 
 local function getCurrentRoomModel()
 	local roomName = player:GetAttribute("CurrentRoomName")
@@ -84,6 +122,24 @@ local function getDefaultFurnitureAction(furnitureModel)
 	end
 
 	return defaultAction
+end
+
+local function getFurnitureTemplateId(furnitureModel)
+	if typeof(furnitureModel) ~= "Instance" then
+		return nil
+	end
+
+	local templateId = furnitureModel:GetAttribute("TemplateId")
+
+	if typeof(templateId) ~= "string" then
+		return nil
+	end
+
+	if templateId == "" or not templateId:match("%S") then
+		return nil
+	end
+
+	return templateId
 end
 
 local function actionRequiresStanding(actionName)
@@ -1100,6 +1156,9 @@ local function openFurnitureMenu(furnitureModel)
 	sitButton.Visible = false
 	moveButton.Visible = editing and not occupied
 	rotateButton.Visible = editing and not occupied
+	pickUpButton.Visible = editing
+		and not occupied
+		and getFurnitureTemplateId(furnitureModel) ~= nil
 
 	if editing and occupied then
 		titleLabel.Text = furnitureModel.Name .. " (Occupied)"
@@ -1425,4 +1484,43 @@ rotateButton.MouseButton1Click:Connect(function()
 	end
 
 	furnitureActionRequest:FireServer("Rotate", selectedFurniture)
+end)
+
+pickUpButton.MouseButton1Click:Connect(function()
+	if not selectedFurniture then
+		return
+	end
+
+	if isFurnitureOccupiedLocally(selectedFurniture) then
+		warn("Cannot pick up occupied furniture.")
+		closeFurnitureMenu()
+		return
+	end
+
+	if not getFurnitureTemplateId(selectedFurniture) then
+		warn("Cannot pick up starter furniture.")
+		closeFurnitureMenu()
+		return
+	end
+
+	furnitureActionRequest:FireServer("PickUp", selectedFurniture)
+	closeFurnitureMenu()
+end)
+
+furnitureActionResult.OnClientEvent:Connect(function(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	if response.Kind ~= "PickUp" then
+		return
+	end
+
+	local message = tostring(response.Message or "")
+
+	if response.Success == true then
+		print(message)
+	else
+		warn(message)
+	end
 end)

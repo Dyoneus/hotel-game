@@ -8,6 +8,26 @@ local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistenc
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local furnitureActionRequest = remoteEvents:WaitForChild("FurnitureActionRequest")
 
+local function getOrCreateRemoteEvent(name)
+	local existing = remoteEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("RemoteEvent") then
+			error(name .. " exists but is not a RemoteEvent.")
+		end
+
+		return existing
+	end
+
+	local remote = Instance.new("RemoteEvent")
+	remote.Name = name
+	remote.Parent = remoteEvents
+
+	return remote
+end
+
+local furnitureActionResult = getOrCreateRemoteEvent("FurnitureActionResult")
+
 local activeRooms = workspace:WaitForChild("ActiveRooms")
 
 local GRID_SIZE = 2
@@ -78,6 +98,20 @@ end
 local function canEditRoom(player)
 	return player:GetAttribute("RoomMode") == "Edit"
 		and isRoomOwner(player)
+end
+
+local function sendPickUpResult(player, success, message, templateId, newCount)
+	if not player or player.Parent ~= Players then
+		return
+	end
+
+	furnitureActionResult:FireClient(player, {
+		Kind = "PickUp",
+		Success = success == true,
+		Message = tostring(message or ""),
+		TemplateId = templateId,
+		NewCount = newCount,
+	})
 end
 
 local function getCurrentFurnitureFolder(player)
@@ -1172,6 +1206,64 @@ local function rotateFurniture(player, furnitureModel)
 	RoomPersistence.CaptureRoomState(player, getCurrentRoomModel(player))
 end
 
+local function pickUpFurniture(player, furnitureModel)
+	if not canEditRoom(player) then
+		sendPickUpResult(player, false, "Pick Up denied: enter Edit Mode in your own room first.")
+		return
+	end
+
+	local roomModel = getCurrentRoomModel(player)
+
+	if not roomModel then
+		sendPickUpResult(player, false, "Pick Up denied: no current room.")
+		return
+	end
+
+	if not isValidFurnitureForPlayer(player, furnitureModel) then
+		sendPickUpResult(player, false, "Pick Up denied: invalid furniture.")
+		return
+	end
+
+	local occupied, occupyingHumanoid = isFurnitureOccupied(furnitureModel)
+
+	if occupied then
+		sendPickUpResult(
+			player,
+			false,
+			"Pick Up denied: furniture is occupied by "
+				.. getOccupantNameFromHumanoid(occupyingHumanoid)
+				.. "."
+		)
+		return
+	end
+
+	local templateId = furnitureModel:GetAttribute("TemplateId")
+
+	if typeof(templateId) ~= "string" or templateId == "" or not templateId:match("%S") then
+		sendPickUpResult(player, false, "Only catalog furniture can be picked up.")
+		return
+	end
+
+	local added, message, newCount = RoomPersistence.AddInventoryItem(player, templateId, 1)
+
+	if not added then
+		sendPickUpResult(player, false, message or "Could not add item to inventory.", templateId)
+		return
+	end
+
+	furnitureModel:Destroy()
+
+	RoomPersistence.CaptureRoomState(player, roomModel)
+
+	sendPickUpResult(
+		player,
+		true,
+		"Picked up " .. templateId .. ".",
+		templateId,
+		newCount
+	)
+end
+
 furnitureActionRequest.OnServerEvent:Connect(function(player, actionName, furnitureModel, extraData)
 	if actionName == "Sit" or actionName == "Stand" then
 		if not beginSeatAction(player) then
@@ -1200,6 +1292,9 @@ furnitureActionRequest.OnServerEvent:Connect(function(player, actionName, furnit
 
 	elseif actionName == "Rotate" then
 		rotateFurniture(player, furnitureModel)
+
+	elseif actionName == "PickUp" then
+		pickUpFurniture(player, furnitureModel)
 	end
 end)
 
