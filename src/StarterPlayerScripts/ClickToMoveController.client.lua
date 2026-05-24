@@ -1568,6 +1568,7 @@ furnitureActionResult.OnClientEvent:Connect(function(response)
 
 	if response.Success == true then
 		print(message)
+		closeFurnitureMenu()
 		inventoryRefreshRequested:Fire()
 	else
 		warn(message)

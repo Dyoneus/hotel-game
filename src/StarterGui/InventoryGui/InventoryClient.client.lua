@@ -21,8 +21,15 @@ for _, child in ipairs(gui:GetChildren()) do
 end
 
 local requestInFlight = false
+local refreshQueued = false
+local lastInventoryRequestAt = -math.huge
+local requestSerial = 0
+local hasLoadedInventory = false
 local latestInventory = {}
 local latestInventoryDetails = {}
+
+local LOCAL_REQUEST_COOLDOWN_SECONDS = 0.6
+local REQUEST_TIMEOUT_SECONDS = 6
 
 local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -301,9 +308,6 @@ local function createInventoryRow(templateId, count, details, layoutOrder)
 			return
 		end
 
-		panel.Visible = false
-		updateOpenButton()
-
 		startInventoryPlacement:Fire({
 			Id = templateId,
 			TemplateName = templateId,
@@ -352,6 +356,8 @@ local function renderInventory(inventory, inventoryDetails)
 	end)
 end
 
+local requestInventoryRefresh = nil
+
 local function setRequestInFlight(isInFlight)
 	requestInFlight = isInFlight
 	refreshButton.Active = not isInFlight
@@ -366,18 +372,53 @@ local function setRequestInFlight(isInFlight)
 	end
 end
 
-local function requestInventory()
+local function queueInventoryRefresh(reason, delaySeconds)
+	if refreshQueued then
+		return
+	end
+
+	refreshQueued = true
+
+	task.delay(delaySeconds, function()
+		refreshQueued = false
+
+		if requestInventoryRefresh then
+			requestInventoryRefresh(reason or "queued")
+		end
+	end)
+end
+
+requestInventoryRefresh = function(reason)
 	if requestInFlight then
+		queueInventoryRefresh(reason, LOCAL_REQUEST_COOLDOWN_SECONDS)
+		return
+	end
+
+	local now = os.clock()
+	local elapsed = now - lastInventoryRequestAt
+
+	if elapsed < LOCAL_REQUEST_COOLDOWN_SECONDS then
+		queueInventoryRefresh(
+			reason,
+			LOCAL_REQUEST_COOLDOWN_SECONDS - elapsed + 0.05
+		)
 		return
 	end
 
 	setRequestInFlight(true)
-	setStatus("Loading inventory.", nil)
+	lastInventoryRequestAt = now
+	requestSerial += 1
+
+	local thisRequestSerial = requestSerial
+
+	if panel.Visible and (reason == "manual" or not hasLoadedInventory) then
+		setStatus("Loading inventory.", nil)
+	end
 
 	inventoryRequest:FireServer("GetInventory")
 
-	task.delay(6, function()
-		if requestInFlight then
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if requestInFlight and requestSerial == thisRequestSerial then
 			setRequestInFlight(false)
 			setStatus("Inventory request timed out.", false)
 		end
@@ -389,7 +430,7 @@ local function setPanelVisible(isVisible)
 	updateOpenButton()
 
 	if isVisible then
-		requestInventory()
+		requestInventoryRefresh("open")
 	end
 end
 
@@ -402,11 +443,11 @@ closeButton.MouseButton1Click:Connect(function()
 end)
 
 refreshButton.MouseButton1Click:Connect(function()
-	requestInventory()
+	requestInventoryRefresh("manual")
 end)
 
 inventoryRefreshRequested.Event:Connect(function()
-	requestInventory()
+	requestInventoryRefresh("event")
 end)
 
 inventoryResult.OnClientEvent:Connect(function(response)
@@ -420,8 +461,12 @@ inventoryResult.OnClientEvent:Connect(function(response)
 	local message = tostring(response.Message or "")
 
 	if success and typeof(response.Inventory) == "table" then
+		hasLoadedInventory = true
 		renderInventory(response.Inventory, response.InventoryDetails)
 		setStatus(message ~= "" and message or "Inventory loaded.", true)
+	elseif message == "Slow down before requesting inventory." then
+		warn(message)
+		queueInventoryRefresh("serverCooldown", LOCAL_REQUEST_COOLDOWN_SECONDS)
 	else
 		setStatus(message ~= "" and message or "Could not load inventory.", false)
 	end
