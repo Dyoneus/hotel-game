@@ -563,16 +563,44 @@ local function createPersistentId(player, templateName)
 		.. HttpService:GenerateGUID(false)
 end
 
-local function sendAddToInventoryResult(player, success, message, item, templateId, newCount, inventoryDetails)
+local function getItemPrice(item)
+	local price = item and item.Price
+
+	if typeof(price) ~= "number"
+		or price ~= price
+		or price < 0
+		or price == math.huge then
+
+		return 0
+	end
+
+	return math.floor(price)
+end
+
+local function sendAddToInventoryResult(
+	player,
+	success,
+	message,
+	item,
+	templateId,
+	newCount,
+	inventoryDetails,
+	extraData
+)
 	if not player or player.Parent ~= Players then
 		return
 	end
+
+	extraData = extraData or {}
 
 	local data = {
 		ItemId = item and item.Id or nil,
 		TemplateId = templateId,
 		NewCount = newCount,
 		InventoryDetails = inventoryDetails,
+		Price = extraData.Price,
+		CurrencyKey = extraData.CurrencyKey,
+		NewCurrencyBalance = extraData.NewCurrencyBalance,
 	}
 
 	furnitureCatalogResult:FireClient(player, {
@@ -583,6 +611,9 @@ local function sendAddToInventoryResult(player, success, message, item, template
 		TemplateId = data.TemplateId,
 		NewCount = data.NewCount,
 		InventoryDetails = data.InventoryDetails,
+		Price = data.Price,
+		CurrencyKey = data.CurrencyKey,
+		NewCurrencyBalance = data.NewCurrencyBalance,
 		Data = data,
 	})
 end
@@ -625,12 +656,67 @@ local function handleAddToInventory(player, payload)
 		return
 	end
 
+	local price = getItemPrice(item)
+	local currencyKey = "Dollars"
+	local newDollarBalance = RoomPersistence.GetCurrency(player, currencyKey)
+
+	if price > 0 then
+		local removed, removeMessage, balance =
+			RoomPersistence.RemoveCurrency(player, currencyKey, price, "ShopPurchase:" .. item.Id)
+
+		newDollarBalance = balance
+
+		if not removed then
+			local purchaseMessage = "Not enough Dollars."
+
+			if removeMessage and removeMessage ~= "Not enough currency." then
+				purchaseMessage = removeMessage
+			end
+
+			sendAddToInventoryResult(
+				player,
+				false,
+				purchaseMessage,
+				item,
+				templateId,
+				nil,
+				nil,
+				{
+					Price = price,
+					CurrencyKey = currencyKey,
+					NewCurrencyBalance = newDollarBalance,
+				}
+			)
+			return
+		end
+	end
+
 	local added, message, newCount, inventoryDetails =
 		RoomPersistence.AddInventoryItem(player, templateId, 1, {
 			Tradable = true,
 		})
 
 	if not added then
+		local refundedBalance = newDollarBalance
+
+		if price > 0 then
+			local refunded, refundMessage, balance =
+				RoomPersistence.AddCurrency(player, currencyKey, price, "ShopPurchaseRefund:" .. item.Id)
+
+			refundedBalance = balance or refundedBalance
+
+			if not refunded then
+				warn(
+					"Shop purchase refund failed for",
+					player.Name,
+					item.Id,
+					refundMessage
+				)
+			end
+		end
+
+		warn("Shop purchase inventory add failed for", player.Name, item.Id, message)
+
 		sendAddToInventoryResult(
 			player,
 			false,
@@ -638,19 +724,33 @@ local function handleAddToInventory(player, payload)
 			item,
 			templateId,
 			newCount,
-			inventoryDetails
+			inventoryDetails,
+			{
+				Price = price,
+				CurrencyKey = currencyKey,
+				NewCurrencyBalance = refundedBalance,
+			}
 		)
 		return
+	end
+
+	if price <= 0 then
+		newDollarBalance = RoomPersistence.GetCurrency(player, currencyKey)
 	end
 
 	sendAddToInventoryResult(
 		player,
 		true,
-		tostring(item.DisplayName or item.Id) .. " added to Inventory.",
+		tostring(item.DisplayName or item.Id) .. " purchased.",
 		item,
 		templateId,
 		newCount,
-		inventoryDetails
+		inventoryDetails,
+		{
+			Price = price,
+			CurrencyKey = currencyKey,
+			NewCurrencyBalance = newDollarBalance,
+		}
 	)
 end
 

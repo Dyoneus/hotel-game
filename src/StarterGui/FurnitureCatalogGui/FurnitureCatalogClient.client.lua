@@ -96,6 +96,8 @@ end
 local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
 local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
 local inventoryLocalDelta = getOrCreateClientEvent("InventoryLocalDelta")
+local currencyRefreshRequested = getOrCreateClientEvent("CurrencyRefreshRequested")
+local currencyLocalDelta = getOrCreateClientEvent("CurrencyLocalDelta")
 local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
 local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
 local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
@@ -227,6 +229,34 @@ local function fireInventoryLocalDeltaFromAddToInventoryResult(response)
 	end
 
 	inventoryLocalDelta:Fire(payload)
+end
+
+local function fireCurrencyLocalDeltaFromAddToInventoryResult(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	local data = response.Data
+	local currencyKey = response.CurrencyKey
+	local balance = response.NewCurrencyBalance
+
+	if typeof(data) == "table" then
+		currencyKey = currencyKey or data.CurrencyKey
+		balance = balance or data.NewCurrencyBalance
+	end
+
+	if typeof(currencyKey) ~= "string" or currencyKey == "" then
+		return
+	end
+
+	if typeof(balance) ~= "number" then
+		return
+	end
+
+	currencyLocalDelta:Fire({
+		CurrencyKey = currencyKey,
+		Balance = balance,
+	})
 end
 
 local function getCurrentRoomModel()
@@ -1116,6 +1146,16 @@ local function clearItemRows()
 end
 
 local function createItemRow(itemData, layoutOrder)
+	local price = 0
+
+	if typeof(itemData.Price) == "number"
+		and itemData.Price == itemData.Price
+		and itemData.Price >= 0
+		and itemData.Price < math.huge then
+
+		price = math.floor(itemData.Price)
+	end
+
 	local row = Instance.new("TextButton")
 	row.Name = tostring(itemData.Id)
 	row.LayoutOrder = layoutOrder
@@ -1161,7 +1201,7 @@ local function createItemRow(itemData, layoutOrder)
 	end
 
 	if typeof(itemData.Price) == "number" then
-		table.insert(metadataParts, "Price: " .. tostring(itemData.Price) .. " coins")
+		table.insert(metadataParts, "Price: " .. tostring(price) .. " Dollars")
 	end
 
 	if itemData.Featured == true then
@@ -1196,7 +1236,7 @@ local function createItemRow(itemData, layoutOrder)
 	placeLabel.Position = UDim2.new(1, -12, 1, -8)
 	placeLabel.Size = UDim2.fromOffset(120, 20)
 	placeLabel.BackgroundTransparency = 1
-	placeLabel.Text = "Add to Inventory"
+	placeLabel.Text = price > 0 and "Buy" or "Get Item"
 	placeLabel.TextColor3 = Color3.fromRGB(70, 150, 255)
 	placeLabel.TextScaled = true
 	placeLabel.TextXAlignment = Enum.TextXAlignment.Right
@@ -1209,7 +1249,7 @@ local function createItemRow(itemData, layoutOrder)
 		end
 
 		requestInFlight = true
-		setStatus("Adding " .. tostring(itemData.DisplayName or itemData.Id) .. " to Inventory...")
+		setStatus("Buying " .. tostring(itemData.DisplayName or itemData.Id) .. "...")
 
 		furnitureCatalogRequest:FireServer("AddToInventory", {
 			ItemId = itemData.Id,
@@ -1224,7 +1264,7 @@ local function renderCatalog(items)
 	if #latestCatalogItems == 0 then
 		setStatus("No shop items found. Check ReplicatedStorage/FurnitureTemplates.")
 	else
-		setStatus("Select an item to add it to Inventory.")
+		setStatus("Select an item to buy it with Dollars.")
 	end
 
 	for index, itemData in ipairs(latestCatalogItems) do
@@ -1342,10 +1382,12 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 	if kind == "AddToInventory" then
 		requestInFlight = false
 		setStatus(message)
+		fireCurrencyLocalDeltaFromAddToInventoryResult(response)
 
 		if success then
 			fireInventoryLocalDeltaFromAddToInventoryResult(response)
 			inventoryRefreshRequested:Fire()
+			currencyRefreshRequested:Fire()
 		end
 
 		return
