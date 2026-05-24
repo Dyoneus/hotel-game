@@ -26,6 +26,9 @@
       "FurnitureClickServer": {
         "$path": "src/ServerScriptService/FurnitureClickServer.server.lua"
       },
+      "InventoryServer": {
+        "$path": "src/ServerScriptService/InventoryServer.server.lua"
+      },
       "PlayerRoomServer": {
         "$path": "src/ServerScriptService/PlayerRoomServer.server.lua"
       },
