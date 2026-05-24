@@ -26,6 +26,13 @@ local queuedRefreshForce = false
 local lastCurrencyRequestAt = -math.huge
 local requestSerial = 0
 local hasLoadedCurrencies = false
+local dailyStatusRequestInFlight = false
+local dailyStatusRefreshQueued = false
+local lastDailyStatusRequestAt = -math.huge
+local hasLoadedDailyStatus = false
+local dailyRewardStatus = nil
+local dailyClaimInFlight = false
+local dailyMessageText = ""
 
 local LOCAL_REQUEST_COOLDOWN_SECONDS = 0.6
 local REQUEST_TIMEOUT_SECONDS = 6
@@ -136,7 +143,47 @@ dollarsLabel.TextXAlignment = Enum.TextXAlignment.Center
 dollarsLabel.Font = Enum.Font.GothamBold
 dollarsLabel.Parent = container
 
+local dailyContainer = Instance.new("Frame")
+dailyContainer.Name = "DailyRewardHud"
+dailyContainer.AnchorPoint = Vector2.new(0.5, 0)
+dailyContainer.Position = UDim2.new(0.5, 0, 0, 54)
+dailyContainer.Size = UDim2.fromOffset(320, 34)
+dailyContainer.BackgroundTransparency = 1
+dailyContainer.Visible = false
+dailyContainer.Parent = gui
+
+local dailyClaimButton = Instance.new("TextButton")
+dailyClaimButton.Name = "DailyClaimButton"
+dailyClaimButton.Position = UDim2.fromOffset(0, 0)
+dailyClaimButton.Size = UDim2.fromOffset(142, 32)
+dailyClaimButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+dailyClaimButton.BorderSizePixel = 0
+dailyClaimButton.Text = "Daily..."
+dailyClaimButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+dailyClaimButton.TextSize = 13
+dailyClaimButton.Font = Enum.Font.GothamBold
+dailyClaimButton.Active = false
+dailyClaimButton.AutoButtonColor = false
+dailyClaimButton.Parent = dailyContainer
+
+createCorner(dailyClaimButton, 8)
+createStroke(dailyClaimButton, Color3.fromRGB(255, 255, 255), 1, 0.45)
+
+local dailyMessageLabel = Instance.new("TextLabel")
+dailyMessageLabel.Name = "DailyMessageLabel"
+dailyMessageLabel.Position = UDim2.fromOffset(152, 0)
+dailyMessageLabel.Size = UDim2.new(1, -152, 0, 32)
+dailyMessageLabel.BackgroundTransparency = 1
+dailyMessageLabel.Text = ""
+dailyMessageLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+dailyMessageLabel.TextSize = 13
+dailyMessageLabel.TextXAlignment = Enum.TextXAlignment.Left
+dailyMessageLabel.TextWrapped = true
+dailyMessageLabel.Font = Enum.Font.GothamMedium
+dailyMessageLabel.Parent = dailyContainer
+
 local requestCurrencyRefresh = nil
+local requestDailyRewardStatus = nil
 
 local function isNonNegativeNumber(value)
 	return typeof(value) == "number"
@@ -168,6 +215,76 @@ end
 local function renderBalances()
 	coinsLabel.Text = "Coins: " .. tostring(normalizeBalance(balances.Coins))
 	dollarsLabel.Text = "Dollars: " .. tostring(normalizeBalance(balances.Dollars))
+end
+
+local function normalizeDailyRewardStatus(status)
+	if typeof(status) ~= "table" then
+		return nil
+	end
+
+	local rewardAmount = normalizeBalance(status.RewardAmount)
+	local streak = normalizeBalance(status.Streak)
+
+	return {
+		CanClaim = status.CanClaim == true,
+		LastClaimDay = status.LastClaimDay,
+		TodayKey = status.TodayKey,
+		Streak = streak,
+		RewardAmount = rewardAmount > 0 and rewardAmount or 50,
+	}
+end
+
+local function renderDailyReward()
+	local canClaim = false
+	local rewardAmount = 50
+
+	if dailyRewardStatus then
+		canClaim = dailyRewardStatus.CanClaim == true
+		rewardAmount = dailyRewardStatus.RewardAmount
+	end
+
+	if dailyClaimInFlight then
+		dailyClaimButton.Text = "Claiming..."
+		dailyClaimButton.Active = false
+		dailyClaimButton.AutoButtonColor = false
+		dailyClaimButton.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+	elseif canClaim then
+		dailyClaimButton.Text = "Claim Daily +" .. tostring(rewardAmount)
+		dailyClaimButton.Active = true
+		dailyClaimButton.AutoButtonColor = true
+		dailyClaimButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+	elseif hasLoadedDailyStatus then
+		dailyClaimButton.Text = "Daily Claimed"
+		dailyClaimButton.Active = false
+		dailyClaimButton.AutoButtonColor = false
+		dailyClaimButton.BackgroundColor3 = Color3.fromRGB(95, 100, 105)
+	else
+		dailyClaimButton.Text = "Daily..."
+		dailyClaimButton.Active = false
+		dailyClaimButton.AutoButtonColor = false
+		dailyClaimButton.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+	end
+
+	dailyMessageLabel.Text = dailyMessageText
+end
+
+local function applyDailyRewardStatus(status)
+	local normalizedStatus = normalizeDailyRewardStatus(status)
+
+	if not normalizedStatus then
+		return
+	end
+
+	dailyRewardStatus = normalizedStatus
+	hasLoadedDailyStatus = true
+
+	if dailyRewardStatus.CanClaim and dailyMessageText == "Come back tomorrow." then
+		dailyMessageText = ""
+	elseif not dailyRewardStatus.CanClaim and dailyMessageText == "" then
+		dailyMessageText = "Come back tomorrow."
+	end
+
+	renderDailyReward()
 end
 
 local function applyCurrenciesSnapshot(currencies)
@@ -311,14 +428,61 @@ requestCurrencyRefresh = function(reason, force)
 	end)
 end
 
+local function queueDailyRewardStatusRefresh(delaySeconds)
+	if dailyStatusRefreshQueued then
+		return
+	end
+
+	dailyStatusRefreshQueued = true
+
+	task.delay(delaySeconds, function()
+		dailyStatusRefreshQueued = false
+
+		if requestDailyRewardStatus then
+			requestDailyRewardStatus()
+		end
+	end)
+end
+
+requestDailyRewardStatus = function()
+	if dailyStatusRequestInFlight or dailyClaimInFlight then
+		queueDailyRewardStatusRefresh(LOCAL_REQUEST_COOLDOWN_SECONDS)
+		return
+	end
+
+	local now = os.clock()
+	local elapsed = now - lastDailyStatusRequestAt
+
+	if elapsed < LOCAL_REQUEST_COOLDOWN_SECONDS then
+		queueDailyRewardStatusRefresh(LOCAL_REQUEST_COOLDOWN_SECONDS - elapsed + 0.05)
+		return
+	end
+
+	dailyStatusRequestInFlight = true
+	lastDailyStatusRequestAt = now
+	currencyRequest:FireServer("GetDailyRewardStatus")
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if dailyStatusRequestInFlight then
+			dailyStatusRequestInFlight = false
+			renderDailyReward()
+		end
+	end)
+end
+
 local function updateVisibility()
 	local shouldShow = shouldShowCurrencyHud()
 	local wasVisible = container.Visible
 
 	container.Visible = shouldShow
+	dailyContainer.Visible = shouldShow
 
 	if shouldShow and (not wasVisible or not hasLoadedCurrencies) then
 		requestCurrencyRefresh("visible")
+	end
+
+	if shouldShow and (not wasVisible or not hasLoadedDailyStatus) then
+		requestDailyRewardStatus()
 	end
 end
 
@@ -343,19 +507,64 @@ currencyLocalDelta.Event:Connect(function(payload)
 	applyCurrencyLocalDelta(payload)
 end)
 
+dailyClaimButton.MouseButton1Click:Connect(function()
+	if dailyClaimInFlight
+		or not dailyRewardStatus
+		or dailyRewardStatus.CanClaim ~= true then
+
+		return
+	end
+
+	dailyClaimInFlight = true
+	dailyMessageText = ""
+	renderDailyReward()
+
+	currencyRequest:FireServer("ClaimDailyReward")
+end)
+
 currencyResult.OnClientEvent:Connect(function(response)
 	if typeof(response) ~= "table" then
 		return
 	end
 
-	setRequestInFlight(false)
-
 	local success = response.Success == true
 	local kind = response.Kind
 	local message = tostring(response.Message or "")
 
+	if kind ~= "DailyRewardStatus" and kind ~= "DailyRewardClaim" then
+		setRequestInFlight(false)
+	end
+
 	if success and kind == "Currencies" then
 		applyCurrenciesSnapshot(response.Currencies)
+	elseif kind == "DailyRewardStatus" then
+		dailyStatusRequestInFlight = false
+
+		if success then
+			applyDailyRewardStatus(response.Status)
+		end
+	elseif kind == "DailyRewardClaim" then
+		dailyClaimInFlight = false
+		dailyStatusRequestInFlight = false
+
+		if success then
+			applyCurrencyLocalDelta({
+				CurrencyKey = response.CurrencyKey or "Dollars",
+				Balance = response.NewCurrencyBalance,
+			})
+
+			applyDailyRewardStatus(response.Status)
+			dailyMessageText = "Claimed " .. tostring(normalizeBalance(response.RewardAmount)) .. " Dollars!"
+			renderDailyReward()
+			requestCurrencyRefresh("dailyRewardClaim", true)
+		else
+			if typeof(response.Status) == "table" then
+				applyDailyRewardStatus(response.Status)
+			end
+
+			dailyMessageText = message ~= "" and message or "Daily reward unavailable."
+			renderDailyReward()
+		end
 	elseif success and kind == "Coins" then
 		applyCurrencyLocalDelta({
 			CurrencyKey = "Coins",

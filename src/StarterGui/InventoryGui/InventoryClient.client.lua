@@ -110,6 +110,8 @@ end
 local startInventoryPlacement = getOrCreateClientEvent("StartInventoryPlacement")
 local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
 local inventoryLocalDelta = getOrCreateClientEvent("InventoryLocalDelta")
+local currencyRefreshRequested = getOrCreateClientEvent("CurrencyRefreshRequested")
+local currencyLocalDelta = getOrCreateClientEvent("CurrencyLocalDelta")
 local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
 local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
 local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
@@ -118,6 +120,7 @@ local MENU_NAME = "Inventory"
 local anyMajorMenuOpen = false
 local openMajorMenuName = nil
 local renderInventory = nil
+local sellRequestInFlight = false
 
 local openButton = Instance.new("TextButton")
 openButton.Name = "OpenInventoryButton"
@@ -128,7 +131,7 @@ openButton.BackgroundColor3 = Color3.fromRGB(80, 120, 90)
 openButton.BorderSizePixel = 0
 openButton.Text = "Inventory"
 openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-openButton.TextSize = 16
+openButton.TextSize = 20
 openButton.Font = Enum.Font.GothamBold
 openButton.Visible = false
 openButton.Parent = gui
@@ -316,6 +319,21 @@ local function getInventoryCategory(templateId)
 	end
 
 	return INVENTORY_CATEGORY_OTHER
+end
+
+local function getInventorySellPrice(templateId)
+	local item = getCatalogItem(templateId)
+	local sellPrice = item and item.SellPrice
+
+	if typeof(sellPrice) ~= "number"
+		or sellPrice ~= sellPrice
+		or sellPrice <= 0
+		or sellPrice >= math.huge then
+
+		return nil
+	end
+
+	return math.floor(sellPrice)
 end
 
 local function addCategory(categories, seenCategories, categoryName)
@@ -539,15 +557,36 @@ end
 
 local function createInventoryRow(templateId, count, details, layoutOrder)
 	local untradableCount = 0
+	local unsellableCount = 0
+	local sellableCount = count
 
 	if typeof(details) == "table" and typeof(details.Untradable) == "number" then
 		untradableCount = details.Untradable
 	end
 
+	if typeof(details) == "table" and typeof(details.Unsellable) == "number" then
+		unsellableCount = details.Unsellable
+	end
+
+	if typeof(details) == "table" and typeof(details.Sellable) == "number" then
+		sellableCount = details.Sellable
+	else
+		sellableCount = count - unsellableCount
+	end
+
+	untradableCount = math.clamp(math.floor(untradableCount), 0, count)
+	unsellableCount = math.clamp(math.floor(unsellableCount), 0, count)
+	sellableCount = math.clamp(math.floor(sellableCount), 0, count)
+
+	local sellPrice = getInventorySellPrice(templateId)
+	local canSell = sellableCount > 0 and typeof(sellPrice) == "number" and sellPrice > 0
+	local maxSellQuantity = math.min(sellableCount, 99)
+	local selectedSellQuantity = 1
+
 	local row = Instance.new("TextButton")
 	row.Name = tostring(templateId)
 	row.LayoutOrder = layoutOrder
-	row.Size = UDim2.new(1, -4, 0, 64)
+	row.Size = UDim2.new(1, -4, 0, canSell and 96 or 72)
 	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
 	row.BorderSizePixel = 0
 	row.Text = ""
@@ -560,11 +599,11 @@ local function createInventoryRow(templateId, count, details, layoutOrder)
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Name = "NameLabel"
 	nameLabel.Position = UDim2.fromOffset(12, 8)
-	nameLabel.Size = UDim2.new(1, -100, 0, 26)
+	nameLabel.Size = UDim2.new(1, -104, 0, 24)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = tostring(templateId)
 	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-	nameLabel.TextSize = 18
+	nameLabel.TextSize = 17
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	nameLabel.Font = Enum.Font.GothamBold
@@ -573,26 +612,158 @@ local function createInventoryRow(templateId, count, details, layoutOrder)
 	local countLabel = Instance.new("TextLabel")
 	countLabel.Name = "CountLabel"
 	countLabel.Position = UDim2.new(1, -82, 0, 8)
-	countLabel.Size = UDim2.fromOffset(70, 26)
+	countLabel.Size = UDim2.fromOffset(70, 24)
 	countLabel.BackgroundTransparency = 1
 	countLabel.Text = "x" .. tostring(count)
 	countLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-	countLabel.TextSize = 18
+	countLabel.TextSize = 17
 	countLabel.TextXAlignment = Enum.TextXAlignment.Right
 	countLabel.Font = Enum.Font.GothamBold
 	countLabel.Parent = row
 
 	local noteLabel = Instance.new("TextLabel")
-	noteLabel.Name = "UntradableLabel"
-	noteLabel.Position = UDim2.fromOffset(12, 36)
-	noteLabel.Size = UDim2.new(1, -24, 0, 18)
+	noteLabel.Name = "DetailsLabel"
+	noteLabel.Position = UDim2.fromOffset(12, 34)
+	noteLabel.Size = UDim2.new(1, -24, 0, 20)
 	noteLabel.BackgroundTransparency = 1
-	noteLabel.Text = untradableCount > 0 and "Untradable: " .. tostring(untradableCount) or ""
+	local detailParts = {}
+
+	if untradableCount > 0 then
+		table.insert(detailParts, "Untradable: " .. tostring(untradableCount))
+	end
+
+	if unsellableCount > 0 then
+		table.insert(detailParts, "Unsellable: " .. tostring(unsellableCount))
+	end
+
+	if sellableCount > 0 and sellPrice then
+		table.insert(detailParts, "Sellable: " .. tostring(sellableCount))
+	elseif sellableCount <= 0 and unsellableCount > 0 and #detailParts == 0 then
+		table.insert(detailParts, "Unsellable")
+	end
+
+	noteLabel.Text = table.concat(detailParts, " | ")
 	noteLabel.TextColor3 = Color3.fromRGB(105, 105, 105)
 	noteLabel.TextSize = 13
 	noteLabel.TextXAlignment = Enum.TextXAlignment.Left
+	noteLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	noteLabel.Font = Enum.Font.Gotham
 	noteLabel.Parent = row
+
+	if canSell then
+		local sellInfoLabel = Instance.new("TextLabel")
+		sellInfoLabel.Name = "SellInfoLabel"
+		sellInfoLabel.Position = UDim2.fromOffset(12, 62)
+		sellInfoLabel.Size = UDim2.new(1, -190, 0, 24)
+		sellInfoLabel.BackgroundTransparency = 1
+		sellInfoLabel.Text = "Sell: " .. tostring(sellPrice) .. " Dollars each"
+		sellInfoLabel.TextColor3 = Color3.fromRGB(65, 95, 70)
+		sellInfoLabel.TextSize = 13
+		sellInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+		sellInfoLabel.TextTruncate = Enum.TextTruncate.AtEnd
+		sellInfoLabel.Font = Enum.Font.GothamBold
+		sellInfoLabel.Parent = row
+
+		local function createSellButton(name, text, position, size)
+			local button = Instance.new("TextButton")
+			button.Name = name
+			button.Position = position
+			button.Size = size
+			button.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+			button.BorderSizePixel = 0
+			button.Text = text
+			button.TextColor3 = Color3.fromRGB(45, 45, 45)
+			button.TextSize = 14
+			button.Font = Enum.Font.GothamBold
+			button.Parent = row
+
+			createCorner(button, 6)
+
+			return button
+		end
+
+		local controlsY = 60
+		local sellButton = createSellButton(
+			"SellButton",
+			"Sell",
+			UDim2.new(1, -72, 0, controlsY),
+			UDim2.fromOffset(58, 28)
+		)
+		sellButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+		sellButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+
+		local rightButton = createSellButton(
+			"IncreaseSellQuantityButton",
+			">",
+			UDim2.new(1, -108, 0, controlsY),
+			UDim2.fromOffset(28, 28)
+		)
+
+		local quantityLabel = Instance.new("TextLabel")
+		quantityLabel.Name = "SellQuantityLabel"
+		quantityLabel.Position = UDim2.new(1, -148, 0, controlsY)
+		quantityLabel.Size = UDim2.fromOffset(34, 28)
+		quantityLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+		quantityLabel.BorderSizePixel = 0
+		quantityLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+		quantityLabel.TextSize = 14
+		quantityLabel.Font = Enum.Font.GothamBold
+		quantityLabel.Parent = row
+
+		createCorner(quantityLabel, 6)
+
+		local leftButton = createSellButton(
+			"DecreaseSellQuantityButton",
+			"<",
+			UDim2.new(1, -184, 0, controlsY),
+			UDim2.fromOffset(28, 28)
+		)
+
+		local function updateSellControls()
+			quantityLabel.Text = tostring(selectedSellQuantity)
+			leftButton.Active = not sellRequestInFlight and selectedSellQuantity > 1
+			leftButton.AutoButtonColor = leftButton.Active
+			rightButton.Active = not sellRequestInFlight and selectedSellQuantity < maxSellQuantity
+			rightButton.AutoButtonColor = rightButton.Active
+			sellButton.Active = not sellRequestInFlight
+			sellButton.AutoButtonColor = not sellRequestInFlight
+			sellButton.Text = sellRequestInFlight and "..." or "Sell"
+		end
+
+		leftButton.MouseButton1Click:Connect(function()
+			if sellRequestInFlight or selectedSellQuantity <= 1 then
+				return
+			end
+
+			selectedSellQuantity -= 1
+			updateSellControls()
+		end)
+
+		rightButton.MouseButton1Click:Connect(function()
+			if sellRequestInFlight or selectedSellQuantity >= maxSellQuantity then
+				return
+			end
+
+			selectedSellQuantity += 1
+			updateSellControls()
+		end)
+
+		sellButton.MouseButton1Click:Connect(function()
+			if sellRequestInFlight then
+				return
+			end
+
+			sellRequestInFlight = true
+			setStatus("", nil)
+			updateSellControls()
+			inventoryRequest:FireServer("SellInventoryItem", {
+				ItemId = templateId,
+				Quantity = selectedSellQuantity,
+			})
+		end)
+
+		updateSellControls()
+	end
 
 	row.MouseButton1Click:Connect(function()
 		if count <= 0 then
@@ -703,9 +874,14 @@ local function applyInventoryLocalDelta(payload)
 
 	local existingDetails = latestInventoryDetails[templateId]
 	local untradable = 0
+	local unsellable = 0
 
 	if typeof(existingDetails) == "table" and isNonNegativeCount(existingDetails.Untradable) then
 		untradable = math.min(math.floor(existingDetails.Untradable), currentTotal)
+	end
+
+	if typeof(existingDetails) == "table" and isNonNegativeCount(existingDetails.Unsellable) then
+		unsellable = math.min(math.floor(existingDetails.Unsellable), currentTotal)
 	end
 
 	local total = nil
@@ -718,13 +894,22 @@ local function applyInventoryLocalDelta(payload)
 			local removeCount = math.min(-deltaTotal, currentTotal)
 
 			if payload.ConsumeUntradableFirst == true then
-				local removeUntradable = math.min(untradable, removeCount)
+				local removeUnsellableUntradable = math.min(untradable, unsellable, removeCount)
+				untradable -= removeUnsellableUntradable
+				unsellable -= removeUnsellableUntradable
+
+				local remainingRemoveCount = removeCount - removeUnsellableUntradable
+				local removeUntradable = math.min(untradable, remainingRemoveCount)
 				untradable -= removeUntradable
 			end
 		end
 
 		if isFiniteNumber(payload.DeltaUntradable) then
 			untradable += math.floor(payload.DeltaUntradable)
+		end
+
+		if isFiniteNumber(payload.DeltaUnsellable) then
+			unsellable += math.floor(payload.DeltaUnsellable)
 		end
 
 		total = newTotal
@@ -736,13 +921,21 @@ local function applyInventoryLocalDelta(payload)
 		elseif isNonNegativeCount(payload.Tradable) then
 			untradable = total - math.floor(payload.Tradable)
 		end
+
+		if isNonNegativeCount(payload.Unsellable) then
+			unsellable = math.floor(payload.Unsellable)
+		elseif isNonNegativeCount(payload.Sellable) then
+			unsellable = total - math.floor(payload.Sellable)
+		end
 	else
 		return
 	end
 
 	total = math.max(total, 0)
 	untradable = math.clamp(untradable, 0, total)
+	unsellable = math.clamp(unsellable, 0, total)
 	local tradable = total - untradable
+	local sellable = total - unsellable
 
 	if total > 0 then
 		latestInventory[templateId] = total
@@ -750,6 +943,8 @@ local function applyInventoryLocalDelta(payload)
 			Total = total,
 			Tradable = tradable,
 			Untradable = untradable,
+			Sellable = sellable,
+			Unsellable = unsellable,
 		}
 	else
 		latestInventory[templateId] = nil
@@ -970,7 +1165,63 @@ inventoryResult.OnClientEvent:Connect(function(response)
 	setRequestInFlight(false)
 
 	local success = response.Success == true
+	local kind = response.Kind
 	local message = tostring(response.Message or "")
+
+	if kind == "SellInventoryItem" then
+		sellRequestInFlight = false
+
+		if success then
+			local details = response.InventoryDetails
+			local localDelta = {
+				TemplateId = response.TemplateId,
+				Total = response.NewCount,
+			}
+
+			if typeof(details) == "table" then
+				localDelta.Tradable = details.Tradable
+				localDelta.Untradable = details.Untradable
+				localDelta.Sellable = details.Sellable
+				localDelta.Unsellable = details.Unsellable
+			end
+
+			applyInventoryLocalDelta(localDelta)
+
+			if typeof(response.NewCurrencyBalance) == "number" then
+				currencyLocalDelta:Fire({
+					CurrencyKey = response.CurrencyKey or "Dollars",
+					Balance = response.NewCurrencyBalance,
+				})
+			end
+
+			local soldMessage = "Sold " .. tostring(response.TemplateId or response.ItemId or "item")
+				.. " x" .. tostring(response.Quantity or 1)
+				.. " for " .. tostring(response.TotalDollars or 0) .. " Dollars."
+
+			setStatus(soldMessage, true)
+			inventoryRefreshRequested:Fire({
+				Reason = "SellInventoryItem",
+				Force = true,
+			})
+			currencyRefreshRequested:Fire({
+				Reason = "SellInventoryItem",
+				Force = true,
+			})
+		else
+			if message:find("Slow down", 1, true) then
+				warn(message)
+				message = "Please wait a moment."
+			end
+
+			setStatus(message ~= "" and message or "Could not sell item.", false)
+
+			if panel.Visible then
+				renderInventory(latestInventory, latestInventoryDetails)
+			end
+		end
+
+		return
+	end
 
 	if success and typeof(response.Inventory) == "table" then
 		hasLoadedInventory = true

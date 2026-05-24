@@ -65,6 +65,42 @@ local function checkCooldown(player)
 end
 
 currencyRequest.OnServerEvent:Connect(function(player, actionName, payload)
+	if actionName == "GetDailyRewardStatus" then
+		sendResult(player, {
+			Kind = "DailyRewardStatus",
+			Success = true,
+			Status = RoomPersistence.GetDailyRewardStatus(player),
+			Message = "Daily reward status loaded.",
+		})
+		return
+	end
+
+	if actionName == "ClaimDailyReward" then
+		local success, message, rewardAmount, newDollarBalance, status =
+			RoomPersistence.ClaimDailyReward(player)
+
+		if success then
+			sendResult(player, {
+				Kind = "DailyRewardClaim",
+				Success = true,
+				Message = message or "Daily reward claimed.",
+				RewardAmount = rewardAmount,
+				NewCurrencyBalance = newDollarBalance,
+				CurrencyKey = "Dollars",
+				Status = status,
+			})
+		else
+			sendResult(player, {
+				Kind = "DailyRewardClaim",
+				Success = false,
+				Message = message or "Could not claim daily reward.",
+				Status = status,
+			})
+		end
+
+		return
+	end
+
 	if not checkCooldown(player) then
 		sendResult(player, {
 			Kind = "Coins",

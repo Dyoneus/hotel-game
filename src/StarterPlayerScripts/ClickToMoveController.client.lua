@@ -80,6 +80,14 @@ local function fireInventoryLocalDeltaFromPickUpResult(response)
 		if typeof(details.Untradable) == "number" then
 			payload.Untradable = details.Untradable
 		end
+
+		if typeof(details.Sellable) == "number" then
+			payload.Sellable = details.Sellable
+		end
+
+		if typeof(details.Unsellable) == "number" then
+			payload.Unsellable = details.Unsellable
+		end
 	end
 
 	inventoryLocalDelta:Fire(payload)
@@ -239,6 +247,18 @@ local function isFurniturePickupOptimisticallyUntradable(furnitureModel, resolve
 	end
 
 	if furnitureModel:GetAttribute("IsTradable") == false then
+		return true
+	end
+
+	return resolvedThroughFallback == true
+end
+
+local function isFurniturePickupOptimisticallyUnsellable(furnitureModel, resolvedThroughFallback)
+	if furnitureModel:GetAttribute("Sellable") == false then
+		return true
+	end
+
+	if furnitureModel:GetAttribute("CanSell") == false then
 		return true
 	end
 
@@ -1608,6 +1628,10 @@ pickUpButton.MouseButton1Click:Connect(function()
 
 	if isFurniturePickupOptimisticallyUntradable(selectedFurniture, resolvedThroughFallback) then
 		optimisticPayload.DeltaUntradable = 1
+	end
+
+	if isFurniturePickupOptimisticallyUnsellable(selectedFurniture, resolvedThroughFallback) then
+		optimisticPayload.DeltaUnsellable = 1
 	end
 
 	inventoryLocalDelta:Fire(optimisticPayload)

@@ -10,6 +10,9 @@ local RoomPersistence = {}
 local DATASTORE_NAME = "PlayerProfiles_v1"
 local SAVE_DELAY_SECONDS = 12
 local STARTER_DOLLARS = 150
+local DAILY_REWARD_BASE_DOLLARS = 50
+local DAILY_REWARD_STREAK_BONUS_DOLLARS = 10
+local DAILY_REWARD_MAX_DOLLARS = 150
 
 local profileStore = DataStoreService:GetDataStore(DATASTORE_NAME)
 
@@ -32,10 +35,15 @@ local function createDefaultProfile()
 		RoomState = nil,
 		Inventory = {},
 		InventoryUntradable = {},
+		InventoryUnsellable = {},
 		Currencies = {
 			Coins = 0,
 			Dollars = 0,
 			Event = {},
+		},
+		DailyReward = {
+			LastClaimDay = nil,
+			Streak = 0,
 		},
 
 		UpdatedAt = os.time(),
@@ -97,6 +105,7 @@ end
 local function ensureInventory(profile)
 	local inventory = normalizeInventoryCounts(profile.Inventory)
 	local untradable = normalizeInventoryCounts(profile.InventoryUntradable)
+	local unsellable = normalizeInventoryCounts(profile.InventoryUnsellable)
 
 	for templateId, untradableCount in pairs(untradable) do
 		local totalCount = inventory[templateId] or 0
@@ -108,10 +117,21 @@ local function ensureInventory(profile)
 		end
 	end
 
+	for templateId, unsellableCount in pairs(unsellable) do
+		local totalCount = inventory[templateId] or 0
+
+		if totalCount <= 0 then
+			unsellable[templateId] = nil
+		elseif unsellableCount > totalCount then
+			unsellable[templateId] = totalCount
+		end
+	end
+
 	profile.Inventory = inventory
 	profile.InventoryUntradable = untradable
+	profile.InventoryUnsellable = unsellable
 
-	return profile.Inventory, profile.InventoryUntradable
+	return profile.Inventory, profile.InventoryUntradable, profile.InventoryUnsellable
 end
 
 local function isValidCurrencyKey(currencyKey)
@@ -232,16 +252,66 @@ local function setCurrencyBalance(profile, currencyKey, amount)
 	return true
 end
 
+local function getUtcDayKey(timeValue)
+	return os.date("!%Y-%m-%d", timeValue or os.time())
+end
+
+local function ensureDailyReward(profile)
+	local dailyReward = profile.DailyReward
+
+	if typeof(dailyReward) ~= "table" then
+		dailyReward = {}
+	end
+
+	if typeof(dailyReward.LastClaimDay) ~= "string" or dailyReward.LastClaimDay == "" then
+		dailyReward.LastClaimDay = nil
+	end
+
+	dailyReward.Streak = isNonNegativeInteger(dailyReward.Streak) and dailyReward.Streak or 0
+	profile.DailyReward = dailyReward
+
+	return profile.DailyReward
+end
+
+local function getNextDailyRewardStreak(dailyReward, todayKey)
+	if dailyReward.LastClaimDay == todayKey then
+		return dailyReward.Streak
+	end
+
+	local yesterdayKey = getUtcDayKey(os.time() - 86400)
+
+	if dailyReward.LastClaimDay == yesterdayKey then
+		return dailyReward.Streak + 1
+	end
+
+	return 1
+end
+
+local function getDailyRewardAmount(streak)
+	if not isPositiveInteger(streak) then
+		streak = 1
+	end
+
+	return math.min(
+		DAILY_REWARD_BASE_DOLLARS + (streak - 1) * DAILY_REWARD_STREAK_BONUS_DOLLARS,
+		DAILY_REWARD_MAX_DOLLARS
+	)
+end
+
 local function getInventoryCountDetails(profile, templateId)
-	local inventory, untradable = ensureInventory(profile)
+	local inventory, untradable, unsellable = ensureInventory(profile)
 	local total = inventory[templateId] or 0
 	local untradableCount = math.min(untradable[templateId] or 0, total)
 	local tradableCount = total - untradableCount
+	local unsellableCount = math.min(unsellable[templateId] or 0, total)
+	local sellableCount = total - unsellableCount
 
 	return {
 		Total = total,
 		Tradable = tradableCount,
 		Untradable = untradableCount,
+		Sellable = sellableCount,
+		Unsellable = unsellableCount,
 	}
 end
 
@@ -260,6 +330,7 @@ local function fillDefaults(profile)
 
 	ensureInventory(profile)
 	ensureCurrencies(profile)
+	ensureDailyReward(profile)
 
 	if profile.StarterDollarsGranted ~= true then
 		profile.StarterDollarsGranted = false
@@ -391,6 +462,7 @@ local function serializeRoom(roomModel)
 				-- Starter layout furniture can leave this nil.
 				TemplateId = furnitureModel:GetAttribute("TemplateId"),
 				Tradable = furnitureModel:GetAttribute("Tradable"),
+				Sellable = furnitureModel:GetAttribute("Sellable"),
 
 				RelativeCFrame = cframeToArray(relativeCFrame),
 			})
@@ -529,6 +601,10 @@ function RoomPersistence.ApplyRoomState(roomModel, roomState)
 
 				if typeof(savedItem.Tradable) == "boolean" then
 					furnitureModel:SetAttribute("Tradable", savedItem.Tradable)
+				end
+
+				if typeof(savedItem.Sellable) == "boolean" then
+					furnitureModel:SetAttribute("Sellable", savedItem.Sellable)
 				end
 
 				furnitureModel:PivotTo(roomAnchor.CFrame * relativeCFrame)
@@ -733,6 +809,69 @@ function RoomPersistence.GrantStarterDollarsIfNeeded(player)
 	return true, "Starter Dollars granted.", newBalance
 end
 
+function RoomPersistence.GetDailyRewardStatus(player)
+	local todayKey = getUtcDayKey()
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return {
+			CanClaim = false,
+			LastClaimDay = nil,
+			TodayKey = todayKey,
+			Streak = 0,
+			RewardAmount = DAILY_REWARD_BASE_DOLLARS,
+		}
+	end
+
+	local dailyReward = ensureDailyReward(profile)
+	local canClaim = dailyReward.LastClaimDay ~= todayKey
+	local nextStreak = getNextDailyRewardStreak(dailyReward, todayKey)
+
+	return {
+		CanClaim = canClaim,
+		LastClaimDay = dailyReward.LastClaimDay,
+		TodayKey = todayKey,
+		Streak = dailyReward.Streak,
+		RewardAmount = getDailyRewardAmount(nextStreak),
+	}
+end
+
+function RoomPersistence.ClaimDailyReward(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil, nil, RoomPersistence.GetDailyRewardStatus(player)
+	end
+
+	local todayKey = getUtcDayKey()
+	local dailyReward = ensureDailyReward(profile)
+
+	if dailyReward.LastClaimDay == todayKey then
+		return false, "Daily reward already claimed.", nil, getCurrencyBalance(profile, "Dollars"), RoomPersistence.GetDailyRewardStatus(player)
+	end
+
+	local newStreak = getNextDailyRewardStreak(dailyReward, todayKey)
+	local rewardAmount = getDailyRewardAmount(newStreak)
+	local added, message, newDollarBalance =
+		RoomPersistence.AddCurrency(player, "Dollars", rewardAmount, "DailyReward:" .. todayKey)
+
+	if not added then
+		return false, message or "Could not claim daily reward.", nil, newDollarBalance, RoomPersistence.GetDailyRewardStatus(player)
+	end
+
+	dailyReward.LastClaimDay = todayKey
+	dailyReward.Streak = newStreak
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true,
+		"Claimed " .. tostring(rewardAmount) .. " Dollars!",
+		rewardAmount,
+		newDollarBalance,
+		RoomPersistence.GetDailyRewardStatus(player)
+end
+
 function RoomPersistence.GetInventorySnapshot(player)
 	local profile = profilesByPlayer[player]
 
@@ -775,7 +914,7 @@ function RoomPersistence.AddInventoryItem(player, templateId, amount, options)
 		return false, "Profile is not loaded.", nil
 	end
 
-	local inventory, untradable = ensureInventory(profile)
+	local inventory, untradable, unsellable = ensureInventory(profile)
 	local currentCount = inventory[templateId] or 0
 	local newCount = currentCount + amount
 
@@ -783,6 +922,10 @@ function RoomPersistence.AddInventoryItem(player, templateId, amount, options)
 
 	if typeof(options) == "table" and options.Tradable == false then
 		untradable[templateId] = (untradable[templateId] or 0) + amount
+	end
+
+	if typeof(options) == "table" and options.Sellable == false then
+		unsellable[templateId] = (unsellable[templateId] or 0) + amount
 	end
 
 	local details = getInventoryCountDetails(profile, templateId)
@@ -808,29 +951,62 @@ function RoomPersistence.RemoveInventoryItem(player, templateId, amount, options
 		return false, "Profile is not loaded.", nil
 	end
 
-	local inventory, untradable = ensureInventory(profile)
+	local inventory, untradable, unsellable = ensureInventory(profile)
 	local currentCount = inventory[templateId] or 0
 
 	if currentCount < amount then
 		return false, "Not enough inventory.", currentCount, getInventoryCountDetails(profile, templateId)
 	end
 
-	local currentUntradable = untradable[templateId] or 0
+	local currentUntradable = math.min(untradable[templateId] or 0, currentCount)
+	local currentUnsellable = math.min(unsellable[templateId] or 0, currentCount)
+	local untradableUnsellable = math.min(currentUntradable, currentUnsellable)
+	local untradableSellable = currentUntradable - untradableUnsellable
+	local tradableUnsellable = currentUnsellable - untradableUnsellable
+	local tradableSellable = currentCount
+		- untradableUnsellable
+		- untradableSellable
+		- tradableUnsellable
 	local consumedUntradable = 0
 	local consumedTradable = 0
+	local consumedUnsellable = 0
+	local remainingToConsume = amount
+
+	local function consumeFromBucket(bucketCount, isUntradable, isUnsellable)
+		local consumed = math.min(remainingToConsume, bucketCount)
+
+		if consumed <= 0 then
+			return
+		end
+
+		remainingToConsume -= consumed
+
+		if isUntradable then
+			consumedUntradable += consumed
+		else
+			consumedTradable += consumed
+		end
+
+		if isUnsellable then
+			consumedUnsellable += consumed
+		end
+	end
 
 	if typeof(options) == "table" and options.ConsumeTradableFirst == true then
-		local currentTradable = currentCount - currentUntradable
-
-		consumedTradable = math.min(amount, currentTradable)
-		consumedUntradable = amount - consumedTradable
+		consumeFromBucket(tradableSellable, false, false)
+		consumeFromBucket(tradableUnsellable, false, true)
+		consumeFromBucket(untradableSellable, true, false)
+		consumeFromBucket(untradableUnsellable, true, true)
 	else
-		consumedUntradable = math.min(amount, currentUntradable)
-		consumedTradable = amount - consumedUntradable
+		consumeFromBucket(untradableUnsellable, true, true)
+		consumeFromBucket(untradableSellable, true, false)
+		consumeFromBucket(tradableUnsellable, false, true)
+		consumeFromBucket(tradableSellable, false, false)
 	end
 
 	local newCount = currentCount - amount
 	local newUntradable = currentUntradable - consumedUntradable
+	local newUnsellable = currentUnsellable - consumedUnsellable
 
 	if newCount > 0 then
 		inventory[templateId] = newCount
@@ -844,16 +1020,91 @@ function RoomPersistence.RemoveInventoryItem(player, templateId, amount, options
 		untradable[templateId] = nil
 	end
 
+	if newUnsellable > 0 and newCount > 0 then
+		unsellable[templateId] = math.min(newUnsellable, newCount)
+	else
+		unsellable[templateId] = nil
+	end
+
 	local details = getInventoryCountDetails(profile, templateId)
 	details.ConsumedTradable = consumedTradable > 0
 	details.ConsumedTradableCount = consumedTradable
 	details.ConsumedUntradableCount = consumedUntradable
+	details.ConsumedUntradable = consumedUntradable > 0
+	details.ConsumedUnsellableCount = consumedUnsellable
+	details.ConsumedUnsellable = consumedUnsellable > 0
 
 	profile.UpdatedAt = os.time()
 
 	RoomPersistence.QueueSave(player)
 
 	return true, "Inventory item removed.", newCount, details
+end
+
+function RoomPersistence.RemoveSellableInventoryItem(player, templateId, amount)
+	if not isValidTemplateId(templateId) then
+		return false, "Invalid TemplateId.", nil
+	end
+
+	if not isPositiveInteger(amount) then
+		return false, "Amount must be a positive integer.", nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local inventory, untradable, unsellable = ensureInventory(profile)
+	local currentCount = inventory[templateId] or 0
+	local currentUntradable = math.min(untradable[templateId] or 0, currentCount)
+	local currentUnsellable = math.min(unsellable[templateId] or 0, currentCount)
+	local currentSellable = currentCount - currentUnsellable
+
+	if currentSellable < amount then
+		return false, "No sellable items.", currentCount, getInventoryCountDetails(profile, templateId)
+	end
+
+	local untradableUnsellable = math.min(currentUntradable, currentUnsellable)
+	local untradableSellable = currentUntradable - untradableUnsellable
+	local consumedUntradable = math.min(amount, untradableSellable)
+	local consumedTradable = amount - consumedUntradable
+	local newCount = currentCount - amount
+	local newUntradable = currentUntradable - consumedUntradable
+	local newUnsellable = currentUnsellable
+
+	if newCount > 0 then
+		inventory[templateId] = newCount
+	else
+		inventory[templateId] = nil
+	end
+
+	if newUntradable > 0 and newCount > 0 then
+		untradable[templateId] = math.min(newUntradable, newCount)
+	else
+		untradable[templateId] = nil
+	end
+
+	if newUnsellable > 0 and newCount > 0 then
+		unsellable[templateId] = math.min(newUnsellable, newCount)
+	else
+		unsellable[templateId] = nil
+	end
+
+	local details = getInventoryCountDetails(profile, templateId)
+	details.ConsumedTradable = consumedTradable > 0
+	details.ConsumedTradableCount = consumedTradable
+	details.ConsumedUntradableCount = consumedUntradable
+	details.ConsumedUntradable = consumedUntradable > 0
+	details.ConsumedUnsellableCount = 0
+	details.ConsumedUnsellable = false
+
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Sellable inventory item removed.", newCount, details
 end
 
 function RoomPersistence.QueueSave(player)

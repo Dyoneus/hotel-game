@@ -657,6 +657,7 @@ local function sendAddToInventoryResult(
 		Price = extraData.Price,
 		CurrencyKey = extraData.CurrencyKey,
 		Tradable = extraData.Tradable,
+		Sellable = extraData.Sellable,
 		NewCurrencyBalance = extraData.NewCurrencyBalance,
 	}
 
@@ -673,6 +674,7 @@ local function sendAddToInventoryResult(
 		Price = data.Price,
 		CurrencyKey = data.CurrencyKey,
 		Tradable = data.Tradable,
+		Sellable = data.Sellable,
 		NewCurrencyBalance = data.NewCurrencyBalance,
 		Data = data,
 	})
@@ -721,6 +723,7 @@ local function handleAddToInventory(player, payload)
 	local totalPrice = unitPrice
 	local currencyKey = getPurchaseCurrency(item)
 	local isTradable = item.TradableOnPurchase == true
+	local isSellable = item.Sellable ~= false
 
 	if not quantity then
 		sendAddToInventoryResult(
@@ -737,6 +740,7 @@ local function handleAddToInventory(player, payload)
 				Price = totalPrice,
 				CurrencyKey = currencyKey,
 				Tradable = isTradable,
+				Sellable = isSellable,
 			}
 		)
 		return
@@ -759,6 +763,7 @@ local function handleAddToInventory(player, payload)
 				Price = totalPrice,
 				CurrencyKey = currencyKey,
 				Tradable = isTradable,
+				Sellable = isSellable,
 			}
 		)
 		return
@@ -798,6 +803,7 @@ local function handleAddToInventory(player, payload)
 					Price = totalPrice,
 					CurrencyKey = currencyKey,
 					Tradable = isTradable,
+					Sellable = isSellable,
 					NewCurrencyBalance = newDollarBalance,
 				}
 			)
@@ -808,6 +814,7 @@ local function handleAddToInventory(player, payload)
 	local added, message, newCount, inventoryDetails =
 		RoomPersistence.AddInventoryItem(player, templateId, quantity, {
 			Tradable = isTradable,
+			Sellable = isSellable,
 		})
 
 	if not added then
@@ -850,6 +857,7 @@ local function handleAddToInventory(player, payload)
 				Price = totalPrice,
 				CurrencyKey = currencyKey,
 				Tradable = isTradable,
+				Sellable = isSellable,
 				NewCurrencyBalance = refundedBalance,
 			}
 		)
@@ -876,6 +884,7 @@ local function handleAddToInventory(player, payload)
 			Price = totalPrice,
 			CurrencyKey = currencyKey,
 			Tradable = isTradable,
+			Sellable = isSellable,
 			NewCurrencyBalance = newDollarBalance,
 		}
 	)
@@ -958,6 +967,7 @@ local function handlePlaceItem(player, payload, options)
 	furnitureClone:SetAttribute("TemplateId", item.TemplateName)
 	furnitureClone:SetAttribute("PersistentId", createPersistentId(player, item.TemplateName))
 	furnitureClone:SetAttribute("Tradable", true)
+	furnitureClone:SetAttribute("Sellable", true)
 
 	local placementCFrame = getRequestedPlacementCFrame(
 		roomModel,
@@ -996,6 +1006,7 @@ local function handlePlaceItem(player, payload, options)
 
 	local remainingCount = nil
 	local placedTradable = true
+	local placedSellable = true
 	local placementInventoryDetails = nil
 
 	if consumeInventory then
@@ -1027,9 +1038,15 @@ local function handlePlaceItem(player, payload, options)
 			and typeof(inventoryDetails.ConsumedUntradableCount) == "number"
 			and inventoryDetails.ConsumedUntradableCount > 0
 		)
+		placedSellable = not (
+			typeof(inventoryDetails) == "table"
+			and typeof(inventoryDetails.ConsumedUnsellableCount) == "number"
+			and inventoryDetails.ConsumedUnsellableCount > 0
+		)
 	end
 
 	furnitureClone:SetAttribute("Tradable", placedTradable)
+	furnitureClone:SetAttribute("Sellable", placedSellable)
 
 	furnitureClone.Parent = furnitureFolder
 
@@ -1064,6 +1081,7 @@ local function handlePlaceItem(player, payload, options)
 				Source = "Inventory",
 				RemainingCount = remainingCount,
 				InventoryDetails = placementInventoryDetails,
+				Sellable = placedSellable,
 			}
 		)
 		return
@@ -1077,6 +1095,7 @@ local function handlePlaceItem(player, payload, options)
 		{
 			ItemId = item.Id,
 			PersistentId = furnitureClone:GetAttribute("PersistentId"),
+			Sellable = true,
 		}
 	)
 end

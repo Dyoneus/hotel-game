@@ -100,9 +100,14 @@ local function canEditRoom(player)
 		and isRoomOwner(player)
 end
 
-local function sendPickUpResult(player, success, message, templateId, newCount, tradable, inventoryDetails)
+local function sendPickUpResult(player, success, message, templateId, newCount, tradable, sellable, inventoryDetails)
 	if not player or player.Parent ~= Players then
 		return
+	end
+
+	if typeof(sellable) == "table" and inventoryDetails == nil then
+		inventoryDetails = sellable
+		sellable = nil
 	end
 
 	furnitureActionResult:FireClient(player, {
@@ -112,6 +117,7 @@ local function sendPickUpResult(player, success, message, templateId, newCount, 
 		TemplateId = templateId,
 		NewCount = newCount,
 		Tradable = tradable == true,
+		Sellable = sellable == true,
 		InventoryDetails = inventoryDetails,
 	})
 end
@@ -170,6 +176,22 @@ local function isPickupTradable(furnitureModel, resolvedThroughFallback)
 	end
 
 	if furnitureModel:GetAttribute("IsTradable") == false then
+		return false
+	end
+
+	if resolvedThroughFallback then
+		return false
+	end
+
+	return true
+end
+
+local function isPickupSellable(furnitureModel, resolvedThroughFallback)
+	if furnitureModel:GetAttribute("Sellable") == false then
+		return false
+	end
+
+	if furnitureModel:GetAttribute("CanSell") == false then
 		return false
 	end
 
@@ -1478,8 +1500,10 @@ local function pickUpFurniture(player, furnitureModel)
 	end
 
 	local isTradable = isPickupTradable(furnitureModel, resolvedThroughFallback)
+	local isSellable = isPickupSellable(furnitureModel, resolvedThroughFallback)
 	local added, message, newCount, inventoryDetails = RoomPersistence.AddInventoryItem(player, templateId, 1, {
 		Tradable = isTradable,
+		Sellable = isSellable,
 	})
 
 	if not added then
@@ -1489,7 +1513,8 @@ local function pickUpFurniture(player, furnitureModel)
 			message or "Could not add item to inventory.",
 			templateId,
 			nil,
-			isTradable
+			isTradable,
+			isSellable
 		)
 		return
 	end
@@ -1526,6 +1551,7 @@ local function pickUpFurniture(player, furnitureModel)
 		templateId,
 		newCount,
 		isTradable,
+		isSellable,
 		inventoryDetails
 	)
 end
