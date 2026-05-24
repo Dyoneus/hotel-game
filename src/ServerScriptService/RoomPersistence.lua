@@ -30,6 +30,11 @@ local function createDefaultProfile()
 		RoomState = nil,
 		Inventory = {},
 		InventoryUntradable = {},
+		Currencies = {
+			Coins = 0,
+			Dollars = 0,
+			Event = {},
+		},
 
 		UpdatedAt = os.time(),
 	}
@@ -107,6 +112,124 @@ local function ensureInventory(profile)
 	return profile.Inventory, profile.InventoryUntradable
 end
 
+local function isValidCurrencyKey(currencyKey)
+	if typeof(currencyKey) ~= "string"
+		or currencyKey == ""
+		or currencyKey:match("%S") == nil then
+
+		return false
+	end
+
+	if currencyKey == "Coins" or currencyKey == "Dollars" then
+		return true
+	end
+
+	local eventId = currencyKey:match("^Event:(.+)$")
+
+	return typeof(eventId) == "string"
+		and eventId ~= ""
+		and eventId:match("%S") ~= nil
+end
+
+local function parseCurrencyKey(currencyKey)
+	if not isValidCurrencyKey(currencyKey) then
+		return nil, nil
+	end
+
+	if currencyKey == "Coins" or currencyKey == "Dollars" then
+		return "Base", currencyKey
+	end
+
+	return "Event", currencyKey:sub(7)
+end
+
+local function normalizeEventCurrencies(eventCurrencies)
+	local normalized = {}
+
+	if typeof(eventCurrencies) ~= "table" then
+		return normalized
+	end
+
+	for eventId, balance in pairs(eventCurrencies) do
+		if typeof(eventId) == "string"
+			and eventId ~= ""
+			and eventId:match("%S") ~= nil
+			and isNonNegativeInteger(balance)
+			and balance > 0 then
+
+			normalized[eventId] = balance
+		end
+	end
+
+	return normalized
+end
+
+local function ensureCurrencies(profile)
+	local currencies = profile.Currencies
+
+	if typeof(currencies) ~= "table" then
+		currencies = {}
+	end
+
+	local coins = currencies.Coins
+
+	if isNonNegativeInteger(profile.Coins)
+		and (
+			not isNonNegativeInteger(coins)
+			or profile.Coins > coins
+		) then
+
+		coins = profile.Coins
+	end
+
+	currencies.Coins = isNonNegativeInteger(coins) and coins or 0
+	currencies.Dollars = isNonNegativeInteger(currencies.Dollars) and currencies.Dollars or 0
+	currencies.Event = normalizeEventCurrencies(currencies.Event)
+
+	profile.Currencies = currencies
+	profile.Coins = nil
+
+	return profile.Currencies
+end
+
+local function getCurrencyBalance(profile, currencyKey)
+	local currencyType, currencyId = parseCurrencyKey(currencyKey)
+
+	if not currencyType then
+		return nil
+	end
+
+	local currencies = ensureCurrencies(profile)
+
+	if currencyType == "Base" then
+		return currencies[currencyId] or 0
+	end
+
+	return currencies.Event[currencyId] or 0
+end
+
+local function setCurrencyBalance(profile, currencyKey, amount)
+	local currencyType, currencyId = parseCurrencyKey(currencyKey)
+
+	if not currencyType then
+		return false
+	end
+
+	local currencies = ensureCurrencies(profile)
+
+	if currencyType == "Base" then
+		currencies[currencyId] = amount
+	else
+		if amount > 0 then
+			currencies.Event[currencyId] = amount
+		else
+			currencies.Event[currencyId] = nil
+		end
+	end
+
+	return true
+end
+
 local function getInventoryCountDetails(profile, templateId)
 	local inventory, untradable = ensureInventory(profile)
 	local total = inventory[templateId] or 0
@@ -134,6 +257,7 @@ local function fillDefaults(profile)
 	end
 
 	ensureInventory(profile)
+	ensureCurrencies(profile)
 
 	return profile
 end
@@ -440,6 +564,143 @@ end
 
 function RoomPersistence.GetProfile(player)
 	return profilesByPlayer[player]
+end
+
+function RoomPersistence.GetCurrency(player, currencyKey)
+	if not isValidCurrencyKey(currencyKey) then
+		return nil, "Invalid currency key."
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil, "Profile is not loaded."
+	end
+
+	return getCurrencyBalance(profile, currencyKey)
+end
+
+function RoomPersistence.GetCurrenciesSnapshot(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return {
+			Coins = 0,
+			Dollars = 0,
+			Event = {},
+		}
+	end
+
+	return deepCopy(ensureCurrencies(profile))
+end
+
+function RoomPersistence.AddCurrency(player, currencyKey, amount, reason)
+	if not isValidCurrencyKey(currencyKey) then
+		return false, "Invalid currency key.", nil
+	end
+
+	if not isPositiveInteger(amount) then
+		return false, "Amount must be a positive integer.", nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local newBalance = getCurrencyBalance(profile, currencyKey) + amount
+	setCurrencyBalance(profile, currencyKey, newBalance)
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Currency added.", newBalance
+end
+
+function RoomPersistence.RemoveCurrency(player, currencyKey, amount, reason)
+	if not isValidCurrencyKey(currencyKey) then
+		return false, "Invalid currency key.", nil
+	end
+
+	if not isPositiveInteger(amount) then
+		return false, "Amount must be a positive integer.", nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local currentBalance = getCurrencyBalance(profile, currencyKey)
+
+	if currentBalance < amount then
+		return false, "Not enough currency.", currentBalance
+	end
+
+	local newBalance = currentBalance - amount
+	setCurrencyBalance(profile, currencyKey, newBalance)
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Currency removed.", newBalance
+end
+
+function RoomPersistence.SetCurrency(player, currencyKey, amount, reason)
+	if not isValidCurrencyKey(currencyKey) then
+		return false, "Invalid currency key.", nil
+	end
+
+	if not isNonNegativeInteger(amount) then
+		return false, "Amount must be a non-negative integer.", nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	setCurrencyBalance(profile, currencyKey, amount)
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Currency set.", amount
+end
+
+function RoomPersistence.GetCoins(player)
+	return RoomPersistence.GetCurrency(player, "Coins") or 0
+end
+
+function RoomPersistence.AddCoins(player, amount, reason)
+	return RoomPersistence.AddCurrency(player, "Coins", amount, reason)
+end
+
+function RoomPersistence.RemoveCoins(player, amount, reason)
+	return RoomPersistence.RemoveCurrency(player, "Coins", amount, reason)
+end
+
+function RoomPersistence.SetCoins(player, amount, reason)
+	return RoomPersistence.SetCurrency(player, "Coins", amount, reason)
+end
+
+function RoomPersistence.GetDollars(player)
+	return RoomPersistence.GetCurrency(player, "Dollars") or 0
+end
+
+function RoomPersistence.AddDollars(player, amount, reason)
+	return RoomPersistence.AddCurrency(player, "Dollars", amount, reason)
+end
+
+function RoomPersistence.RemoveDollars(player, amount, reason)
+	return RoomPersistence.RemoveCurrency(player, "Dollars", amount, reason)
+end
+
+function RoomPersistence.SetDollars(player, amount, reason)
+	return RoomPersistence.SetCurrency(player, "Dollars", amount, reason)
 end
 
 function RoomPersistence.GetInventorySnapshot(player)

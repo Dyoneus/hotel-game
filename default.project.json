@@ -27,6 +27,9 @@
       "AdminDataTools": {
         "$path": "src/ServerScriptService/AdminDataTools.lua"
       },
+      "CurrencyServer": {
+        "$path": "src/ServerScriptService/CurrencyServer.server.lua"
+      },
       "FurnitureActionServer": {
         "$path": "src/ServerScriptService/FurnitureActionServer.server.lua"
       },
