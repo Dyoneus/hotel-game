@@ -578,6 +578,16 @@ local function getItemPrice(item)
 	return math.floor(price)
 end
 
+local function getPurchaseCurrency(item)
+	local currencyKey = item and item.PurchaseCurrency
+
+	if typeof(currencyKey) ~= "string" or currencyKey == "" then
+		return "Dollars"
+	end
+
+	return currencyKey
+end
+
 local function getMaxPurchaseQuantity(item)
 	local maxPurchaseQuantity = item and item.MaxPurchaseQuantity
 
@@ -646,6 +656,7 @@ local function sendAddToInventoryResult(
 		InventoryDetails = inventoryDetails,
 		Price = extraData.Price,
 		CurrencyKey = extraData.CurrencyKey,
+		Tradable = extraData.Tradable,
 		NewCurrencyBalance = extraData.NewCurrencyBalance,
 	}
 
@@ -661,6 +672,7 @@ local function sendAddToInventoryResult(
 		InventoryDetails = data.InventoryDetails,
 		Price = data.Price,
 		CurrencyKey = data.CurrencyKey,
+		Tradable = data.Tradable,
 		NewCurrencyBalance = data.NewCurrencyBalance,
 		Data = data,
 	})
@@ -707,6 +719,8 @@ local function handleAddToInventory(player, payload)
 	local quantity, quantityMessage = getRequestedPurchaseQuantity(payload, item)
 	local unitPrice = getItemPrice(item)
 	local totalPrice = unitPrice
+	local currencyKey = getPurchaseCurrency(item)
+	local isTradable = item.TradableOnPurchase == true
 
 	if not quantity then
 		sendAddToInventoryResult(
@@ -721,14 +735,35 @@ local function handleAddToInventory(player, payload)
 				Quantity = payload.Quantity,
 				UnitPrice = unitPrice,
 				Price = totalPrice,
-				CurrencyKey = "Dollars",
+				CurrencyKey = currencyKey,
+				Tradable = isTradable,
 			}
 		)
 		return
 	end
 
 	totalPrice = unitPrice * quantity
-	local currencyKey = "Dollars"
+
+	if currencyKey ~= "Dollars" then
+		sendAddToInventoryResult(
+			player,
+			false,
+			"This item is not available yet.",
+			item,
+			templateId,
+			nil,
+			nil,
+			{
+				Quantity = quantity,
+				UnitPrice = unitPrice,
+				Price = totalPrice,
+				CurrencyKey = currencyKey,
+				Tradable = isTradable,
+			}
+		)
+		return
+	end
+
 	local newDollarBalance = RoomPersistence.GetCurrency(player, currencyKey)
 
 	if totalPrice > 0 then
@@ -762,6 +797,7 @@ local function handleAddToInventory(player, payload)
 					UnitPrice = unitPrice,
 					Price = totalPrice,
 					CurrencyKey = currencyKey,
+					Tradable = isTradable,
 					NewCurrencyBalance = newDollarBalance,
 				}
 			)
@@ -771,7 +807,7 @@ local function handleAddToInventory(player, payload)
 
 	local added, message, newCount, inventoryDetails =
 		RoomPersistence.AddInventoryItem(player, templateId, quantity, {
-			Tradable = true,
+			Tradable = isTradable,
 		})
 
 	if not added then
@@ -813,6 +849,7 @@ local function handleAddToInventory(player, payload)
 				UnitPrice = unitPrice,
 				Price = totalPrice,
 				CurrencyKey = currencyKey,
+				Tradable = isTradable,
 				NewCurrencyBalance = refundedBalance,
 			}
 		)
@@ -838,6 +875,7 @@ local function handleAddToInventory(player, payload)
 			UnitPrice = unitPrice,
 			Price = totalPrice,
 			CurrencyKey = currencyKey,
+			Tradable = isTradable,
 			NewCurrencyBalance = newDollarBalance,
 		}
 	)

@@ -30,9 +30,20 @@ local latestCatalogItems = {}
 local requestInFlight = false
 local activePurchaseButton = nil
 local activePurchaseButtonText = nil
+local selectedCategory = "All"
+local categoryButtons = {}
+
+local CATEGORY_ORDER = {
+	"All",
+	"Featured",
+	"Chairs",
+	"Tables",
+	"Beds",
+}
 
 local updateOpenButton = nil
 local destroyCatalogPlacementPreview = nil
+local renderCatalog = nil
 
 local placingItemData = nil
 local placementPreview = nil
@@ -400,6 +411,19 @@ statusLabel.TextScaled = true
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.Parent = panel
 
+local categoryFrame = Instance.new("Frame")
+categoryFrame.Name = "CategoryTabs"
+categoryFrame.Position = UDim2.fromOffset(18, 104)
+categoryFrame.Size = UDim2.new(1, -36, 0, 32)
+categoryFrame.BackgroundTransparency = 1
+categoryFrame.Parent = panel
+
+local categoryLayout = Instance.new("UIListLayout")
+categoryLayout.FillDirection = Enum.FillDirection.Horizontal
+categoryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+categoryLayout.Padding = UDim.new(0, 6)
+categoryLayout.Parent = categoryFrame
+
 local placementHintLabel = Instance.new("TextLabel")
 placementHintLabel.Name = "PlacementHintLabel"
 placementHintLabel.AnchorPoint = Vector2.new(0.5, 1)
@@ -421,8 +445,8 @@ createStroke(placementHintLabel, Color3.fromRGB(255, 255, 255), 1, 0.35)
 
 local itemList = Instance.new("ScrollingFrame")
 itemList.Name = "ItemList"
-itemList.Position = UDim2.fromOffset(18, 112)
-itemList.Size = UDim2.new(1, -36, 1, -132)
+itemList.Position = UDim2.fromOffset(18, 148)
+itemList.Size = UDim2.new(1, -36, 1, -168)
 itemList.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 itemList.BorderSizePixel = 0
 itemList.ScrollBarThickness = 6
@@ -1141,7 +1165,7 @@ end
 
 local function clearItemRows()
 	for _, child in ipairs(itemList:GetChildren()) do
-		if child:IsA("Frame") or child:IsA("TextButton") then
+		if child:IsA("Frame") or child:IsA("TextButton") or child:IsA("TextLabel") then
 			child:Destroy()
 		end
 	end
@@ -1166,6 +1190,129 @@ end
 
 local function resetActivePurchaseButton()
 	setActivePurchaseButton(nil, nil)
+end
+
+local function getPurchaseCurrencyForItem(itemData)
+	local purchaseCurrency = itemData.PurchaseCurrency
+
+	if typeof(purchaseCurrency) ~= "string" or purchaseCurrency == "" then
+		return "Dollars"
+	end
+
+	return purchaseCurrency
+end
+
+local function categoryHasItems(categoryName, items)
+	if categoryName == "All" then
+		return true
+	end
+
+	for _, itemData in ipairs(items or {}) do
+		if categoryName == "Featured" then
+			if itemData.Featured == true then
+				return true
+			end
+		elseif itemData.Category == categoryName then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function itemMatchesSelectedCategory(itemData)
+	if selectedCategory == "All" then
+		return true
+	end
+
+	if selectedCategory == "Featured" then
+		return itemData.Featured == true
+	end
+
+	return itemData.Category == selectedCategory
+end
+
+local function styleCategoryButton(button, isSelected)
+	if isSelected then
+		button.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
+		button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	else
+		button.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+		button.TextColor3 = Color3.fromRGB(55, 55, 55)
+	end
+end
+
+local function clearCategoryButtons()
+	for _, child in ipairs(categoryFrame:GetChildren()) do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+
+	table.clear(categoryButtons)
+end
+
+local function updateCategoryTabs(items)
+	local availableCategories = {}
+	local selectedCategoryAvailable = false
+
+	for _, categoryName in ipairs(CATEGORY_ORDER) do
+		if categoryName ~= "Featured" or categoryHasItems(categoryName, items) then
+			table.insert(availableCategories, categoryName)
+
+			if selectedCategory == categoryName then
+				selectedCategoryAvailable = true
+			end
+		end
+	end
+
+	if not selectedCategoryAvailable then
+		selectedCategory = "All"
+	end
+
+	clearCategoryButtons()
+
+	for index, categoryName in ipairs(availableCategories) do
+		local button = Instance.new("TextButton")
+		button.Name = categoryName .. "CategoryButton"
+		button.LayoutOrder = index
+		button.Size = UDim2.fromOffset(categoryName == "Featured" and 76 or 62, 30)
+		button.BorderSizePixel = 0
+		button.Text = categoryName
+		button.TextSize = 13
+		button.Font = Enum.Font.GothamBold
+		button.Parent = categoryFrame
+
+		createCorner(button, 8)
+		styleCategoryButton(button, selectedCategory == categoryName)
+
+		button.MouseButton1Click:Connect(function()
+			if selectedCategory == categoryName then
+				return
+			end
+
+			selectedCategory = categoryName
+
+			if renderCatalog then
+				renderCatalog(latestCatalogItems)
+			end
+		end)
+
+		categoryButtons[categoryName] = button
+	end
+end
+
+local function createEmptyCatalogState(message)
+	local emptyLabel = Instance.new("TextLabel")
+	emptyLabel.Name = "EmptyCatalogLabel"
+	emptyLabel.Size = UDim2.new(1, -4, 0, 56)
+	emptyLabel.BackgroundTransparency = 1
+	emptyLabel.Text = tostring(message or "No shop items found.")
+	emptyLabel.TextColor3 = Color3.fromRGB(95, 95, 95)
+	emptyLabel.TextSize = 15
+	emptyLabel.TextWrapped = true
+	emptyLabel.Font = Enum.Font.Gotham
+	emptyLabel.Parent = itemList
 end
 
 local function createItemRow(itemData, layoutOrder)
@@ -1194,6 +1341,7 @@ local function createItemRow(itemData, layoutOrder)
 	end
 
 	local selectedQuantity = 1
+	local purchaseCurrency = getPurchaseCurrencyForItem(itemData)
 
 	local row = Instance.new("Frame")
 	row.Name = tostring(itemData.Id)
@@ -1237,7 +1385,7 @@ local function createItemRow(itemData, layoutOrder)
 		table.insert(metadataParts, itemData.Category)
 	end
 
-	table.insert(metadataParts, "Price: " .. tostring(price) .. " Dollars")
+	table.insert(metadataParts, "Price: " .. tostring(price) .. " " .. purchaseCurrency)
 
 	if itemData.Featured == true then
 		table.insert(metadataParts, "Featured")
@@ -1336,7 +1484,7 @@ local function createItemRow(itemData, layoutOrder)
 
 	local function updateQuantityDisplay()
 		quantityLabel.Text = tostring(selectedQuantity)
-		totalLabel.Text = "Total: " .. tostring(price * selectedQuantity) .. " Dollars"
+		totalLabel.Text = "Total: " .. tostring(price * selectedQuantity) .. " " .. purchaseCurrency
 		leftButton.Active = selectedQuantity > 1
 		leftButton.AutoButtonColor = selectedQuantity > 1
 		rightButton.Active = selectedQuantity < maxQuantity
@@ -1379,17 +1527,30 @@ local function createItemRow(itemData, layoutOrder)
 	updateQuantityDisplay()
 end
 
-local function renderCatalog(items)
+renderCatalog = function(items)
 	latestCatalogItems = items or {}
 	clearItemRows()
+	updateCategoryTabs(latestCatalogItems)
+
+	local visibleItems = {}
+
+	for _, itemData in ipairs(latestCatalogItems) do
+		if itemMatchesSelectedCategory(itemData) then
+			table.insert(visibleItems, itemData)
+		end
+	end
 
 	if #latestCatalogItems == 0 then
 		setStatus("No shop items found. Check ReplicatedStorage/FurnitureTemplates.")
+		createEmptyCatalogState("No shop items found.")
+	elseif #visibleItems == 0 then
+		setStatus("No items in " .. selectedCategory .. ".")
+		createEmptyCatalogState("No items in " .. selectedCategory .. ".")
 	else
 		setStatus("Select an item to buy it with Dollars.")
 	end
 
-	for index, itemData in ipairs(latestCatalogItems) do
+	for index, itemData in ipairs(visibleItems) do
 		createItemRow(itemData, index)
 	end
 
@@ -1415,6 +1576,7 @@ updateOpenButton = function()
 end
 
 openButton.MouseButton1Click:Connect(function()
+	selectedCategory = "All"
 	setPanelVisible(true)
 	setStatus("Loading shop...")
 	furnitureCatalogRequest:FireServer("GetCatalog", {})

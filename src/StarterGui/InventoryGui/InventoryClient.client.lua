@@ -8,6 +8,8 @@ local playerGui = player:WaitForChild("PlayerGui")
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local inventoryRequest = remoteEvents:WaitForChild("InventoryRequest")
 local inventoryResult = remoteEvents:WaitForChild("InventoryResult")
+local setRoomModeRequest = remoteEvents:WaitForChild("SetRoomModeRequest")
+local roomModeResult = remoteEvents:WaitForChild("RoomModeResult")
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -28,9 +30,12 @@ local requestSerial = 0
 local hasLoadedInventory = false
 local latestInventory = {}
 local latestInventoryDetails = {}
+local editModeRequestPending = false
 
 local LOCAL_REQUEST_COOLDOWN_SECONDS = 0.6
 local REQUEST_TIMEOUT_SECONDS = 6
+local EDIT_MODE_FAILURE_MESSAGE = "Enter your own room to place furniture."
+local EDIT_MODE_REQUIRED_MESSAGE = "Enter Edit Mode to place furniture."
 
 local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -184,12 +189,8 @@ listPadding.PaddingRight = UDim.new(0, 10)
 listPadding.Parent = listFrame
 
 local function shouldShowInventoryButton()
-	local currentRoomName = player:GetAttribute("CurrentRoomName")
-
 	return player:GetAttribute("OnboardingStep") == "Complete"
 		and (player:GetAttribute("ControlMode") or "Hotel") == "Hotel"
-		and typeof(currentRoomName) == "string"
-		and currentRoomName ~= ""
 end
 
 local function updateOpenButton()
@@ -225,6 +226,24 @@ local function setStatus(text, success)
 	else
 		statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
 	end
+end
+
+local function shouldRequestEditModeForInventory()
+	local currentRoomName = player:GetAttribute("CurrentRoomName")
+
+	return player:GetAttribute("RoomMode") ~= "Edit"
+		and (player:GetAttribute("ControlMode") or "Hotel") == "Hotel"
+		and typeof(currentRoomName) == "string"
+		and currentRoomName ~= ""
+end
+
+local function requestEditModeForInventory()
+	if editModeRequestPending or not shouldRequestEditModeForInventory() then
+		return
+	end
+
+	editModeRequestPending = true
+	setRoomModeRequest:FireServer("Edit")
 end
 
 local function isNonNegativeCount(value)
@@ -331,7 +350,7 @@ local function createInventoryRow(templateId, count, details, layoutOrder)
 			or currentRoomName == ""
 			or player:GetAttribute("RoomMode") ~= "Edit" then
 
-			setStatus("Enter Edit Mode to place furniture.", false)
+			setStatus(EDIT_MODE_REQUIRED_MESSAGE, false)
 			return
 		end
 
@@ -546,6 +565,7 @@ local function setPanelVisible(isVisible)
 			renderInventory(latestInventory, latestInventoryDetails)
 		end
 
+		requestEditModeForInventory()
 		requestInventoryRefresh("open")
 	elseif wasVisible or openMajorMenuName == MENU_NAME then
 		publishMajorMenuState(false)
@@ -581,6 +601,29 @@ inventoryLocalDelta.Event:Connect(function(payload)
 	applyInventoryLocalDelta(payload)
 end)
 
+roomModeResult.OnClientEvent:Connect(function(success, message, roomMode)
+	if not editModeRequestPending then
+		return
+	end
+
+	editModeRequestPending = false
+
+	if success == true or roomMode == "Edit" then
+		return
+	end
+
+	message = tostring(message or "")
+
+	if message == "Slow down before changing room mode." then
+		warn(message)
+		return
+	end
+
+	if panel.Visible then
+		setStatus(EDIT_MODE_FAILURE_MESSAGE, false)
+	end
+end)
+
 majorMenuOpened.Event:Connect(function(menuName)
 	if menuName ~= MENU_NAME and panel.Visible then
 		setPanelVisible(false)
@@ -610,7 +653,12 @@ inventoryResult.OnClientEvent:Connect(function(response)
 	if success and typeof(response.Inventory) == "table" then
 		hasLoadedInventory = true
 		renderInventory(response.Inventory, response.InventoryDetails)
-		setStatus("", nil)
+
+		if statusLabel.Text ~= EDIT_MODE_FAILURE_MESSAGE
+			and statusLabel.Text ~= EDIT_MODE_REQUIRED_MESSAGE then
+
+			setStatus("", nil)
+		end
 	elseif message == "Slow down before requesting inventory." then
 		warn(message)
 		queueInventoryRefresh("serverCooldown", LOCAL_REQUEST_COOLDOWN_SECONDS)
