@@ -27,6 +27,7 @@ end
 local GRID_SIZE = 2
 local PLACE_COOLDOWN_SECONDS = 0.75
 local ADD_TO_INVENTORY_COOLDOWN_SECONDS = 0.5
+local MAX_PURCHASE_QUANTITY = 99
 
 -- Lets furniture sit directly beside other furniture without edge-touch
 -- being treated as a collision.
@@ -577,6 +578,49 @@ local function getItemPrice(item)
 	return math.floor(price)
 end
 
+local function getMaxPurchaseQuantity(item)
+	local maxPurchaseQuantity = item and item.MaxPurchaseQuantity
+
+	if typeof(maxPurchaseQuantity) == "number"
+		and maxPurchaseQuantity == maxPurchaseQuantity
+		and maxPurchaseQuantity > 0
+		and maxPurchaseQuantity < math.huge then
+
+		local maxValue = math.floor(maxPurchaseQuantity)
+
+		if maxValue >= 1 then
+			return math.min(maxValue, MAX_PURCHASE_QUANTITY)
+		end
+	end
+
+	return MAX_PURCHASE_QUANTITY
+end
+
+local function getRequestedPurchaseQuantity(payload, item)
+	local quantity = payload.Quantity
+
+	if quantity == nil then
+		quantity = 1
+	end
+
+	if typeof(quantity) ~= "number"
+		or quantity ~= quantity
+		or quantity <= 0
+		or quantity >= math.huge
+		or quantity ~= math.floor(quantity) then
+
+		return nil, "Quantity must be a positive integer."
+	end
+
+	local maxPurchaseQuantity = getMaxPurchaseQuantity(item)
+
+	if quantity > maxPurchaseQuantity then
+		return nil, "Quantity is too high."
+	end
+
+	return quantity
+end
+
 local function sendAddToInventoryResult(
 	player,
 	success,
@@ -596,6 +640,8 @@ local function sendAddToInventoryResult(
 	local data = {
 		ItemId = item and item.Id or nil,
 		TemplateId = templateId,
+		Quantity = extraData.Quantity,
+		UnitPrice = extraData.UnitPrice,
 		NewCount = newCount,
 		InventoryDetails = inventoryDetails,
 		Price = extraData.Price,
@@ -609,6 +655,8 @@ local function sendAddToInventoryResult(
 		Message = tostring(message or ""),
 		ItemId = data.ItemId,
 		TemplateId = data.TemplateId,
+		Quantity = data.Quantity,
+		UnitPrice = data.UnitPrice,
 		NewCount = data.NewCount,
 		InventoryDetails = data.InventoryDetails,
 		Price = data.Price,
@@ -656,13 +704,41 @@ local function handleAddToInventory(player, payload)
 		return
 	end
 
-	local price = getItemPrice(item)
+	local quantity, quantityMessage = getRequestedPurchaseQuantity(payload, item)
+	local unitPrice = getItemPrice(item)
+	local totalPrice = unitPrice
+
+	if not quantity then
+		sendAddToInventoryResult(
+			player,
+			false,
+			quantityMessage or "Invalid quantity.",
+			item,
+			templateId,
+			nil,
+			nil,
+			{
+				Quantity = payload.Quantity,
+				UnitPrice = unitPrice,
+				Price = totalPrice,
+				CurrencyKey = "Dollars",
+			}
+		)
+		return
+	end
+
+	totalPrice = unitPrice * quantity
 	local currencyKey = "Dollars"
 	local newDollarBalance = RoomPersistence.GetCurrency(player, currencyKey)
 
-	if price > 0 then
+	if totalPrice > 0 then
 		local removed, removeMessage, balance =
-			RoomPersistence.RemoveCurrency(player, currencyKey, price, "ShopPurchase:" .. item.Id)
+			RoomPersistence.RemoveCurrency(
+				player,
+				currencyKey,
+				totalPrice,
+				"ShopPurchase:" .. item.Id .. "x" .. tostring(quantity)
+			)
 
 		newDollarBalance = balance
 
@@ -682,7 +758,9 @@ local function handleAddToInventory(player, payload)
 				nil,
 				nil,
 				{
-					Price = price,
+					Quantity = quantity,
+					UnitPrice = unitPrice,
+					Price = totalPrice,
 					CurrencyKey = currencyKey,
 					NewCurrencyBalance = newDollarBalance,
 				}
@@ -692,16 +770,21 @@ local function handleAddToInventory(player, payload)
 	end
 
 	local added, message, newCount, inventoryDetails =
-		RoomPersistence.AddInventoryItem(player, templateId, 1, {
+		RoomPersistence.AddInventoryItem(player, templateId, quantity, {
 			Tradable = true,
 		})
 
 	if not added then
 		local refundedBalance = newDollarBalance
 
-		if price > 0 then
+		if totalPrice > 0 then
 			local refunded, refundMessage, balance =
-				RoomPersistence.AddCurrency(player, currencyKey, price, "ShopPurchaseRefund:" .. item.Id)
+				RoomPersistence.AddCurrency(
+					player,
+					currencyKey,
+					totalPrice,
+					"ShopPurchaseRefund:" .. item.Id .. "x" .. tostring(quantity)
+				)
 
 			refundedBalance = balance or refundedBalance
 
@@ -726,7 +809,9 @@ local function handleAddToInventory(player, payload)
 			newCount,
 			inventoryDetails,
 			{
-				Price = price,
+				Quantity = quantity,
+				UnitPrice = unitPrice,
+				Price = totalPrice,
 				CurrencyKey = currencyKey,
 				NewCurrencyBalance = refundedBalance,
 			}
@@ -734,20 +819,24 @@ local function handleAddToInventory(player, payload)
 		return
 	end
 
-	if price <= 0 then
+	if totalPrice <= 0 then
 		newDollarBalance = RoomPersistence.GetCurrency(player, currencyKey)
 	end
+
+	local itemName = tostring(item.DisplayName or item.Id)
 
 	sendAddToInventoryResult(
 		player,
 		true,
-		tostring(item.DisplayName or item.Id) .. " purchased.",
+		"Purchased " .. itemName .. " x" .. tostring(quantity) .. ".",
 		item,
 		templateId,
 		newCount,
 		inventoryDetails,
 		{
-			Price = price,
+			Quantity = quantity,
+			UnitPrice = unitPrice,
+			Price = totalPrice,
 			CurrencyKey = currencyKey,
 			NewCurrencyBalance = newDollarBalance,
 		}

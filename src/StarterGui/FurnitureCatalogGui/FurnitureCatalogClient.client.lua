@@ -28,6 +28,8 @@ end
 
 local latestCatalogItems = {}
 local requestInFlight = false
+local activePurchaseButton = nil
+local activePurchaseButtonText = nil
 
 local updateOpenButton = nil
 local destroyCatalogPlacementPreview = nil
@@ -1139,10 +1141,31 @@ end
 
 local function clearItemRows()
 	for _, child in ipairs(itemList:GetChildren()) do
-		if child:IsA("TextButton") then
+		if child:IsA("Frame") or child:IsA("TextButton") then
 			child:Destroy()
 		end
 	end
+end
+
+local function setActivePurchaseButton(button, defaultText)
+	if activePurchaseButton and activePurchaseButton.Parent then
+		activePurchaseButton.Active = true
+		activePurchaseButton.AutoButtonColor = true
+		activePurchaseButton.Text = activePurchaseButtonText or "Buy"
+	end
+
+	activePurchaseButton = button
+	activePurchaseButtonText = defaultText
+
+	if button then
+		button.Active = false
+		button.AutoButtonColor = false
+		button.Text = "Buying..."
+	end
+end
+
+local function resetActivePurchaseButton()
+	setActivePurchaseButton(nil, nil)
 end
 
 local function createItemRow(itemData, layoutOrder)
@@ -1156,14 +1179,28 @@ local function createItemRow(itemData, layoutOrder)
 		price = math.floor(itemData.Price)
 	end
 
-	local row = Instance.new("TextButton")
+	local maxQuantity = 99
+
+	if typeof(itemData.MaxPurchaseQuantity) == "number"
+		and itemData.MaxPurchaseQuantity == itemData.MaxPurchaseQuantity
+		and itemData.MaxPurchaseQuantity > 0
+		and itemData.MaxPurchaseQuantity < math.huge then
+
+		local maxPurchaseQuantity = math.floor(itemData.MaxPurchaseQuantity)
+
+		if maxPurchaseQuantity >= 1 then
+			maxQuantity = math.min(maxPurchaseQuantity, 99)
+		end
+	end
+
+	local selectedQuantity = 1
+
+	local row = Instance.new("Frame")
 	row.Name = tostring(itemData.Id)
 	row.LayoutOrder = layoutOrder
-	row.Size = UDim2.new(1, -4, 0, 100)
+	row.Size = UDim2.new(1, -4, 0, 142)
 	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
 	row.BorderSizePixel = 0
-	row.Text = ""
-	row.AutoButtonColor = true
 	row.Parent = itemList
 
 	createCorner(row, 10)
@@ -1176,7 +1213,7 @@ local function createItemRow(itemData, layoutOrder)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = tostring(itemData.DisplayName or itemData.Id)
 	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-	nameLabel.TextScaled = true
+	nameLabel.TextSize = 16
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	nameLabel.Font = Enum.Font.GothamBold
 	nameLabel.Parent = row
@@ -1184,11 +1221,11 @@ local function createItemRow(itemData, layoutOrder)
 	local descriptionLabel = Instance.new("TextLabel")
 	descriptionLabel.Name = "DescriptionLabel"
 	descriptionLabel.Position = UDim2.fromOffset(12, 36)
-	descriptionLabel.Size = UDim2.new(1, -24, 0, 24)
+	descriptionLabel.Size = UDim2.new(1, -24, 0, 22)
 	descriptionLabel.BackgroundTransparency = 1
 	descriptionLabel.Text = tostring(itemData.Description or "Add this item to your Inventory.")
 	descriptionLabel.TextColor3 = Color3.fromRGB(95, 95, 95)
-	descriptionLabel.TextScaled = true
+	descriptionLabel.TextSize = 12
 	descriptionLabel.TextWrapped = true
 	descriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
 	descriptionLabel.Font = Enum.Font.Gotham
@@ -1200,9 +1237,7 @@ local function createItemRow(itemData, layoutOrder)
 		table.insert(metadataParts, itemData.Category)
 	end
 
-	if typeof(itemData.Price) == "number" then
-		table.insert(metadataParts, "Price: " .. tostring(price) .. " Dollars")
-	end
+	table.insert(metadataParts, "Price: " .. tostring(price) .. " Dollars")
 
 	if itemData.Featured == true then
 		table.insert(metadataParts, "Featured")
@@ -1220,41 +1255,128 @@ local function createItemRow(itemData, layoutOrder)
 
 	local metadataLabel = Instance.new("TextLabel")
 	metadataLabel.Name = "MetadataLabel"
-	metadataLabel.Position = UDim2.fromOffset(12, 66)
-	metadataLabel.Size = UDim2.new(1, -150, 0, 20)
+	metadataLabel.Position = UDim2.fromOffset(12, 62)
+	metadataLabel.Size = UDim2.new(1, -24, 0, 20)
 	metadataLabel.BackgroundTransparency = 1
 	metadataLabel.Text = table.concat(metadataParts, " | ")
 	metadataLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
-	metadataLabel.TextScaled = true
+	metadataLabel.TextSize = 12
 	metadataLabel.TextXAlignment = Enum.TextXAlignment.Left
 	metadataLabel.Font = Enum.Font.GothamMedium
 	metadataLabel.Parent = row
 
-	local placeLabel = Instance.new("TextLabel")
-	placeLabel.Name = "PlaceLabel"
-	placeLabel.AnchorPoint = Vector2.new(1, 1)
-	placeLabel.Position = UDim2.new(1, -12, 1, -8)
-	placeLabel.Size = UDim2.fromOffset(120, 20)
-	placeLabel.BackgroundTransparency = 1
-	placeLabel.Text = price > 0 and "Buy" or "Get Item"
-	placeLabel.TextColor3 = Color3.fromRGB(70, 150, 255)
-	placeLabel.TextScaled = true
-	placeLabel.TextXAlignment = Enum.TextXAlignment.Right
-	placeLabel.Font = Enum.Font.GothamBold
-	placeLabel.Parent = row
+	local totalLabel = Instance.new("TextLabel")
+	totalLabel.Name = "TotalLabel"
+	totalLabel.Position = UDim2.fromOffset(12, 86)
+	totalLabel.Size = UDim2.new(1, -24, 0, 20)
+	totalLabel.BackgroundTransparency = 1
+	totalLabel.TextColor3 = Color3.fromRGB(70, 70, 70)
+	totalLabel.TextSize = 14
+	totalLabel.TextXAlignment = Enum.TextXAlignment.Left
+	totalLabel.Font = Enum.Font.GothamBold
+	totalLabel.Parent = row
 
-	row.MouseButton1Click:Connect(function()
+	local buyButtonText = price > 0 and "Buy" or "Get Item"
+
+	local function createSmallButton(name, text, position, size)
+		local button = Instance.new("TextButton")
+		button.Name = name
+		button.Position = position
+		button.Size = size
+		button.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+		button.BorderSizePixel = 0
+		button.Text = text
+		button.TextColor3 = Color3.fromRGB(45, 45, 45)
+		button.TextSize = 16
+		button.Font = Enum.Font.GothamBold
+		button.Parent = row
+
+		createCorner(button, 6)
+
+		return button
+	end
+
+	local controlsRight = -12
+	local controlsY = 108
+	local buyButton = createSmallButton(
+		"BuyButton",
+		buyButtonText,
+		UDim2.new(1, controlsRight - 72, 0, controlsY),
+		UDim2.fromOffset(72, 28)
+	)
+	buyButton.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
+	buyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+
+	local rightButton = createSmallButton(
+		"IncreaseQuantityButton",
+		">",
+		UDim2.new(1, controlsRight - 108, 0, controlsY),
+		UDim2.fromOffset(28, 28)
+	)
+
+	local quantityLabel = Instance.new("TextLabel")
+	quantityLabel.Name = "QuantityLabel"
+	quantityLabel.Position = UDim2.new(1, controlsRight - 148, 0, controlsY)
+	quantityLabel.Size = UDim2.fromOffset(34, 28)
+	quantityLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+	quantityLabel.BorderSizePixel = 0
+	quantityLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+	quantityLabel.TextSize = 16
+	quantityLabel.Font = Enum.Font.GothamBold
+	quantityLabel.Parent = row
+
+	createCorner(quantityLabel, 6)
+
+	local leftButton = createSmallButton(
+		"DecreaseQuantityButton",
+		"<",
+		UDim2.new(1, controlsRight - 184, 0, controlsY),
+		UDim2.fromOffset(28, 28)
+	)
+
+	local function updateQuantityDisplay()
+		quantityLabel.Text = tostring(selectedQuantity)
+		totalLabel.Text = "Total: " .. tostring(price * selectedQuantity) .. " Dollars"
+		leftButton.Active = selectedQuantity > 1
+		leftButton.AutoButtonColor = selectedQuantity > 1
+		rightButton.Active = selectedQuantity < maxQuantity
+		rightButton.AutoButtonColor = selectedQuantity < maxQuantity
+	end
+
+	leftButton.MouseButton1Click:Connect(function()
+		if requestInFlight or selectedQuantity <= 1 then
+			return
+		end
+
+		selectedQuantity -= 1
+		updateQuantityDisplay()
+	end)
+
+	rightButton.MouseButton1Click:Connect(function()
+		if requestInFlight or selectedQuantity >= maxQuantity then
+			return
+		end
+
+		selectedQuantity += 1
+		updateQuantityDisplay()
+	end)
+
+	buyButton.MouseButton1Click:Connect(function()
 		if requestInFlight then
 			return
 		end
 
 		requestInFlight = true
-		setStatus("Buying " .. tostring(itemData.DisplayName or itemData.Id) .. "...")
+		setActivePurchaseButton(buyButton, buyButtonText)
+		setStatus("Buying " .. tostring(itemData.DisplayName or itemData.Id) .. " x" .. tostring(selectedQuantity) .. "...")
 
 		furnitureCatalogRequest:FireServer("AddToInventory", {
 			ItemId = itemData.Id,
+			Quantity = selectedQuantity,
 		})
 	end)
+
+	updateQuantityDisplay()
 end
 
 local function renderCatalog(items)
@@ -1381,6 +1503,12 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 
 	if kind == "AddToInventory" then
 		requestInFlight = false
+		resetActivePurchaseButton()
+
+		if message == "Slow down before getting another item." then
+			message = "Please wait a moment."
+		end
+
 		setStatus(message)
 		fireCurrencyLocalDeltaFromAddToInventoryResult(response)
 

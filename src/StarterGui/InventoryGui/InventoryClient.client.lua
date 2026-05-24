@@ -161,7 +161,7 @@ statusLabel.Parent = panel
 local listFrame = Instance.new("ScrollingFrame")
 listFrame.Name = "InventoryList"
 listFrame.Position = UDim2.fromOffset(18, 104)
-listFrame.Size = UDim2.new(1, -36, 1, -164)
+listFrame.Size = UDim2.new(1, -36, 1, -124)
 listFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 listFrame.BorderSizePixel = 0
 listFrame.ScrollBarThickness = 6
@@ -182,21 +182,6 @@ listPadding.PaddingBottom = UDim.new(0, 10)
 listPadding.PaddingLeft = UDim.new(0, 10)
 listPadding.PaddingRight = UDim.new(0, 10)
 listPadding.Parent = listFrame
-
-local refreshButton = Instance.new("TextButton")
-refreshButton.Name = "RefreshButton"
-refreshButton.AnchorPoint = Vector2.new(0.5, 1)
-refreshButton.Position = UDim2.new(0.5, 0, 1, -22)
-refreshButton.Size = UDim2.fromOffset(180, 38)
-refreshButton.BackgroundColor3 = Color3.fromRGB(70, 120, 190)
-refreshButton.BorderSizePixel = 0
-refreshButton.Text = "Refresh"
-refreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-refreshButton.TextScaled = true
-refreshButton.Font = Enum.Font.GothamBold
-refreshButton.Parent = panel
-
-createCorner(refreshButton, 9)
 
 local function shouldShowInventoryButton()
 	local currentRoomName = player:GetAttribute("CurrentRoomName")
@@ -489,16 +474,6 @@ local requestInventoryRefresh = nil
 
 local function setRequestInFlight(isInFlight)
 	requestInFlight = isInFlight
-	refreshButton.Active = not isInFlight
-	refreshButton.AutoButtonColor = not isInFlight
-
-	if isInFlight then
-		refreshButton.Text = "Loading..."
-		refreshButton.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
-	else
-		refreshButton.Text = "Refresh"
-		refreshButton.BackgroundColor3 = Color3.fromRGB(70, 120, 190)
-	end
 end
 
 local function queueInventoryRefresh(reason, delaySeconds, force)
@@ -545,10 +520,6 @@ requestInventoryRefresh = function(reason, force)
 
 	local thisRequestSerial = requestSerial
 
-	if panel.Visible and (reason == "manual" or not hasLoadedInventory) then
-		setStatus("Loading inventory.", nil)
-	end
-
 	inventoryRequest:FireServer("GetInventory")
 
 	task.delay(REQUEST_TIMEOUT_SECONDS, function()
@@ -587,10 +558,6 @@ end)
 
 closeButton.MouseButton1Click:Connect(function()
 	setPanelVisible(false)
-end)
-
-refreshButton.MouseButton1Click:Connect(function()
-	requestInventoryRefresh("manual")
 end)
 
 inventoryRefreshRequested.Event:Connect(function(options)
@@ -643,7 +610,7 @@ inventoryResult.OnClientEvent:Connect(function(response)
 	if success and typeof(response.Inventory) == "table" then
 		hasLoadedInventory = true
 		renderInventory(response.Inventory, response.InventoryDetails)
-		setStatus(message ~= "" and message or "Inventory loaded.", true)
+		setStatus("", nil)
 	elseif message == "Slow down before requesting inventory." then
 		warn(message)
 		queueInventoryRefresh("serverCooldown", LOCAL_REQUEST_COOLDOWN_SECONDS)
