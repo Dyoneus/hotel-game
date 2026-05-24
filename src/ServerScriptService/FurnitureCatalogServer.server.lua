@@ -717,14 +717,31 @@ local function handlePlaceItem(player, payload, options)
 
 	furnitureClone.Parent = furnitureFolder
 
-	RoomPersistence.CaptureRoomState(player, roomModel)
+	local roomState = RoomPersistence.CaptureRoomState(player, roomModel)
+	local saved = false
+
+	if roomState then
+		saved = RoomPersistence.SavePlayer(player)
+
+		if not saved then
+			warn("Furniture placement save flush failed for", player.Name, item.TemplateName)
+		end
+	else
+		warn("Furniture placement room capture failed for", player.Name, item.TemplateName)
+	end
+
+	local saveMessageSuffix = ""
+
+	if not saved then
+		saveMessageSuffix = " Save may be delayed."
+	end
 
 	if consumeInventory then
 		sendResult(
 			player,
 			resultKind,
 			true,
-			item.DisplayName .. " placed from inventory.",
+			item.DisplayName .. " placed from inventory." .. saveMessageSuffix,
 			{
 				ItemId = item.Id,
 				TemplateId = item.TemplateName,
@@ -739,7 +756,7 @@ local function handlePlaceItem(player, payload, options)
 		player,
 		"PlaceItem",
 		true,
-		item.DisplayName .. " placed. Use Move to reposition it.",
+		item.DisplayName .. " placed. Use Move to reposition it." .. saveMessageSuffix,
 		{
 			ItemId = item.Id,
 			PersistentId = furnitureClone:GetAttribute("PersistentId"),

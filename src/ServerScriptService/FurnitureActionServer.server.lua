@@ -1253,12 +1253,29 @@ local function pickUpFurniture(player, furnitureModel)
 
 	furnitureModel:Destroy()
 
-	RoomPersistence.CaptureRoomState(player, roomModel)
+	local roomState = RoomPersistence.CaptureRoomState(player, roomModel)
+	local saved = false
+
+	if roomState then
+		saved = RoomPersistence.SavePlayer(player)
+
+		if not saved then
+			warn("Pick Up save flush failed for", player.Name, templateId)
+		end
+	else
+		warn("Pick Up room capture failed for", player.Name, templateId)
+	end
+
+	local resultMessage = "Picked up " .. templateId .. "."
+
+	if not saved then
+		resultMessage = resultMessage .. " Save may be delayed."
+	end
 
 	sendPickUpResult(
 		player,
 		true,
-		"Picked up " .. templateId .. ".",
+		resultMessage,
 		templateId,
 		newCount
 	)
