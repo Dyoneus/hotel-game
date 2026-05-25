@@ -10,9 +10,19 @@ local RoomPersistence = {}
 local DATASTORE_NAME = "PlayerProfiles_v1"
 local SAVE_DELAY_SECONDS = 12
 local STARTER_DOLLARS = 150
-local DAILY_REWARD_BASE_DOLLARS = 50
-local DAILY_REWARD_STREAK_BONUS_DOLLARS = 10
-local DAILY_REWARD_MAX_DOLLARS = 150
+local DAILY_REWARD_CURRENCY_KEY = "Dollars"
+local DAILY_REWARD_ICON = ""
+local CLAIM_COOLDOWN_SECONDS = 24 * 60 * 60
+local CLAIM_GRACE_WINDOW_SECONDS = 24 * 60 * 60
+local DAILY_REWARD_SCHEDULE = {
+	50,
+	60,
+	70,
+	80,
+	90,
+	100,
+	150,
+}
 
 local profileStore = DataStoreService:GetDataStore(DATASTORE_NAME)
 
@@ -42,7 +52,7 @@ local function createDefaultProfile()
 			Event = {},
 		},
 		DailyReward = {
-			LastClaimDay = nil,
+			LastClaimUnix = nil,
 			Streak = 0,
 		},
 
@@ -256,11 +266,45 @@ local function getUtcDayKey(timeValue)
 	return os.date("!%Y-%m-%d", timeValue or os.time())
 end
 
+local function getLegacyDailyRewardUnix(dailyReward, now)
+	local lastClaimDay = dailyReward.LastClaimDay
+
+	if typeof(lastClaimDay) ~= "string" or lastClaimDay == "" then
+		return nil
+	end
+
+	if lastClaimDay == getUtcDayKey(now) then
+		return now
+	end
+
+	local year, month, day = lastClaimDay:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$")
+
+	if not year then
+		return nil
+	end
+
+	return os.time({
+		year = tonumber(year),
+		month = tonumber(month),
+		day = tonumber(day),
+		hour = 12,
+		min = 0,
+		sec = 0,
+	})
+end
+
 local function ensureDailyReward(profile)
 	local dailyReward = profile.DailyReward
+	local now = os.time()
 
 	if typeof(dailyReward) ~= "table" then
 		dailyReward = {}
+	end
+
+	if isNonNegativeInteger(dailyReward.LastClaimUnix) and dailyReward.LastClaimUnix > 0 then
+		dailyReward.LastClaimUnix = math.floor(dailyReward.LastClaimUnix)
+	else
+		dailyReward.LastClaimUnix = getLegacyDailyRewardUnix(dailyReward, now)
 	end
 
 	if typeof(dailyReward.LastClaimDay) ~= "string" or dailyReward.LastClaimDay == "" then
@@ -273,29 +317,96 @@ local function ensureDailyReward(profile)
 	return profile.DailyReward
 end
 
-local function getNextDailyRewardStreak(dailyReward, todayKey)
-	if dailyReward.LastClaimDay == todayKey then
-		return dailyReward.Streak
+local function getDailyRewardDayIndex(streak)
+	if not isPositiveInteger(streak) then
+		return 1
 	end
 
-	local yesterdayKey = getUtcDayKey(os.time() - 86400)
-
-	if dailyReward.LastClaimDay == yesterdayKey then
-		return dailyReward.Streak + 1
-	end
-
-	return 1
+	return math.clamp(streak, 1, #DAILY_REWARD_SCHEDULE)
 end
 
-local function getDailyRewardAmount(streak)
-	if not isPositiveInteger(streak) then
-		streak = 1
+local function getNextDailyRewardDayIndex(streak)
+	local nextStreak = (isNonNegativeInteger(streak) and streak or 0) + 1
+
+	return getDailyRewardDayIndex(nextStreak)
+end
+
+local function getDailyRewardAmountForDay(dayIndex)
+	return DAILY_REWARD_SCHEDULE[getDailyRewardDayIndex(dayIndex)] or DAILY_REWARD_SCHEDULE[1]
+end
+
+local function getDailyRewardScheduleSnapshot()
+	local rewards = {}
+
+	for day, amount in ipairs(DAILY_REWARD_SCHEDULE) do
+		table.insert(rewards, {
+			Day = day,
+			CurrencyKey = DAILY_REWARD_CURRENCY_KEY,
+			Amount = amount,
+			Icon = DAILY_REWARD_ICON,
+		})
 	end
 
-	return math.min(
-		DAILY_REWARD_BASE_DOLLARS + (streak - 1) * DAILY_REWARD_STREAK_BONUS_DOLLARS,
-		DAILY_REWARD_MAX_DOLLARS
-	)
+	return rewards
+end
+
+local function getDailyRewardClaimState(dailyReward, now)
+	local streak = isNonNegativeInteger(dailyReward.Streak) and dailyReward.Streak or 0
+	local lastClaimUnix = dailyReward.LastClaimUnix
+
+	if not isNonNegativeInteger(lastClaimUnix) or lastClaimUnix <= 0 then
+		return {
+			CanClaim = true,
+			LastClaimUnix = nil,
+			Streak = 0,
+			CurrentDayIndex = 1,
+			RewardAmount = getDailyRewardAmountForDay(1),
+			NextClaimUnix = nil,
+			SecondsUntilNextClaim = 0,
+			StreakResetPending = false,
+		}
+	end
+
+	local elapsed = math.max(now - lastClaimUnix, 0)
+	local nextClaimUnix = lastClaimUnix + CLAIM_COOLDOWN_SECONDS
+	local currentDayIndex = getNextDailyRewardDayIndex(streak)
+
+	if elapsed < CLAIM_COOLDOWN_SECONDS then
+		return {
+			CanClaim = false,
+			LastClaimUnix = lastClaimUnix,
+			Streak = streak,
+			CurrentDayIndex = currentDayIndex,
+			RewardAmount = getDailyRewardAmountForDay(currentDayIndex),
+			NextClaimUnix = nextClaimUnix,
+			SecondsUntilNextClaim = math.max(math.ceil(CLAIM_COOLDOWN_SECONDS - elapsed), 0),
+			StreakResetPending = false,
+		}
+	end
+
+	if elapsed < CLAIM_COOLDOWN_SECONDS + CLAIM_GRACE_WINDOW_SECONDS then
+		return {
+			CanClaim = true,
+			LastClaimUnix = lastClaimUnix,
+			Streak = streak,
+			CurrentDayIndex = currentDayIndex,
+			RewardAmount = getDailyRewardAmountForDay(currentDayIndex),
+			NextClaimUnix = nil,
+			SecondsUntilNextClaim = 0,
+			StreakResetPending = false,
+		}
+	end
+
+	return {
+		CanClaim = true,
+		LastClaimUnix = lastClaimUnix,
+		Streak = streak,
+		CurrentDayIndex = 1,
+		RewardAmount = getDailyRewardAmountForDay(1),
+		NextClaimUnix = nil,
+		SecondsUntilNextClaim = 0,
+		StreakResetPending = true,
+	}
 end
 
 local function getInventoryCountDetails(profile, templateId)
@@ -810,29 +921,38 @@ function RoomPersistence.GrantStarterDollarsIfNeeded(player)
 end
 
 function RoomPersistence.GetDailyRewardStatus(player)
-	local todayKey = getUtcDayKey()
+	local now = os.time()
 	local profile = profilesByPlayer[player]
 
 	if not profile then
 		return {
 			CanClaim = false,
-			LastClaimDay = nil,
-			TodayKey = todayKey,
+			ClaimedToday = false,
+			LastClaimUnix = nil,
 			Streak = 0,
-			RewardAmount = DAILY_REWARD_BASE_DOLLARS,
+			CurrentDayIndex = 1,
+			RewardAmount = getDailyRewardAmountForDay(1),
+			NextClaimUnix = nil,
+			SecondsUntilNextClaim = 0,
+			StreakResetPending = false,
+			Rewards = getDailyRewardScheduleSnapshot(),
 		}
 	end
 
 	local dailyReward = ensureDailyReward(profile)
-	local canClaim = dailyReward.LastClaimDay ~= todayKey
-	local nextStreak = getNextDailyRewardStreak(dailyReward, todayKey)
+	local claimState = getDailyRewardClaimState(dailyReward, now)
 
 	return {
-		CanClaim = canClaim,
-		LastClaimDay = dailyReward.LastClaimDay,
-		TodayKey = todayKey,
-		Streak = dailyReward.Streak,
-		RewardAmount = getDailyRewardAmount(nextStreak),
+		CanClaim = claimState.CanClaim,
+		ClaimedToday = false,
+		LastClaimUnix = claimState.LastClaimUnix,
+		Streak = claimState.Streak,
+		CurrentDayIndex = claimState.CurrentDayIndex,
+		RewardAmount = claimState.RewardAmount,
+		NextClaimUnix = claimState.NextClaimUnix,
+		SecondsUntilNextClaim = claimState.SecondsUntilNextClaim,
+		StreakResetPending = claimState.StreakResetPending,
+		Rewards = getDailyRewardScheduleSnapshot(),
 	}
 end
 
@@ -843,24 +963,29 @@ function RoomPersistence.ClaimDailyReward(player)
 		return false, "Profile is not loaded.", nil, nil, RoomPersistence.GetDailyRewardStatus(player)
 	end
 
-	local todayKey = getUtcDayKey()
+	local now = os.time()
 	local dailyReward = ensureDailyReward(profile)
+	local claimState = getDailyRewardClaimState(dailyReward, now)
+	local hadLastClaimUnix = isNonNegativeInteger(dailyReward.LastClaimUnix)
+		and dailyReward.LastClaimUnix > 0
 
-	if dailyReward.LastClaimDay == todayKey then
-		return false, "Daily reward already claimed.", nil, getCurrencyBalance(profile, "Dollars"), RoomPersistence.GetDailyRewardStatus(player)
+	if not claimState.CanClaim then
+		return false, "Daily reward is not ready.", nil, getCurrencyBalance(profile, "Dollars"), RoomPersistence.GetDailyRewardStatus(player)
 	end
 
-	local newStreak = getNextDailyRewardStreak(dailyReward, todayKey)
-	local rewardAmount = getDailyRewardAmount(newStreak)
+	local rewardAmount = getDailyRewardAmountForDay(claimState.CurrentDayIndex)
 	local added, message, newDollarBalance =
-		RoomPersistence.AddCurrency(player, "Dollars", rewardAmount, "DailyReward:" .. todayKey)
+		RoomPersistence.AddCurrency(player, DAILY_REWARD_CURRENCY_KEY, rewardAmount, "DailyReward:" .. tostring(now))
 
 	if not added then
 		return false, message or "Could not claim daily reward.", nil, newDollarBalance, RoomPersistence.GetDailyRewardStatus(player)
 	end
 
-	dailyReward.LastClaimDay = todayKey
-	dailyReward.Streak = newStreak
+	dailyReward.LastClaimUnix = now
+	local shouldResetStreak = claimState.StreakResetPending or not hadLastClaimUnix
+	dailyReward.Streak = shouldResetStreak
+		and 1
+		or math.clamp((dailyReward.Streak or 0) + 1, 1, #DAILY_REWARD_SCHEDULE)
 	profile.UpdatedAt = os.time()
 
 	RoomPersistence.QueueSave(player)
