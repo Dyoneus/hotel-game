@@ -2,9 +2,12 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
+local TextService = game:GetService("TextService")
 
+local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
-local PublicRoomConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("PublicRoomConfig"))
+local PublicRoomConfig = require(sharedFolder:WaitForChild("PublicRoomConfig"))
+local RoomTextPolicyConfig = require(sharedFolder:WaitForChild("RoomTextPolicyConfig"))
 
 local playerRooms = {}
 local playerRoomSlots = {}
@@ -15,6 +18,24 @@ local roomCreationInFlightByUserId = {}
 local roomTemplates = ReplicatedStorage:WaitForChild("RoomTemplates")
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 
+local function getOrCreateRemoteEvent(name)
+	local existing = remoteEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("RemoteEvent") then
+			error(name .. " exists but is not a RemoteEvent.")
+		end
+
+		return existing
+	end
+
+	local remoteEvent = Instance.new("RemoteEvent")
+	remoteEvent.Name = name
+	remoteEvent.Parent = remoteEvents
+
+	return remoteEvent
+end
+
 local createRoomRequest = remoteEvents:WaitForChild("CreateRoomRequest")
 local roomCreationResult = remoteEvents:WaitForChild("RoomCreationResult")
 local characterCreationFinished = remoteEvents:WaitForChild("CharacterCreationFinished")
@@ -22,6 +43,8 @@ local roomListRequest = remoteEvents:WaitForChild("RoomListRequest")
 local roomListUpdate = remoteEvents:WaitForChild("RoomListUpdate")
 local joinRoomRequest = remoteEvents:WaitForChild("JoinRoomRequest")
 local joinRoomResult = remoteEvents:WaitForChild("JoinRoomResult")
+local roomSettingsRequest = getOrCreateRemoteEvent("RoomSettingsRequest")
+local roomSettingsResult = getOrCreateRemoteEvent("RoomSettingsResult")
 
 local tutorialFinishedRequest = remoteEvents:WaitForChild("TutorialFinishedRequest")
 
@@ -33,6 +56,14 @@ local VALID_LAYOUTS = {
 	Layout_03 = true,
 }
 
+local ROOM_DISPLAY_NAME_MAX_LENGTH = 30
+local ROOM_DESCRIPTION_MAX_LENGTH = 100
+local ROOM_SETTINGS_COOLDOWN_SECONDS = 1
+local BLOCKED_ROOM_TEXT_POLICY = RoomTextPolicyConfig.BlockedTerms or {}
+local ROOM_TEXT_CONTEXT_TERMS = RoomTextPolicyConfig.ContextTerms or {}
+local ROOM_TEXT_COMBINATION_RULES = RoomTextPolicyConfig.CombinationRules or {}
+local ROOM_TEXT_LEET_REPLACEMENTS = RoomTextPolicyConfig.LeetReplacements or {}
+
 local PLAYER_ROOM_ZONE_ORIGIN = Vector3.new(0, 0, 0)
 local PLAYER_ROOM_SPACING = 1000
 local PUBLIC_ROOM_ZONE_ORIGIN = Vector3.new(100000, 0, 0)
@@ -43,6 +74,7 @@ local PUBLIC_ROOM_SPACING = 10000
 local playerRooms = {}
 local playerRoomSlots = {}
 local nextRoomSlot = 0
+local roomSettingsLastRequestAtByUserId = {}
 
 local function getRoomName(player)
 	return "Room_" .. player.UserId
@@ -57,6 +89,246 @@ local function getRoomPositionForPlayer(player)
 	local slot = playerRoomSlots[player]
 
 	return PLAYER_ROOM_ZONE_ORIGIN + Vector3.new((slot - 1) * PLAYER_ROOM_SPACING, 0, 0)
+end
+
+local function trimRoomText(value)
+	if typeof(value) ~= "string" then
+		return value
+	end
+
+	return value:match("^%s*(.-)%s*$") or ""
+end
+
+local function normalizeRoomTextForPolicy(text)
+	if typeof(text) ~= "string" then
+		return ""
+	end
+
+	local normalizedCharacters = {}
+
+	for character in string.lower(text):gmatch(".") do
+		character = ROOM_TEXT_LEET_REPLACEMENTS[character] or character
+
+		if character:match("%w") then
+			table.insert(normalizedCharacters, character)
+		end
+	end
+
+	return table.concat(normalizedCharacters)
+end
+
+local function collapseRepeatedCharacters(text)
+	if typeof(text) ~= "string" or text == "" then
+		return ""
+	end
+
+	local collapsed = {}
+	local previousCharacter = nil
+
+	for character in text:gmatch(".") do
+		if character ~= previousCharacter then
+			table.insert(collapsed, character)
+			previousCharacter = character
+		end
+	end
+
+	return table.concat(collapsed)
+end
+
+local function normalizedTextContainsTerm(normalizedText, collapsedText, term)
+	local normalizedTerm = normalizeRoomTextForPolicy(term)
+	local collapsedTerm = collapseRepeatedCharacters(normalizedTerm)
+
+	if normalizedTerm == "" then
+		return false
+	end
+
+	return string.find(normalizedText, normalizedTerm, 1, true) ~= nil
+		or string.find(collapsedText, normalizedTerm, 1, true) ~= nil
+		or (collapsedTerm ~= "" and string.find(normalizedText, collapsedTerm, 1, true) ~= nil)
+		or (collapsedTerm ~= "" and string.find(collapsedText, collapsedTerm, 1, true) ~= nil)
+end
+
+local function normalizedTextContainsAnyTerm(normalizedText, collapsedText, terms)
+	for _, term in ipairs(terms) do
+		if normalizedTextContainsTerm(normalizedText, collapsedText, term) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function containsBlockedRoomText(text)
+	if typeof(text) ~= "string" or text == "" then
+		return false
+	end
+
+	local normalizedText = normalizeRoomTextForPolicy(text)
+	local collapsedText = collapseRepeatedCharacters(normalizedText)
+
+	if normalizedText == "" then
+		return false
+	end
+
+	for category, blockedTerms in pairs(BLOCKED_ROOM_TEXT_POLICY) do
+		for _, blockedTerm in ipairs(blockedTerms) do
+			if normalizedTextContainsTerm(normalizedText, collapsedText, blockedTerm) then
+				return true, category
+			end
+		end
+	end
+
+	return false
+end
+
+local function warnRoomTextRejected(player, stage, reasonCategory, textLength)
+	warn(string.format(
+		"Room text rejected: userId=%s stage=%s category=%s length=%d",
+		tostring(player and player.UserId or "unknown"),
+		tostring(stage or "Unknown"),
+		tostring(reasonCategory or "Policy"),
+		tonumber(textLength) or 0
+	))
+end
+
+local function validateRoomTextPolicy(displayName, description)
+	local safeDisplayName = typeof(displayName) == "string" and trimRoomText(displayName) or ""
+	local safeDescription = typeof(description) == "string" and trimRoomText(description) or ""
+	local combinedText = safeDisplayName .. " " .. safeDescription
+	local normalizedText = normalizeRoomTextForPolicy(combinedText)
+	local collapsedText = collapseRepeatedCharacters(normalizedText)
+
+	if normalizedText == "" then
+		return true, nil, nil, 0
+	end
+
+	for category, blockedTerms in pairs(BLOCKED_ROOM_TEXT_POLICY) do
+		if normalizedTextContainsAnyTerm(normalizedText, collapsedText, blockedTerms) then
+			return false, "Room text is not appropriate for public rooms.", category, #combinedText
+		end
+	end
+
+	local matchedContexts = {}
+
+	for contextName, contextTerms in pairs(ROOM_TEXT_CONTEXT_TERMS) do
+		if typeof(contextTerms) == "table" then
+			matchedContexts[contextName] =
+				normalizedTextContainsAnyTerm(normalizedText, collapsedText, contextTerms)
+		end
+	end
+
+	for _, rule in ipairs(ROOM_TEXT_COMBINATION_RULES) do
+		if typeof(rule) == "table" then
+			local allContexts = rule.AllContexts
+			local ruleMatched = typeof(allContexts) == "table" and #allContexts > 0
+
+			if ruleMatched then
+				for _, contextName in ipairs(allContexts) do
+					if not matchedContexts[contextName] then
+						ruleMatched = false
+						break
+					end
+				end
+			end
+
+			if ruleMatched and typeof(rule.AnyTerms) == "table" and #rule.AnyTerms > 0 then
+				ruleMatched = normalizedTextContainsAnyTerm(normalizedText, collapsedText, rule.AnyTerms)
+			end
+
+			if ruleMatched then
+				return false,
+					"Room text is not appropriate for public rooms.",
+					rule.Category or rule.Name or "CombinationRule",
+					#combinedText
+			end
+		end
+	end
+
+	return true, nil, nil, #combinedText
+end
+
+local function hasFilterReplacementCharacters(text)
+	return typeof(text) == "string" and string.find(text, "#", 1, true) ~= nil
+end
+
+local function filterRoomTextForNavigator(player, rawText, fieldName, maxLength, allowEmpty)
+	if typeof(rawText) ~= "string" then
+		return false, fieldName .. " must be text."
+	end
+
+	local text = trimRoomText(rawText)
+
+	if text == "" and not allowEmpty then
+		return false, fieldName .. " cannot be empty."
+	end
+
+	if #text > maxLength then
+		return false, fieldName .. " too long. Maximum " .. tostring(maxLength) .. " characters."
+	end
+
+	local rawBlocked, rawBlockedCategory = containsBlockedRoomText(text)
+
+	if rawBlocked then
+		warnRoomTextRejected(player, fieldName .. "Raw", rawBlockedCategory, #text)
+		return false, "Room text contains blocked words."
+	end
+
+	if text == "" then
+		return true, nil, ""
+	end
+
+	local success, filteredText = pcall(function()
+		local filterResult = TextService:FilterStringAsync(
+			text,
+			player.UserId,
+			Enum.TextFilterContext.PublicChat
+		)
+
+		return filterResult:GetNonChatStringForBroadcastAsync()
+	end)
+
+	if not success or typeof(filteredText) ~= "string" then
+		warn("Room text filtering failed:", filteredText)
+		return false, "Could not filter room text. Please try again."
+	end
+
+	filteredText = trimRoomText(filteredText)
+
+	if filteredText == "" and not allowEmpty then
+		return false, fieldName .. " was blocked by filtering."
+	end
+
+	if hasFilterReplacementCharacters(filteredText) then
+		warnRoomTextRejected(player, fieldName .. "Filtered", "RobloxFilterReplacement", #filteredText)
+		return false, "Room text could not be used. Please try different wording."
+	end
+
+	if #filteredText > maxLength then
+		return false, fieldName .. " too long. Maximum " .. tostring(maxLength) .. " characters."
+	end
+
+	local filteredBlocked, filteredBlockedCategory = containsBlockedRoomText(filteredText)
+
+	if filteredBlocked then
+		warnRoomTextRejected(player, fieldName .. "Filtered", filteredBlockedCategory, #filteredText)
+		return false, "Room text contains blocked words."
+	end
+
+	return true, nil, filteredText
+end
+
+local function isRoomSettingsRequestRateLimited(player)
+	local now = os.clock()
+	local lastRequestAt = roomSettingsLastRequestAtByUserId[player.UserId]
+
+	if lastRequestAt and now - lastRequestAt < ROOM_SETTINGS_COOLDOWN_SECONDS then
+		return true
+	end
+
+	roomSettingsLastRequestAtByUserId[player.UserId] = now
+
+	return false
 end
 
 local function getPublicRoomActiveName(publicRoomId)
@@ -282,6 +554,20 @@ local function getRoomMetadata(ownerPlayer, ownerDisplayName)
 	}
 end
 
+local function applyPlayerRoomMetadataAttributes(roomModel, metadata)
+	if not roomModel or not roomModel:IsA("Model") or typeof(metadata) ~= "table" then
+		return
+	end
+
+	roomModel:SetAttribute("RoomType", "PlayerRoom")
+	roomModel:SetAttribute("RoomId", metadata.RoomId or "Primary")
+	roomModel:SetAttribute("DisplayName", metadata.DisplayName)
+	roomModel:SetAttribute("Category", metadata.Category)
+	roomModel:SetAttribute("IsPublic", metadata.IsPublic == true)
+	roomModel:SetAttribute("MaxOccupancy", metadata.MaxOccupancy)
+	roomModel:SetAttribute("Description", metadata.Description)
+end
+
 local function buildRoomList(viewerPlayer)
 	local roomList = {}
 	local currentRoomName = viewerPlayer and viewerPlayer:GetAttribute("CurrentRoomName") or nil
@@ -308,6 +594,8 @@ local function buildRoomList(viewerPlayer)
 			end
 
 			local metadata = getRoomMetadata(ownerPlayer, ownerDisplayName)
+			applyPlayerRoomMetadataAttributes(roomModel, metadata)
+
 			local isOwner = typeof(ownerUserId) == "number"
 				and viewerPlayer
 				and viewerPlayer.UserId == ownerUserId
@@ -575,6 +863,16 @@ local function joinRoom(player, roomName)
 		return
 	end
 
+	local ownerPlayer = getRoomOwnerPlayer(roomModel)
+	local isOwner = player.UserId == ownerUserId
+	local ownerDisplayName = ownerPlayer and ownerPlayer.DisplayName or ("User_" .. tostring(ownerUserId))
+	local metadata = getRoomMetadata(ownerPlayer, ownerDisplayName)
+
+	if not metadata.IsPublic and not isOwner then
+		joinRoomResult:FireClient(player, false, "Room is private.")
+		return
+	end
+
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("RoomMode", "Play")
 
@@ -652,6 +950,7 @@ end)
 
 Players.PlayerRemoving:Connect(function(player)
 	roomCreationInFlightByUserId[player.UserId] = nil
+	roomSettingsLastRequestAtByUserId[player.UserId] = nil
 	
 	if RoomPersistence.IsWriteBlocked(player) then
 		RoomPersistence.ReleasePlayer(player)
@@ -819,6 +1118,160 @@ end)
 
 roomListRequest.OnServerEvent:Connect(function(player)
 	sendRoomListToPlayer(player)
+end)
+
+roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
+	local safeActionName = typeof(actionName) == "string" and actionName or "Unknown"
+
+	if safeActionName == "UpdateSettings" and isRoomSettingsRequestRateLimited(player) then
+		roomSettingsResult:FireClient(player, {
+			Kind = "RoomSettings",
+			Action = safeActionName,
+			Success = false,
+			Message = "Please wait a moment before updating room settings.",
+		})
+		return
+	end
+
+	if safeActionName == "GetSettings" then
+		local settings = RoomPersistence.GetRoomDirectorySnapshot(player)
+
+		if typeof(settings) ~= "table" then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = "GetSettings",
+				Success = false,
+				Message = "Room settings are not loaded.",
+			})
+			return
+		end
+
+		roomSettingsResult:FireClient(player, {
+			Kind = "RoomSettings",
+			Action = "GetSettings",
+			Success = true,
+			Message = "Room settings loaded.",
+			Settings = settings,
+		})
+		return
+	end
+
+	if safeActionName == "UpdateSettings" then
+		if typeof(payload) ~= "table" then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = "UpdateSettings",
+				Success = false,
+				Message = "Invalid room settings.",
+			})
+			return
+		end
+
+		local rawDescription = payload.Description
+
+		if rawDescription == nil then
+			rawDescription = ""
+		end
+
+		if typeof(payload.DisplayName) == "string" and typeof(rawDescription) == "string" then
+			local rawPolicyOk, rawPolicyMessage, rawPolicyCategory, rawPolicyLength =
+				validateRoomTextPolicy(payload.DisplayName, rawDescription)
+
+			if not rawPolicyOk then
+				warnRoomTextRejected(player, "CombinedRaw", rawPolicyCategory, rawPolicyLength)
+				roomSettingsResult:FireClient(player, {
+					Kind = "RoomSettings",
+					Action = "UpdateSettings",
+					Success = false,
+					Message = rawPolicyMessage,
+				})
+				return
+			end
+		end
+
+		local displayNameOk, displayNameMessage, filteredDisplayName = filterRoomTextForNavigator(
+			player,
+			payload.DisplayName,
+			"Room name",
+			ROOM_DISPLAY_NAME_MAX_LENGTH,
+			false
+		)
+
+		if not displayNameOk then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = "UpdateSettings",
+				Success = false,
+				Message = displayNameMessage,
+			})
+			return
+		end
+
+		local descriptionOk, descriptionMessage, filteredDescription = filterRoomTextForNavigator(
+			player,
+			rawDescription,
+			"Description",
+			ROOM_DESCRIPTION_MAX_LENGTH,
+			true
+		)
+
+		if not descriptionOk then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = "UpdateSettings",
+				Success = false,
+				Message = descriptionMessage,
+			})
+			return
+		end
+
+		local filteredPolicyOk, filteredPolicyMessage, filteredPolicyCategory, filteredPolicyLength =
+			validateRoomTextPolicy(filteredDisplayName, filteredDescription)
+
+		if not filteredPolicyOk then
+			warnRoomTextRejected(player, "CombinedFiltered", filteredPolicyCategory, filteredPolicyLength)
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = "UpdateSettings",
+				Success = false,
+				Message = filteredPolicyMessage,
+			})
+			return
+		end
+
+		local success, message, settings = RoomPersistence.UpdateRoomDirectory(player, {
+			DisplayName = filteredDisplayName,
+			Category = payload.Category,
+			Description = filteredDescription,
+			IsPublic = payload.IsPublic,
+		})
+
+		if success then
+			local roomModel = playerRooms[player] or activeRooms:FindFirstChild(getRoomName(player))
+
+			if roomModel and roomModel:IsA("Model") then
+				applyPlayerRoomMetadataAttributes(roomModel, settings)
+			end
+
+			sendRoomListToAll()
+		end
+
+		roomSettingsResult:FireClient(player, {
+			Kind = "RoomSettings",
+			Action = "UpdateSettings",
+			Success = success == true,
+			Message = message or (success and "Room settings saved." or "Could not save room settings."),
+			Settings = settings,
+		})
+		return
+	end
+
+	roomSettingsResult:FireClient(player, {
+		Kind = "RoomSettings",
+		Action = safeActionName,
+		Success = false,
+		Message = "Unknown room settings action.",
+	})
 end)
 
 joinRoomRequest.OnServerEvent:Connect(function(player, payload)

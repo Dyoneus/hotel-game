@@ -23,6 +23,13 @@ local DAILY_REWARD_SCHEDULE = {
 	100,
 	150,
 }
+local ROOM_DIRECTORY_CATEGORIES = {
+	["Chat Rooms"] = true,
+	["Maze Rooms"] = true,
+	["Trading Rooms"] = true,
+	["Help Centres"] = true,
+	["Gaming & Race Rooms"] = true,
+}
 
 local profileStore = DataStoreService:GetDataStore(DATASTORE_NAME)
 
@@ -451,6 +458,14 @@ local function normalizeRoomTags(tags)
 	return normalized
 end
 
+local function trimString(value)
+	if typeof(value) ~= "string" then
+		return value
+	end
+
+	return value:match("^%s*(.-)%s*$") or ""
+end
+
 local function ensureRoomDirectory(profile)
 	local roomDirectory = profile.RoomDirectory
 
@@ -466,7 +481,10 @@ local function ensureRoomDirectory(profile)
 		roomDirectory.DisplayName = nil
 	end
 
-	if typeof(roomDirectory.Category) ~= "string" or roomDirectory.Category == "" then
+	if typeof(roomDirectory.Category) ~= "string"
+		or roomDirectory.Category == ""
+		or not ROOM_DIRECTORY_CATEGORIES[roomDirectory.Category] then
+
 		roomDirectory.Category = "Chat Rooms"
 	end
 
@@ -830,6 +848,74 @@ function RoomPersistence.GetRoomDirectorySnapshot(player)
 	end
 
 	return deepCopy(ensureRoomDirectory(profile))
+end
+
+function RoomPersistence.UpdateRoomDirectory(player, updates)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded."
+	end
+
+	if typeof(updates) ~= "table" then
+		return false, "Invalid room settings."
+	end
+
+	local roomDirectory = ensureRoomDirectory(profile)
+
+	if updates.DisplayName ~= nil then
+		if typeof(updates.DisplayName) ~= "string" then
+			return false, "Room name must be text."
+		end
+
+		local displayName = trimString(updates.DisplayName)
+
+		if #displayName > 140 then
+			return false, "Room name is too long."
+		end
+
+		roomDirectory.DisplayName = displayName ~= "" and displayName or nil
+	end
+
+	if updates.Description ~= nil then
+		if typeof(updates.Description) ~= "string" then
+			return false, "Description must be text."
+		end
+
+		local description = trimString(updates.Description)
+
+		if #description > 160 then
+			return false, "Description is too long."
+		end
+
+		roomDirectory.Description = description
+	end
+
+	if updates.Category ~= nil then
+		if typeof(updates.Category) ~= "string" or not ROOM_DIRECTORY_CATEGORIES[updates.Category] then
+			return false, "Invalid room category."
+		end
+
+		roomDirectory.Category = updates.Category
+	end
+
+	if updates.IsPublic ~= nil then
+		if typeof(updates.IsPublic) ~= "boolean" then
+			return false, "Public setting must be true or false."
+		end
+
+		roomDirectory.IsPublic = updates.IsPublic
+	end
+
+	-- MaxOccupancy is intentionally not client-editable yet.
+	roomDirectory.MaxOccupancy = 25
+	roomDirectory.RoomId = "Primary"
+	roomDirectory.Tags = normalizeRoomTags(roomDirectory.Tags)
+
+	profile.UpdatedAt = os.time()
+	RoomPersistence.QueueSave(player)
+
+	return true, "Room settings saved.", deepCopy(roomDirectory)
 end
 
 function RoomPersistence.GetCurrency(player, currencyKey)

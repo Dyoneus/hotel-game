@@ -1,6 +1,7 @@
 -- Explorer/StarterGui/RoomNavigatorGui/RoomNavigatorClient.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -12,6 +13,8 @@ local roomListUpdate = remoteEvents:WaitForChild("RoomListUpdate")
 local joinRoomRequest = remoteEvents:WaitForChild("JoinRoomRequest")
 local joinRoomResult = remoteEvents:WaitForChild("JoinRoomResult")
 local roomCreationResult = remoteEvents:WaitForChild("RoomCreationResult")
+local roomSettingsRequest = remoteEvents:WaitForChild("RoomSettingsRequest")
+local roomSettingsResult = remoteEvents:WaitForChild("RoomSettingsResult")
 
 local DEFAULT_PUBLIC_CATEGORIES = {
 	"Welcome Lounge",
@@ -37,6 +40,14 @@ local ROOM_SUBTAB_SEARCH = "Search"
 local ROOM_SUBTAB_OWN = "OwnRooms"
 local ROOM_SUBTAB_FAVOURITES = "Favourites"
 local ROOM_SUBTAB_GUEST = "GuestRooms"
+local ROOM_NAME_MAX_LENGTH = 30
+local ROOM_DESCRIPTION_MAX_LENGTH = 100
+local CONTENT_TOP_OFFSET = 124
+local DETAIL_BOTTOM_OFFSET = 18
+local DETAIL_GAP = 8
+local DETAIL_HEIGHT_EMPTY = 96
+local DETAIL_HEIGHT_SELECTED = 146
+local DETAIL_HEIGHT_SETTINGS = 276
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -56,6 +67,11 @@ local selectedRow = nil
 local latestRoomList = {}
 local latestCurrentRoomName = player:GetAttribute("CurrentRoomName")
 local searchQuery = ""
+local selectedSettingsCategory = "Chat Rooms"
+local selectedSettingsIsPublic = true
+local roomSettingsRequestInFlight = false
+local suppressSettingsTextChanged = false
+local statusShakeTween = nil
 
 local function copyPublicRoomData(roomData)
 	if typeof(roomData) ~= "table" then
@@ -269,8 +285,8 @@ panel.Visible = false
 panel.Parent = gui
 
 local panelSize = Instance.new("UISizeConstraint")
-panelSize.MaxSize = Vector2.new(900, 620)
-panelSize.MinSize = Vector2.new(620, 430)
+panelSize.MaxSize = Vector2.new(920, 680)
+panelSize.MinSize = Vector2.new(360, 360)
 panelSize.Parent = panel
 
 createCorner(panel, 10)
@@ -368,12 +384,15 @@ local roomsTab = createTextButton(
 	topTabsFrame
 )
 
-local roomsNav = Instance.new("Frame")
+local roomsNav = Instance.new("ScrollingFrame")
 roomsNav.Name = "RoomsNavigation"
 roomsNav.Position = UDim2.fromOffset(18, 124)
-roomsNav.Size = UDim2.new(0, 150, 1, -266)
+roomsNav.Size = UDim2.new(0, 150, 1, -426)
 roomsNav.BackgroundColor3 = Color3.fromRGB(229, 232, 224)
 roomsNav.BorderSizePixel = 0
+roomsNav.CanvasSize = UDim2.fromOffset(0, 0)
+roomsNav.ScrollBarThickness = 5
+roomsNav.ScrollingDirection = Enum.ScrollingDirection.Y
 roomsNav.Parent = panel
 
 createCorner(roomsNav, 8)
@@ -398,7 +417,7 @@ local guestSubtabButton = createTextButton("GuestRoomsSubtab", "Guest Rooms", UD
 local contentFrame = Instance.new("Frame")
 contentFrame.Name = "ContentFrame"
 contentFrame.Position = UDim2.fromOffset(180, 124)
-contentFrame.Size = UDim2.new(1, -198, 1, -266)
+contentFrame.Size = UDim2.new(1, -198, 1, -426)
 contentFrame.BackgroundColor3 = Color3.fromRGB(249, 250, 247)
 contentFrame.BorderSizePixel = 0
 contentFrame.Parent = panel
@@ -443,11 +462,15 @@ searchPadding.PaddingLeft = UDim.new(0, 10)
 searchPadding.PaddingRight = UDim.new(0, 10)
 searchPadding.Parent = searchBox
 
-local categoryBar = Instance.new("Frame")
+local categoryBar = Instance.new("ScrollingFrame")
 categoryBar.Name = "GuestCategoryBar"
 categoryBar.Position = UDim2.fromOffset(14, 40)
 categoryBar.Size = UDim2.new(1, -28, 0, 38)
 categoryBar.BackgroundTransparency = 1
+categoryBar.BorderSizePixel = 0
+categoryBar.CanvasSize = UDim2.fromOffset(0, 0)
+categoryBar.ScrollBarThickness = 4
+categoryBar.ScrollingDirection = Enum.ScrollingDirection.X
 categoryBar.Visible = false
 categoryBar.Parent = contentFrame
 
@@ -474,13 +497,16 @@ listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Padding = UDim.new(0, 8)
 listLayout.Parent = listFrame
 
-local detailPanel = Instance.new("Frame")
+local detailPanel = Instance.new("ScrollingFrame")
 detailPanel.Name = "SelectedRoomDetails"
 detailPanel.AnchorPoint = Vector2.new(0, 1)
 detailPanel.Position = UDim2.new(0, 18, 1, -18)
-detailPanel.Size = UDim2.new(1, -36, 0, 116)
+detailPanel.Size = UDim2.new(1, -36, 0, 276)
 detailPanel.BackgroundColor3 = Color3.fromRGB(224, 230, 220)
 detailPanel.BorderSizePixel = 0
+detailPanel.CanvasSize = UDim2.fromOffset(0, 0)
+detailPanel.ScrollBarThickness = 5
+detailPanel.ScrollingDirection = Enum.ScrollingDirection.Y
 detailPanel.Parent = panel
 
 createCorner(detailPanel, 8)
@@ -525,9 +551,22 @@ detailMeta.TextTruncate = Enum.TextTruncate.AtEnd
 detailMeta.Font = Enum.Font.Gotham
 detailMeta.Parent = detailPanel
 
+local detailDescription = Instance.new("TextLabel")
+detailDescription.Name = "DetailDescription"
+detailDescription.Position = UDim2.fromOffset(14, 84)
+detailDescription.Size = UDim2.new(1, -260, 0, 18)
+detailDescription.BackgroundTransparency = 1
+detailDescription.Text = ""
+detailDescription.TextColor3 = Color3.fromRGB(82, 88, 82)
+detailDescription.TextSize = 12
+detailDescription.TextXAlignment = Enum.TextXAlignment.Left
+detailDescription.TextTruncate = Enum.TextTruncate.AtEnd
+detailDescription.Font = Enum.Font.Gotham
+detailDescription.Parent = detailPanel
+
 local detailStatus = Instance.new("TextLabel")
 detailStatus.Name = "DetailStatus"
-detailStatus.Position = UDim2.fromOffset(14, 86)
+detailStatus.Position = UDim2.fromOffset(14, 242)
 detailStatus.Size = UDim2.new(1, -260, 0, 18)
 detailStatus.BackgroundTransparency = 1
 detailStatus.Text = ""
@@ -561,15 +600,207 @@ goButton.AutoButtonColor = false
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Name = "StatusLabel"
 statusLabel.AnchorPoint = Vector2.new(1, 0)
-statusLabel.Position = UDim2.new(1, -20, 0, 84)
-statusLabel.Size = UDim2.fromOffset(230, 20)
+statusLabel.Position = UDim2.new(1, -20, 0, 236)
+statusLabel.Size = UDim2.fromOffset(300, 28)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Text = ""
 statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
 statusLabel.TextSize = 12
 statusLabel.TextXAlignment = Enum.TextXAlignment.Right
+statusLabel.TextWrapped = true
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.Parent = detailPanel
+
+local settingsFrame = Instance.new("Frame")
+settingsFrame.Name = "RoomSettingsEditor"
+settingsFrame.Position = UDim2.fromOffset(14, 108)
+settingsFrame.Size = UDim2.new(1, -28, 0, 128)
+settingsFrame.BackgroundTransparency = 1
+settingsFrame.Visible = false
+settingsFrame.Parent = detailPanel
+
+local settingsNameLabel = Instance.new("TextLabel")
+settingsNameLabel.Name = "RoomNameLabel"
+settingsNameLabel.Position = UDim2.fromOffset(0, 0)
+settingsNameLabel.Size = UDim2.new(0.38, -8, 0, 14)
+settingsNameLabel.BackgroundTransparency = 1
+settingsNameLabel.Text = "Room Name"
+settingsNameLabel.TextColor3 = Color3.fromRGB(72, 78, 72)
+settingsNameLabel.TextSize = 11
+settingsNameLabel.TextXAlignment = Enum.TextXAlignment.Left
+settingsNameLabel.Font = Enum.Font.GothamBold
+settingsNameLabel.Parent = settingsFrame
+
+local settingsNameCounter = Instance.new("TextLabel")
+settingsNameCounter.Name = "RoomNameCounter"
+settingsNameCounter.AnchorPoint = Vector2.new(1, 0)
+settingsNameCounter.Position = UDim2.new(0.38, -8, 0, 0)
+settingsNameCounter.Size = UDim2.fromOffset(54, 14)
+settingsNameCounter.BackgroundTransparency = 1
+settingsNameCounter.Text = "0/30"
+settingsNameCounter.TextColor3 = Color3.fromRGB(82, 88, 82)
+settingsNameCounter.TextSize = 11
+settingsNameCounter.TextXAlignment = Enum.TextXAlignment.Right
+settingsNameCounter.Font = Enum.Font.GothamMedium
+settingsNameCounter.Parent = settingsFrame
+
+local settingsCategoryLabel = Instance.new("TextLabel")
+settingsCategoryLabel.Name = "CategoryLabel"
+settingsCategoryLabel.Position = UDim2.new(0.38, 0, 0, 0)
+settingsCategoryLabel.Size = UDim2.new(0.27, -8, 0, 14)
+settingsCategoryLabel.BackgroundTransparency = 1
+settingsCategoryLabel.Text = "Category"
+settingsCategoryLabel.TextColor3 = Color3.fromRGB(72, 78, 72)
+settingsCategoryLabel.TextSize = 11
+settingsCategoryLabel.TextXAlignment = Enum.TextXAlignment.Left
+settingsCategoryLabel.Font = Enum.Font.GothamBold
+settingsCategoryLabel.Parent = settingsFrame
+
+local settingsVisibilityLabel = Instance.new("TextLabel")
+settingsVisibilityLabel.Name = "VisibilityLabel"
+settingsVisibilityLabel.Position = UDim2.new(0.65, 0, 0, 0)
+settingsVisibilityLabel.Size = UDim2.new(0.18, -8, 0, 14)
+settingsVisibilityLabel.BackgroundTransparency = 1
+settingsVisibilityLabel.Text = "Visibility"
+settingsVisibilityLabel.TextColor3 = Color3.fromRGB(72, 78, 72)
+settingsVisibilityLabel.TextSize = 11
+settingsVisibilityLabel.TextXAlignment = Enum.TextXAlignment.Left
+settingsVisibilityLabel.Font = Enum.Font.GothamBold
+settingsVisibilityLabel.Parent = settingsFrame
+
+local settingsNameBox = Instance.new("TextBox")
+settingsNameBox.Name = "RoomNameBox"
+settingsNameBox.Position = UDim2.fromOffset(0, 16)
+settingsNameBox.Size = UDim2.new(0.38, -8, 0, 28)
+settingsNameBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+settingsNameBox.BorderSizePixel = 0
+settingsNameBox.PlaceholderText = "Room name"
+settingsNameBox.Text = ""
+settingsNameBox.TextColor3 = Color3.fromRGB(42, 48, 42)
+settingsNameBox.PlaceholderColor3 = Color3.fromRGB(130, 135, 130)
+settingsNameBox.TextSize = 13
+settingsNameBox.TextXAlignment = Enum.TextXAlignment.Left
+settingsNameBox.Font = Enum.Font.Gotham
+settingsNameBox.ClearTextOnFocus = false
+settingsNameBox.ClipsDescendants = true
+settingsNameBox.TextTruncate = Enum.TextTruncate.AtEnd
+settingsNameBox.Parent = settingsFrame
+
+createCorner(settingsNameBox, 5)
+createStroke(settingsNameBox, Color3.fromRGB(195, 204, 190), 1, 0)
+
+local settingsNamePadding = Instance.new("UIPadding")
+settingsNamePadding.PaddingLeft = UDim.new(0, 8)
+settingsNamePadding.PaddingRight = UDim.new(0, 8)
+settingsNamePadding.Parent = settingsNameBox
+
+local settingsCategoryButton = createTextButton(
+	"CategoryDropdownButton",
+	"Category: Chat Rooms",
+	UDim2.new(0.27, -8, 0, 28),
+	settingsFrame
+)
+settingsCategoryButton.Position = UDim2.new(0.38, 0, 0, 16)
+settingsCategoryButton.TextSize = 12
+
+local settingsPublicButton = createTextButton(
+	"PublicToggleButton",
+	"Public",
+	UDim2.new(0.18, -8, 0, 28),
+	settingsFrame
+)
+settingsPublicButton.Position = UDim2.new(0.65, 0, 0, 16)
+settingsPublicButton.TextSize = 12
+
+local settingsSaveButton = createTextButton(
+	"SaveRoomSettingsButton",
+	"Save",
+	UDim2.new(0.17, 0, 0, 28),
+	settingsFrame
+)
+settingsSaveButton.Position = UDim2.new(0.83, 0, 0, 16)
+settingsSaveButton.BackgroundColor3 = Color3.fromRGB(68, 143, 82)
+settingsSaveButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+settingsSaveButton.TextSize = 13
+
+local settingsDescriptionLabel = Instance.new("TextLabel")
+settingsDescriptionLabel.Name = "DescriptionLabel"
+settingsDescriptionLabel.Position = UDim2.fromOffset(0, 50)
+settingsDescriptionLabel.Size = UDim2.new(1, 0, 0, 14)
+settingsDescriptionLabel.BackgroundTransparency = 1
+settingsDescriptionLabel.Text = "Description"
+settingsDescriptionLabel.TextColor3 = Color3.fromRGB(72, 78, 72)
+settingsDescriptionLabel.TextSize = 11
+settingsDescriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
+settingsDescriptionLabel.Font = Enum.Font.GothamBold
+settingsDescriptionLabel.Parent = settingsFrame
+
+local settingsDescriptionCounter = Instance.new("TextLabel")
+settingsDescriptionCounter.Name = "DescriptionCounter"
+settingsDescriptionCounter.AnchorPoint = Vector2.new(1, 0)
+settingsDescriptionCounter.Position = UDim2.new(1, 0, 0, 50)
+settingsDescriptionCounter.Size = UDim2.fromOffset(64, 14)
+settingsDescriptionCounter.BackgroundTransparency = 1
+settingsDescriptionCounter.Text = "0/100"
+settingsDescriptionCounter.TextColor3 = Color3.fromRGB(82, 88, 82)
+settingsDescriptionCounter.TextSize = 11
+settingsDescriptionCounter.TextXAlignment = Enum.TextXAlignment.Right
+settingsDescriptionCounter.Font = Enum.Font.GothamMedium
+settingsDescriptionCounter.Parent = settingsFrame
+
+local settingsDescriptionBox = Instance.new("TextBox")
+settingsDescriptionBox.Name = "DescriptionBox"
+settingsDescriptionBox.Position = UDim2.fromOffset(0, 66)
+settingsDescriptionBox.Size = UDim2.new(1, 0, 0, 56)
+settingsDescriptionBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+settingsDescriptionBox.BorderSizePixel = 0
+settingsDescriptionBox.PlaceholderText = "Description"
+settingsDescriptionBox.Text = ""
+settingsDescriptionBox.TextColor3 = Color3.fromRGB(42, 48, 42)
+settingsDescriptionBox.PlaceholderColor3 = Color3.fromRGB(130, 135, 130)
+settingsDescriptionBox.TextSize = 13
+settingsDescriptionBox.TextXAlignment = Enum.TextXAlignment.Left
+settingsDescriptionBox.TextYAlignment = Enum.TextYAlignment.Top
+settingsDescriptionBox.Font = Enum.Font.Gotham
+settingsDescriptionBox.ClearTextOnFocus = false
+settingsDescriptionBox.ClipsDescendants = true
+settingsDescriptionBox.MultiLine = true
+settingsDescriptionBox.TextWrapped = true
+settingsDescriptionBox.Parent = settingsFrame
+
+createCorner(settingsDescriptionBox, 5)
+createStroke(settingsDescriptionBox, Color3.fromRGB(195, 204, 190), 1, 0)
+
+local settingsDescriptionPadding = Instance.new("UIPadding")
+settingsDescriptionPadding.PaddingLeft = UDim.new(0, 8)
+settingsDescriptionPadding.PaddingRight = UDim.new(0, 8)
+settingsDescriptionPadding.PaddingTop = UDim.new(0, 5)
+settingsDescriptionPadding.PaddingBottom = UDim.new(0, 5)
+settingsDescriptionPadding.Parent = settingsDescriptionBox
+
+local settingsCategoryDropdown = Instance.new("Frame")
+settingsCategoryDropdown.Name = "CategoryDropdown"
+settingsCategoryDropdown.Position = UDim2.new(0.38, 0, 0, 46)
+settingsCategoryDropdown.Size = UDim2.new(0.27, -8, 0, 122)
+settingsCategoryDropdown.BackgroundColor3 = Color3.fromRGB(248, 250, 246)
+settingsCategoryDropdown.BorderSizePixel = 0
+settingsCategoryDropdown.Visible = false
+settingsCategoryDropdown.ZIndex = 5
+settingsCategoryDropdown.Parent = settingsFrame
+
+createCorner(settingsCategoryDropdown, 5)
+createStroke(settingsCategoryDropdown, Color3.fromRGB(185, 195, 182), 1, 0)
+
+local settingsCategoryDropdownLayout = Instance.new("UIListLayout")
+settingsCategoryDropdownLayout.SortOrder = Enum.SortOrder.LayoutOrder
+settingsCategoryDropdownLayout.Padding = UDim.new(0, 2)
+settingsCategoryDropdownLayout.Parent = settingsCategoryDropdown
+
+local settingsCategoryDropdownPadding = Instance.new("UIPadding")
+settingsCategoryDropdownPadding.PaddingTop = UDim.new(0, 4)
+settingsCategoryDropdownPadding.PaddingLeft = UDim.new(0, 4)
+settingsCategoryDropdownPadding.PaddingRight = UDim.new(0, 4)
+settingsCategoryDropdownPadding.Parent = settingsCategoryDropdown
 
 local categoryButtons = {}
 
@@ -694,6 +925,164 @@ local function isEntryCurrentRoom(entry)
 	return false
 end
 
+local function isSettingsEditableRoom(entry)
+	return selectedTopTab == TOP_TAB_ROOMS
+		and selectedRoomSubtab == ROOM_SUBTAB_OWN
+		and typeof(entry) == "table"
+		and entry.RoomType ~= "PublicSpace"
+		and entry.IsOwner == true
+end
+
+local function setSettingsCategory(categoryName)
+	local isAllowed = false
+
+	for _, allowedCategory in ipairs(GUEST_ROOM_CATEGORIES) do
+		if allowedCategory == categoryName then
+			isAllowed = true
+			break
+		end
+	end
+
+	selectedSettingsCategory = isAllowed and categoryName or "Chat Rooms"
+	settingsCategoryButton.Text = "Category: " .. selectedSettingsCategory
+	settingsCategoryDropdown.Visible = false
+end
+
+local function setSettingsPublic(isPublic)
+	selectedSettingsIsPublic = isPublic == true
+	settingsPublicButton.Text = selectedSettingsIsPublic and "Public" or "Private"
+	settingsPublicButton.BackgroundColor3 = selectedSettingsIsPublic
+		and Color3.fromRGB(88, 128, 102)
+		or Color3.fromRGB(128, 104, 88)
+	settingsPublicButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+end
+
+local function updateSettingsCounter(counter, currentLength, maxLength)
+	counter.Text = tostring(currentLength) .. "/" .. tostring(maxLength)
+	counter.TextColor3 = currentLength >= maxLength
+		and Color3.fromRGB(180, 55, 55)
+		or Color3.fromRGB(82, 88, 82)
+end
+
+local function enforceSettingsTextLimit(textBox, counter, maxLength)
+	local text = textBox.Text or ""
+
+	if #text > maxLength then
+		text = string.sub(text, 1, maxLength)
+		textBox.Text = text
+	end
+
+	updateSettingsCounter(counter, #text, maxLength)
+end
+
+local function updateSettingsCounters()
+	updateSettingsCounter(settingsNameCounter, #(settingsNameBox.Text or ""), ROOM_NAME_MAX_LENGTH)
+	updateSettingsCounter(
+		settingsDescriptionCounter,
+		#(settingsDescriptionBox.Text or ""),
+		ROOM_DESCRIPTION_MAX_LENGTH
+	)
+end
+
+local function setStatusMessage(message, kind)
+	statusLabel.Text = message or ""
+
+	if kind == "error" then
+		statusLabel.TextColor3 = Color3.fromRGB(190, 45, 45)
+		statusLabel.Font = Enum.Font.GothamBold
+	elseif kind == "success" then
+		statusLabel.TextColor3 = Color3.fromRGB(48, 126, 70)
+		statusLabel.Font = Enum.Font.GothamMedium
+	else
+		statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
+		statusLabel.Font = Enum.Font.Gotham
+	end
+end
+
+local function shakeStatusLabel()
+	if statusShakeTween then
+		statusShakeTween:Cancel()
+		statusShakeTween = nil
+	end
+
+	local originalPosition = statusLabel.Position
+	local offsets = { -8, 8, -6, 6, 0 }
+	local index = 1
+
+	local function playNext()
+		local offset = offsets[index]
+
+		if not offset then
+			statusLabel.Position = originalPosition
+			statusShakeTween = nil
+			return
+		end
+
+		index += 1
+		statusShakeTween = TweenService:Create(
+			statusLabel,
+			TweenInfo.new(0.045, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{
+				Position = UDim2.new(
+					originalPosition.X.Scale,
+					originalPosition.X.Offset + offset,
+					originalPosition.Y.Scale,
+					originalPosition.Y.Offset
+				),
+			}
+		)
+		statusShakeTween.Completed:Once(playNext)
+		statusShakeTween:Play()
+	end
+
+	playNext()
+end
+
+local function showSettingsError(message)
+	setStatusMessage(message, "error")
+	detailPanel.CanvasPosition = Vector2.new(0, 10000)
+	shakeStatusLabel()
+end
+
+local function populateSettingsFromEntry(entry)
+	suppressSettingsTextChanged = true
+
+	if typeof(entry) ~= "table" then
+		settingsNameBox.Text = ""
+		settingsDescriptionBox.Text = ""
+		setSettingsCategory("Chat Rooms")
+		setSettingsPublic(true)
+		suppressSettingsTextChanged = false
+		updateSettingsCounters()
+		return
+	end
+
+	settingsNameBox.Text = string.sub(getRoomDisplayName(entry), 1, ROOM_NAME_MAX_LENGTH)
+	settingsDescriptionBox.Text = string.sub(tostring(entry.Description or ""), 1, ROOM_DESCRIPTION_MAX_LENGTH)
+	setSettingsCategory(entry.Category or "Chat Rooms")
+	setSettingsPublic(entry.IsPublic ~= false)
+	suppressSettingsTextChanged = false
+	updateSettingsCounters()
+end
+
+local function setSettingsEditorVisible(isVisible)
+	settingsFrame.Visible = isVisible == true
+	settingsCategoryDropdown.Visible = false
+
+	if isVisible then
+		detailStatus.Text = "Edit room settings below."
+	end
+end
+
+local function requestRoomSettings()
+	if roomSettingsRequestInFlight then
+		return
+	end
+
+	roomSettingsRequestInFlight = true
+	roomSettingsRequest:FireServer("GetSettings")
+end
+
 local function updateTopTabButton(button, isSelected)
 	button.BackgroundColor3 = isSelected and Color3.fromRGB(72, 119, 143) or Color3.fromRGB(216, 222, 214)
 	button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 48, 45)
@@ -712,6 +1101,43 @@ local function updateCategoryButtons()
 	end
 end
 
+local function getRawDetailHeight()
+	if not selectedRoomData then
+		return DETAIL_HEIGHT_EMPTY
+	end
+
+	if isSettingsEditableRoom(selectedRoomData) then
+		return DETAIL_HEIGHT_SETTINGS
+	end
+
+	return DETAIL_HEIGHT_SELECTED
+end
+
+local function getDesiredDetailHeight()
+	local desiredHeight = getRawDetailHeight()
+	local panelHeight = panel.AbsoluteSize.Y
+
+	if panelHeight > 0 then
+		local maxDetailHeight = panelHeight - CONTENT_TOP_OFFSET - DETAIL_BOTTOM_OFFSET - DETAIL_GAP - 64
+		maxDetailHeight = math.max(DETAIL_HEIGHT_EMPTY, maxDetailHeight)
+		desiredHeight = math.min(desiredHeight, maxDetailHeight)
+	end
+
+	return desiredHeight
+end
+
+local function updateRoomsNavCanvas()
+	task.defer(function()
+		roomsNav.CanvasSize = UDim2.fromOffset(0, roomsNavLayout.AbsoluteContentSize.Y + 24)
+	end)
+end
+
+local function updateCategoryCanvas()
+	task.defer(function()
+		categoryBar.CanvasSize = UDim2.fromOffset(categoryLayout.AbsoluteContentSize.X + 16, 0)
+	end)
+end
+
 local function updateNavigationState()
 	updateTopTabButton(publicSpacesTab, selectedTopTab == TOP_TAB_PUBLIC)
 	updateTopTabButton(roomsTab, selectedTopTab == TOP_TAB_ROOMS)
@@ -723,13 +1149,22 @@ local function updateNavigationState()
 	updateSubtabButton(favouritesSubtabButton, selectedRoomSubtab == ROOM_SUBTAB_FAVOURITES)
 	updateSubtabButton(guestSubtabButton, selectedRoomSubtab == ROOM_SUBTAB_GUEST)
 	updateCategoryButtons()
+	updateRoomsNavCanvas()
+	updateCategoryCanvas()
+
+	local detailHeight = getDesiredDetailHeight()
+	local contentBottomOffset = CONTENT_TOP_OFFSET + detailHeight + DETAIL_BOTTOM_OFFSET + DETAIL_GAP
+
+	detailPanel.Size = UDim2.new(1, -36, 0, detailHeight)
+	detailPanel.CanvasSize = UDim2.fromOffset(0, getRawDetailHeight() + 12)
 
 	if selectedTopTab == TOP_TAB_ROOMS then
 		contentFrame.Position = UDim2.fromOffset(180, 124)
-		contentFrame.Size = UDim2.new(1, -198, 1, -266)
+		contentFrame.Size = UDim2.new(1, -198, 1, -contentBottomOffset)
+		roomsNav.Size = UDim2.new(0, 150, 1, -contentBottomOffset)
 	else
 		contentFrame.Position = UDim2.fromOffset(18, 124)
-		contentFrame.Size = UDim2.new(1, -36, 1, -266)
+		contentFrame.Size = UDim2.new(1, -36, 1, -contentBottomOffset)
 	end
 end
 
@@ -761,15 +1196,34 @@ end
 local function updateDetailPanel()
 	if not selectedRoomData then
 		detailTitle.Text = "Select a room"
+		detailTitle.Size = UDim2.new(1, -28, 0, 24)
 		detailOwner.Text = "Owner: -"
 		detailMeta.Text = "Occupancy: -"
+		detailDescription.Text = ""
 		detailStatus.Text = ""
 		goButton.Text = "Go"
 		goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
 		goButton.Active = false
 		goButton.AutoButtonColor = false
+		detailOwner.Visible = false
+		detailMeta.Visible = false
+		detailDescription.Visible = false
+		detailStatus.Visible = false
+		favouriteButton.Visible = false
+		goButton.Visible = false
+		statusLabel.Visible = false
+		setSettingsEditorVisible(false)
 		return
 	end
+
+	detailTitle.Size = UDim2.new(1, -260, 0, 24)
+	detailOwner.Visible = true
+	detailMeta.Visible = true
+	detailDescription.Visible = true
+	detailStatus.Visible = true
+	favouriteButton.Visible = true
+	goButton.Visible = true
+	statusLabel.Visible = true
 
 	detailTitle.Text = getRoomDisplayName(selectedRoomData)
 	detailOwner.Text = "Owner: " .. getRoomOwnerText(selectedRoomData)
@@ -777,9 +1231,21 @@ local function updateDetailPanel()
 		.. getOccupancyText(selectedRoomData)
 		.. "  -  Category: "
 		.. tostring(selectedRoomData.Category or "Guest Rooms")
+	detailDescription.Text = tostring(selectedRoomData.Description or "")
 	local isCurrentRoom = isEntryCurrentRoom(selectedRoomData)
+	local canEditSettings = isSettingsEditableRoom(selectedRoomData)
 
 	detailStatus.Text = isCurrentRoom and "You are here." or ""
+
+	if canEditSettings then
+		populateSettingsFromEntry(selectedRoomData)
+		setSettingsEditorVisible(true)
+		detailStatus.Text = isCurrentRoom
+			and "Editing your current room settings."
+			or "You can edit this room's settings."
+	else
+		setSettingsEditorVisible(false)
+	end
 
 	if isCurrentRoom then
 		goButton.Active = false
@@ -814,7 +1280,12 @@ local function selectRoom(roomData, row)
 		setRowSelected(selectedRow, true)
 	end
 
+	updateNavigationState()
 	updateDetailPanel()
+
+	if isSettingsEditableRoom(roomData) then
+		requestRoomSettings()
+	end
 end
 
 local function joinSelectedRoom()
@@ -830,11 +1301,11 @@ local function joinSelectedRoom()
 		local publicRoomId = selectedRoomData.PublicRoomId
 
 		if typeof(publicRoomId) ~= "string" or publicRoomId == "" then
-			statusLabel.Text = "This public space is not available yet."
+			showSettingsError("This public space is not available yet.")
 			return
 		end
 
-		statusLabel.Text = "Joining..."
+		setStatusMessage("Joining...")
 		goButton.Text = "Joining..."
 		goButton.Active = false
 		goButton.AutoButtonColor = false
@@ -851,11 +1322,11 @@ local function joinSelectedRoom()
 	local roomName = selectedRoomData.RoomName
 
 	if typeof(roomName) ~= "string" or roomName == "" then
-		statusLabel.Text = "This room is not available yet."
+		showSettingsError("This room is not available yet.")
 		return
 	end
 
-	statusLabel.Text = "Joining..."
+	setStatusMessage("Joining...")
 	goButton.Text = "Joining..."
 	goButton.Active = false
 	goButton.AutoButtonColor = false
@@ -990,6 +1461,7 @@ local function createPublicSpaceRow(publicRoomData, order)
 	end)
 
 	if selectedRoomData and selectedRoomData.RoomKey == publicRoomData.RoomKey then
+		selectedRoomData = publicRoomData
 		selectedRow = row
 		setRowSelected(row, true)
 	end
@@ -1149,6 +1621,7 @@ local function createRoomRow(roomData, order)
 	end)
 
 	if selectedRoomData and selectedRoomData.RoomKey == roomData.RoomKey then
+		selectedRoomData = roomData
 		selectedRow = row
 		setRowSelected(row, true)
 	end
@@ -1297,6 +1770,30 @@ local function buildCategoryButtons()
 	end
 end
 
+local function buildSettingsCategoryDropdown()
+	for _, child in ipairs(settingsCategoryDropdown:GetChildren()) do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+
+	for index, categoryName in ipairs(GUEST_ROOM_CATEGORIES) do
+		local button = createTextButton(
+			"SettingsCategory_" .. categoryName:gsub("%W", ""),
+			categoryName,
+			UDim2.new(1, 0, 0, 20),
+			settingsCategoryDropdown
+		)
+		button.LayoutOrder = index
+		button.TextSize = 11
+		button.ZIndex = 6
+
+		button.MouseButton1Click:Connect(function()
+			setSettingsCategory(categoryName)
+		end)
+	end
+end
+
 renderNavigator = function()
 	updateNavigationState()
 	clearList()
@@ -1312,6 +1809,7 @@ renderNavigator = function()
 end
 
 buildCategoryButtons()
+buildSettingsCategoryDropdown()
 
 publicSpacesTab.MouseButton1Click:Connect(function()
 	selectedTopTab = TOP_TAB_PUBLIC
@@ -1363,10 +1861,68 @@ searchBox:GetPropertyChangedSignal("Text"):Connect(function()
 	end
 end)
 
+panel:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+	updateNavigationState()
+	updateCanvasSize()
+end)
+
 goButton.MouseButton1Click:Connect(joinSelectedRoom)
 
 favouriteButton.MouseButton1Click:Connect(function()
-	statusLabel.Text = "Favourites are coming soon."
+	setStatusMessage("Favourites are coming soon.")
+end)
+
+settingsCategoryButton.MouseButton1Click:Connect(function()
+	settingsCategoryDropdown.Visible = not settingsCategoryDropdown.Visible
+end)
+
+settingsPublicButton.MouseButton1Click:Connect(function()
+	setSettingsPublic(not selectedSettingsIsPublic)
+end)
+
+settingsNameBox:GetPropertyChangedSignal("Text"):Connect(function()
+	if suppressSettingsTextChanged then
+		return
+	end
+
+	enforceSettingsTextLimit(settingsNameBox, settingsNameCounter, ROOM_NAME_MAX_LENGTH)
+end)
+
+settingsDescriptionBox:GetPropertyChangedSignal("Text"):Connect(function()
+	if suppressSettingsTextChanged then
+		return
+	end
+
+	enforceSettingsTextLimit(
+		settingsDescriptionBox,
+		settingsDescriptionCounter,
+		ROOM_DESCRIPTION_MAX_LENGTH
+	)
+end)
+
+settingsSaveButton.MouseButton1Click:Connect(function()
+	if not isSettingsEditableRoom(selectedRoomData) then
+		showSettingsError("Select your own room first.")
+		return
+	end
+
+	local roomName = settingsNameBox.Text or ""
+
+	if roomName:match("^%s*$") then
+		showSettingsError("Room name cannot be empty.")
+		return
+	end
+
+	setStatusMessage("Saving settings...")
+	settingsSaveButton.Active = false
+	settingsSaveButton.AutoButtonColor = false
+
+	roomSettingsRequest:FireServer("UpdateSettings", {
+		DisplayName = roomName,
+		Category = selectedSettingsCategory,
+		Description = settingsDescriptionBox.Text,
+		IsPublic = selectedSettingsIsPublic,
+	})
 end)
 
 openButton.MouseButton1Click:Connect(function()
@@ -1406,14 +1962,56 @@ end)
 
 joinRoomResult.OnClientEvent:Connect(function(success, message)
 	if success then
-		statusLabel.Text = message or "Joined room."
+		setStatusMessage(message or "Joined room.", "success")
 		setPanelVisible(false)
 	else
-		statusLabel.Text = message or "Could not join room."
+		showSettingsError(message or "Could not join room.")
 		updateDetailPanel()
 	end
 
 	roomListRequest:FireServer()
+end)
+
+roomSettingsResult.OnClientEvent:Connect(function(response)
+	roomSettingsRequestInFlight = false
+	settingsSaveButton.Active = true
+	settingsSaveButton.AutoButtonColor = true
+
+	if typeof(response) ~= "table" then
+		showSettingsError("Could not load room settings.")
+		return
+	end
+
+	if response.Success ~= true then
+		showSettingsError(response.Message or "Could not save room settings.")
+		return
+	end
+
+	local settings = response.Settings
+
+	if typeof(settings) == "table" then
+		if selectedRoomData and selectedRoomData.IsOwner == true then
+			selectedRoomData.DisplayName = settings.DisplayName
+			selectedRoomData.Category = settings.Category or selectedRoomData.Category
+			selectedRoomData.Description = settings.Description or ""
+			selectedRoomData.IsPublic = settings.IsPublic == true
+			selectedRoomData.MaxOccupancy = settings.MaxOccupancy or selectedRoomData.MaxOccupancy
+			populateSettingsFromEntry(selectedRoomData)
+		else
+			populateSettingsFromEntry(settings)
+		end
+	end
+
+	if response.Action == "UpdateSettings" then
+		setStatusMessage(response.Message or "Room settings saved.", "success")
+		roomListRequest:FireServer()
+	else
+		setStatusMessage("")
+	end
+
+	if renderNavigator then
+		renderNavigator()
+	end
 end)
 
 roomCreationResult.OnClientEvent:Connect(function(status)
