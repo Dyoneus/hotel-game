@@ -911,6 +911,31 @@ local function getOccupancyText(roomData)
 	return tostring(occupancy or 0)
 end
 
+local function getOccupancyValue(roomData)
+	local occupancy = roomData.Occupancy or roomData.PlayerCount
+
+	if typeof(occupancy) == "number" and occupancy == occupancy and occupancy > 0 then
+		return occupancy
+	end
+
+	return 0
+end
+
+local function normalizeSearchText(value)
+	if typeof(value) ~= "string" then
+		return ""
+	end
+
+	local trimmed = value:match("^%s*(.-)%s*$") or ""
+	return string.lower(trimmed)
+end
+
+local function isPublicPlayerRoom(roomData)
+	return typeof(roomData) == "table"
+		and roomData.RoomType ~= "PublicSpace"
+		and roomData.IsPublic == true
+end
+
 local function getRoomKey(roomData)
 	if typeof(roomData) ~= "table" then
 		return nil
@@ -1028,6 +1053,104 @@ local function isEntryCurrentRoom(entry)
 	end
 
 	return false
+end
+
+local function isSameRoomEntry(firstEntry, secondEntry)
+	if typeof(firstEntry) ~= "table" or typeof(secondEntry) ~= "table" then
+		return false
+	end
+
+	local firstRoomKey = getRoomKey(firstEntry)
+	local secondRoomKey = getRoomKey(secondEntry)
+
+	if firstRoomKey and secondRoomKey then
+		return firstRoomKey == secondRoomKey
+	end
+
+	if typeof(firstEntry.RoomName) == "string"
+		and typeof(secondEntry.RoomName) == "string"
+		and firstEntry.RoomName == secondEntry.RoomName then
+
+		return true
+	end
+
+	local firstPublicRoomId = firstEntry.PublicRoomId or firstEntry.Id
+	local secondPublicRoomId = secondEntry.PublicRoomId or secondEntry.Id
+
+	return typeof(firstPublicRoomId) == "string"
+		and typeof(secondPublicRoomId) == "string"
+		and firstPublicRoomId == secondPublicRoomId
+end
+
+local function sortRoomsForBrowsing(rooms)
+	table.sort(rooms, function(firstRoom, secondRoom)
+		local firstIsCurrent = isEntryCurrentRoom(firstRoom)
+		local secondIsCurrent = isEntryCurrentRoom(secondRoom)
+
+		if firstIsCurrent ~= secondIsCurrent then
+			return firstIsCurrent
+		end
+
+		local firstOccupancy = getOccupancyValue(firstRoom)
+		local secondOccupancy = getOccupancyValue(secondRoom)
+
+		if firstOccupancy ~= secondOccupancy then
+			return firstOccupancy > secondOccupancy
+		end
+
+		return normalizeSearchText(getRoomDisplayName(firstRoom))
+			< normalizeSearchText(getRoomDisplayName(secondRoom))
+	end)
+
+	return rooms
+end
+
+local function sortOwnRooms(rooms)
+	table.sort(rooms, function(firstRoom, secondRoom)
+		local firstIsCurrent = isEntryCurrentRoom(firstRoom)
+		local secondIsCurrent = isEntryCurrentRoom(secondRoom)
+
+		if firstIsCurrent ~= secondIsCurrent then
+			return firstIsCurrent
+		end
+
+		return normalizeSearchText(getRoomDisplayName(firstRoom))
+			< normalizeSearchText(getRoomDisplayName(secondRoom))
+	end)
+
+	return rooms
+end
+
+local function clearSelectionIfMissing(entries)
+	if not selectedRoomData then
+		return
+	end
+
+	for _, entry in ipairs(entries) do
+		if isSameRoomEntry(selectedRoomData, entry) then
+			return
+		end
+	end
+
+	selectedRoomData = nil
+	selectedRow = nil
+end
+
+local function getGuestCategoryCounts()
+	local counts = {}
+
+	for _, categoryName in ipairs(GUEST_ROOM_CATEGORIES) do
+		counts[categoryName] = 0
+	end
+
+	for _, roomData in ipairs(latestRoomList) do
+		if isPublicPlayerRoom(roomData) then
+			local categoryName = roomData.Category or "Chat Rooms"
+			counts[categoryName] = (counts[categoryName] or 0) + 1
+		end
+	end
+
+	return counts
 end
 
 local function isSettingsEditableRoom(entry)
@@ -1199,8 +1322,11 @@ local function updateSubtabButton(button, isSelected)
 end
 
 local function updateCategoryButtons()
+	local categoryCounts = getGuestCategoryCounts()
+
 	for categoryName, button in pairs(categoryButtons) do
 		local isSelected = categoryName == selectedGuestCategory
+		button.Text = string.format("%s (%d)", categoryName, categoryCounts[categoryName] or 0)
 		button.BackgroundColor3 = isSelected and Color3.fromRGB(74, 118, 148) or Color3.fromRGB(228, 234, 226)
 		button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 50, 45)
 	end
@@ -1279,6 +1405,8 @@ local function clearList()
 			child:Destroy()
 		end
 	end
+
+	selectedRow = nil
 end
 
 local function updateCanvasSize()
@@ -1781,12 +1909,12 @@ local function filterRoomsByCategory(categoryName)
 	for _, roomData in ipairs(latestRoomList) do
 		local category = roomData.Category or "Chat Rooms"
 
-		if category == categoryName then
+		if isPublicPlayerRoom(roomData) and category == categoryName then
 			table.insert(rooms, roomData)
 		end
 	end
 
-	return rooms
+	return sortRoomsForBrowsing(rooms)
 end
 
 local function filterOwnRooms()
@@ -1798,31 +1926,39 @@ local function filterOwnRooms()
 		end
 	end
 
-	return rooms
+	return sortOwnRooms(rooms)
 end
 
 local function filterSearchRooms()
-	local query = string.lower(searchQuery or "")
+	local query = normalizeSearchText(searchQuery)
 	local rooms = {}
 
 	for _, roomData in ipairs(latestRoomList) do
-		local displayName = string.lower(getRoomDisplayName(roomData))
-		local ownerName = string.lower(tostring(roomData.OwnerName or ""))
-		local ownerDisplayName = string.lower(tostring(roomData.OwnerDisplayName or ""))
+		if isPublicPlayerRoom(roomData) then
+			local displayName = normalizeSearchText(getRoomDisplayName(roomData))
+			local ownerName = normalizeSearchText(tostring(roomData.OwnerName or ""))
+			local ownerDisplayName = normalizeSearchText(tostring(roomData.OwnerDisplayName or ""))
+			local category = normalizeSearchText(tostring(roomData.Category or ""))
+			local description = normalizeSearchText(tostring(roomData.Description or ""))
 
-		if query == ""
-			or string.find(displayName, query, 1, true)
-			or string.find(ownerName, query, 1, true)
-			or string.find(ownerDisplayName, query, 1, true) then
+			if query == ""
+				or string.find(displayName, query, 1, true)
+				or string.find(ownerName, query, 1, true)
+				or string.find(ownerDisplayName, query, 1, true)
+				or string.find(category, query, 1, true)
+				or string.find(description, query, 1, true) then
 
-			table.insert(rooms, roomData)
+				table.insert(rooms, roomData)
+			end
 		end
 	end
 
-	return rooms
+	return sortRoomsForBrowsing(rooms)
 end
 
 local function renderRoomRows(rooms, emptyMessage)
+	clearSelectionIfMissing(rooms)
+
 	if #rooms == 0 then
 		createEmptyState(emptyMessage)
 		return
@@ -1835,9 +1971,12 @@ end
 
 local function renderFavouriteRows()
 	if favouritesRequestInFlight and #favouriteEntries == 0 then
+		clearSelectionIfMissing({})
 		createEmptyState("Loading favourites...")
 		return
 	end
+
+	clearSelectionIfMissing(favouriteEntries)
 
 	if #favouriteEntries == 0 then
 		createEmptyState("No favourite rooms yet.")
@@ -1883,7 +2022,7 @@ local function renderRooms()
 	if selectedRoomSubtab == ROOM_SUBTAB_SEARCH then
 		sectionTitle.Text = "Search Rooms"
 		listFrame.Position = UDim2.fromOffset(14, 84)
-		renderRoomRows(filterSearchRooms(), "No active rooms match your search.")
+		renderRoomRows(filterSearchRooms(), "No rooms found.")
 	elseif selectedRoomSubtab == ROOM_SUBTAB_OWN then
 		sectionTitle.Text = "Own Room(s)"
 		listFrame.Position = UDim2.fromOffset(14, 44)
@@ -1918,10 +2057,10 @@ local function buildCategoryButtons()
 		local button = createTextButton(
 			"Category_" .. categoryName:gsub("%W", ""),
 			categoryName,
-			UDim2.fromOffset(categoryName == "Gaming & Race Rooms" and 150 or 112, 32),
+			UDim2.fromOffset(categoryName == "Gaming & Race Rooms" and 168 or 126, 32),
 			categoryBar
 		)
-		button.TextSize = 12
+		button.TextSize = 11
 		categoryButtons[categoryName] = button
 
 		button.MouseButton1Click:Connect(function()
