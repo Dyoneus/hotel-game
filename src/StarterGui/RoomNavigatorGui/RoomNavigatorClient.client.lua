@@ -15,6 +15,8 @@ local joinRoomResult = remoteEvents:WaitForChild("JoinRoomResult")
 local roomCreationResult = remoteEvents:WaitForChild("RoomCreationResult")
 local roomSettingsRequest = remoteEvents:WaitForChild("RoomSettingsRequest")
 local roomSettingsResult = remoteEvents:WaitForChild("RoomSettingsResult")
+local roomNavigatorRequest = remoteEvents:WaitForChild("RoomNavigatorRequest")
+local roomNavigatorResult = remoteEvents:WaitForChild("RoomNavigatorResult")
 
 local DEFAULT_PUBLIC_CATEGORIES = {
 	"Welcome Lounge",
@@ -66,6 +68,11 @@ local selectedRoomData = nil
 local selectedRow = nil
 local latestRoomList = {}
 local latestCurrentRoomName = player:GetAttribute("CurrentRoomName")
+local favouriteKeysByRoomKey = {}
+local favouriteEntries = {}
+local favouritesRequestInFlight = false
+local favouritesLoaded = false
+local pendingFavouriteToggleByRoomKey = {}
 local searchQuery = ""
 local selectedSettingsCategory = "Chat Rooms"
 local selectedSettingsIsPublic = true
@@ -578,7 +585,7 @@ detailStatus.Parent = detailPanel
 
 local favouriteButton = createTextButton(
 	"FavouriteButton",
-	"Favourites Soon",
+	"Add to Favourites",
 	UDim2.fromOffset(130, 36),
 	detailPanel
 )
@@ -833,6 +840,19 @@ end
 
 local renderNavigator = nil
 
+local function requestFavourites(forceRefresh)
+	if favouritesRequestInFlight then
+		return
+	end
+
+	if not forceRefresh and favouritesLoaded then
+		return
+	end
+
+	favouritesRequestInFlight = true
+	roomNavigatorRequest:FireServer("GetFavourites")
+end
+
 local function setPanelVisible(isVisible)
 	local wasVisible = panel.Visible
 
@@ -846,6 +866,7 @@ local function setPanelVisible(isVisible)
 
 	if isVisible then
 		roomListRequest:FireServer()
+		requestFavourites(true)
 
 		if renderNavigator then
 			renderNavigator()
@@ -888,6 +909,90 @@ local function getOccupancyText(roomData)
 	end
 
 	return tostring(occupancy or 0)
+end
+
+local function getRoomKey(roomData)
+	if typeof(roomData) ~= "table" then
+		return nil
+	end
+
+	if typeof(roomData.RoomKey) == "string" and roomData.RoomKey ~= "" then
+		return roomData.RoomKey
+	end
+
+	return nil
+end
+
+local function isRoomFavourite(roomData)
+	local roomKey = getRoomKey(roomData)
+
+	if not roomKey then
+		return false
+	end
+
+	return favouriteKeysByRoomKey[roomKey] == true or roomData.IsFavourite == true
+end
+
+local function applyCachedFavouriteState(roomData)
+	local roomKey = getRoomKey(roomData)
+
+	if roomKey then
+		roomData.IsFavourite = favouriteKeysByRoomKey[roomKey] == true
+	end
+
+	return roomData
+end
+
+local function setCachedFavourite(roomKey, isFavourite)
+	if typeof(roomKey) ~= "string" or roomKey == "" then
+		return
+	end
+
+	favouriteKeysByRoomKey[roomKey] = isFavourite == true or nil
+
+	for _, roomData in ipairs(latestRoomList) do
+		if roomData.RoomKey == roomKey then
+			roomData.IsFavourite = isFavourite == true
+		end
+	end
+
+	for index = #favouriteEntries, 1, -1 do
+		local entry = favouriteEntries[index]
+
+		if entry.RoomKey == roomKey then
+			if isFavourite == true then
+				entry.IsFavourite = true
+			else
+				table.remove(favouriteEntries, index)
+			end
+		end
+	end
+
+	if selectedRoomData and selectedRoomData.RoomKey == roomKey then
+		selectedRoomData.IsFavourite = isFavourite == true
+	end
+end
+
+local function syncFavouriteKeys(favouriteKeys)
+	favouriteKeysByRoomKey = {}
+
+	if typeof(favouriteKeys) ~= "table" then
+		return
+	end
+
+	for _, roomKey in ipairs(favouriteKeys) do
+		if typeof(roomKey) == "string" and roomKey ~= "" then
+			favouriteKeysByRoomKey[roomKey] = true
+		end
+	end
+
+	for _, roomData in ipairs(latestRoomList) do
+		applyCachedFavouriteState(roomData)
+	end
+
+	for _, publicRoomData in ipairs(publicRooms) do
+		applyCachedFavouriteState(publicRoomData)
+	end
 end
 
 local function isEntryCurrentRoom(entry)
@@ -1234,8 +1339,20 @@ local function updateDetailPanel()
 	detailDescription.Text = tostring(selectedRoomData.Description or "")
 	local isCurrentRoom = isEntryCurrentRoom(selectedRoomData)
 	local canEditSettings = isSettingsEditableRoom(selectedRoomData)
+	local roomKey = getRoomKey(selectedRoomData)
+	local canFavourite = roomKey ~= nil
+	local isFavourite = isRoomFavourite(selectedRoomData)
 
 	detailStatus.Text = isCurrentRoom and "You are here." or ""
+
+	favouriteButton.Visible = canFavourite
+	favouriteButton.Active = canFavourite and pendingFavouriteToggleByRoomKey[roomKey] ~= true
+	favouriteButton.AutoButtonColor = favouriteButton.Active
+	favouriteButton.BackgroundColor3 = canFavourite
+		and (isFavourite and Color3.fromRGB(151, 102, 82) or Color3.fromRGB(86, 126, 151))
+		or Color3.fromRGB(180, 185, 180)
+	favouriteButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	favouriteButton.Text = isFavourite and "Remove Favourite" or "Add to Favourites"
 
 	if canEditSettings then
 		populateSettingsFromEntry(selectedRoomData)
@@ -1359,7 +1476,26 @@ local function createEmptyState(message)
 	label.Parent = emptyFrame
 end
 
+local function addFavouriteMarker(row, yOffset)
+	local marker = Instance.new("TextLabel")
+	marker.Name = "FavouriteMarker"
+	marker.AnchorPoint = Vector2.new(1, 0)
+	marker.Position = UDim2.new(1, -84, 0, yOffset or 34)
+	marker.Size = UDim2.fromOffset(58, 18)
+	marker.BackgroundColor3 = Color3.fromRGB(235, 211, 125)
+	marker.BorderSizePixel = 0
+	marker.Text = "Fav"
+	marker.TextColor3 = Color3.fromRGB(84, 67, 24)
+	marker.TextSize = 11
+	marker.Font = Enum.Font.GothamBold
+	marker.Parent = row
+
+	createCorner(marker, 5)
+end
+
 local function createPublicSpaceRow(publicRoomData, order)
+	applyCachedFavouriteState(publicRoomData)
+
 	local row = Instance.new("TextButton")
 	row.Name = tostring(publicRoomData.PublicRoomId or publicRoomData.DisplayName or "PublicSpace")
 	row.LayoutOrder = order
@@ -1426,6 +1562,10 @@ local function createPublicSpaceRow(publicRoomData, order)
 	occupancyLabel.TextXAlignment = Enum.TextXAlignment.Right
 	occupancyLabel.Font = Enum.Font.GothamBold
 	occupancyLabel.Parent = row
+
+	if isRoomFavourite(publicRoomData) then
+		addFavouriteMarker(row, 34)
+	end
 
 	if isEntryCurrentRoom(publicRoomData) then
 		local hereBadge = Instance.new("TextLabel")
@@ -1520,6 +1660,8 @@ local function createPublicCategoryPlaceholderRow(categoryName, order)
 end
 
 local function createRoomRow(roomData, order)
+	applyCachedFavouriteState(roomData)
+
 	local row = Instance.new("TextButton")
 	row.Name = tostring(roomData.RoomName or roomData.RoomKey or "Room")
 	row.LayoutOrder = order
@@ -1586,6 +1728,10 @@ local function createRoomRow(roomData, order)
 	occupancyLabel.TextXAlignment = Enum.TextXAlignment.Right
 	occupancyLabel.Font = Enum.Font.GothamBold
 	occupancyLabel.Parent = row
+
+	if isRoomFavourite(roomData) then
+		addFavouriteMarker(row, 34)
+	end
 
 	if isEntryCurrentRoom(roomData) then
 		local hereBadge = Instance.new("TextLabel")
@@ -1687,6 +1833,28 @@ local function renderRoomRows(rooms, emptyMessage)
 	end
 end
 
+local function renderFavouriteRows()
+	if favouritesRequestInFlight and #favouriteEntries == 0 then
+		createEmptyState("Loading favourites...")
+		return
+	end
+
+	if #favouriteEntries == 0 then
+		createEmptyState("No favourite rooms yet.")
+		return
+	end
+
+	for index, entry in ipairs(favouriteEntries) do
+		entry.IsFavourite = true
+
+		if entry.RoomType == "PublicSpace" then
+			createPublicSpaceRow(entry, index)
+		else
+			createRoomRow(entry, index)
+		end
+	end
+end
+
 local function renderPublicSpaces()
 	sectionTitle.Text = "Public Spaces"
 	searchBox.Visible = false
@@ -1725,10 +1893,8 @@ local function renderRooms()
 		sectionTitle.Text = "Favourites"
 		listFrame.Position = UDim2.fromOffset(14, 44)
 		listFrame.Size = UDim2.new(1, -28, 1, -58)
-		selectedRoomData = nil
-		selectedRow = nil
-		updateDetailPanel()
-		createEmptyState("Favourites coming soon.")
+		requestFavourites()
+		renderFavouriteRows()
 	else
 		sectionTitle.Text = "Guest Rooms"
 		listFrame.Position = UDim2.fromOffset(14, 84)
@@ -1869,7 +2035,29 @@ end)
 goButton.MouseButton1Click:Connect(joinSelectedRoom)
 
 favouriteButton.MouseButton1Click:Connect(function()
-	setStatusMessage("Favourites are coming soon.")
+	if not selectedRoomData then
+		return
+	end
+
+	local roomKey = getRoomKey(selectedRoomData)
+
+	if not roomKey then
+		showSettingsError("This room cannot be favourited.")
+		return
+	end
+
+	if pendingFavouriteToggleByRoomKey[roomKey] then
+		return
+	end
+
+	pendingFavouriteToggleByRoomKey[roomKey] = true
+	favouriteButton.Active = false
+	favouriteButton.AutoButtonColor = false
+	setStatusMessage("Updating favourite...")
+
+	roomNavigatorRequest:FireServer("ToggleFavourite", {
+		RoomKey = roomKey,
+	})
 end)
 
 settingsCategoryButton.MouseButton1Click:Connect(function()
@@ -1953,6 +2141,16 @@ roomListUpdate.OnClientEvent:Connect(function(roomList, currentRoomName)
 	latestRoomList = typeof(roomList) == "table" and roomList or {}
 	latestCurrentRoomName = currentRoomName
 
+	for _, roomData in ipairs(latestRoomList) do
+		if typeof(roomData.RoomKey) == "string" and roomData.RoomKey ~= "" then
+			if roomData.IsFavourite == true then
+				favouriteKeysByRoomKey[roomData.RoomKey] = true
+			elseif roomData.IsFavourite == false then
+				favouriteKeysByRoomKey[roomData.RoomKey] = nil
+			end
+		end
+	end
+
 	if panel.Visible then
 		renderNavigator()
 	end
@@ -1970,6 +2168,63 @@ joinRoomResult.OnClientEvent:Connect(function(success, message)
 	end
 
 	roomListRequest:FireServer()
+end)
+
+roomNavigatorResult.OnClientEvent:Connect(function(response)
+	if typeof(response) ~= "table" then
+		showSettingsError("Could not update favourites.")
+		return
+	end
+
+	if response.Kind == "Favourites" then
+		favouritesRequestInFlight = false
+
+		if response.Success == true then
+			favouritesLoaded = true
+			syncFavouriteKeys(response.FavouriteKeys)
+			favouriteEntries = typeof(response.Entries) == "table" and response.Entries or {}
+
+			for _, entry in ipairs(favouriteEntries) do
+				entry.IsFavourite = true
+			end
+		else
+			favouritesLoaded = true
+			showSettingsError(response.Message or "Could not load favourites.")
+		end
+
+		if panel.Visible and renderNavigator then
+			renderNavigator()
+		end
+
+		return
+	end
+
+	if response.Kind == "ToggleFavourite" then
+		local roomKey = response.RoomKey
+
+		if typeof(roomKey) == "string" then
+			pendingFavouriteToggleByRoomKey[roomKey] = nil
+		end
+
+		if response.Success == true then
+			setCachedFavourite(roomKey, response.IsFavourite == true)
+			setStatusMessage(response.Message or "Favourite updated.", "success")
+			favouritesLoaded = false
+			requestFavourites(true)
+		else
+			showSettingsError(response.Message or "Could not update favourite.")
+		end
+
+		if panel.Visible and renderNavigator then
+			renderNavigator()
+		else
+			updateDetailPanel()
+		end
+
+		return
+	end
+
+	showSettingsError(response.Message or "Unknown room navigator response.")
 end)
 
 roomSettingsResult.OnClientEvent:Connect(function(response)

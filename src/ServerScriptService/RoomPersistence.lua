@@ -59,6 +59,7 @@ local function createDefaultProfile()
 			Description = "",
 			Tags = {},
 		},
+		FavouriteRooms = {},
 		Inventory = {},
 		InventoryUntradable = {},
 		InventoryUnsellable = {},
@@ -94,6 +95,19 @@ local function isValidTemplateId(templateId)
 	return typeof(templateId) == "string"
 		and templateId ~= ""
 		and templateId:match("%S") ~= nil
+end
+
+local function isValidRoomFavouriteKey(roomKey)
+	local playerRoomPrefix = "PlayerRoom:"
+	local publicSpacePrefix = "PublicSpace:"
+
+	return typeof(roomKey) == "string"
+		and roomKey ~= ""
+		and #roomKey <= 120
+		and (
+			(string.sub(roomKey, 1, #playerRoomPrefix) == playerRoomPrefix and #roomKey > #playerRoomPrefix)
+			or (string.sub(roomKey, 1, #publicSpacePrefix) == publicSpacePrefix and #roomKey > #publicSpacePrefix)
+		)
 end
 
 local function isPositiveInteger(value)
@@ -506,6 +520,23 @@ local function ensureRoomDirectory(profile)
 	return profile.RoomDirectory
 end
 
+local function ensureFavouriteRooms(profile)
+	local favouriteRooms = profile.FavouriteRooms
+	local normalized = {}
+
+	if typeof(favouriteRooms) == "table" then
+		for roomKey, isFavourite in pairs(favouriteRooms) do
+			if isFavourite == true and isValidRoomFavouriteKey(roomKey) then
+				normalized[roomKey] = true
+			end
+		end
+	end
+
+	profile.FavouriteRooms = normalized
+
+	return profile.FavouriteRooms
+end
+
 local function fillDefaults(profile)
 	local defaults = createDefaultProfile()
 
@@ -523,6 +554,7 @@ local function fillDefaults(profile)
 	ensureCurrencies(profile)
 	ensureDailyReward(profile)
 	ensureRoomDirectory(profile)
+	ensureFavouriteRooms(profile)
 
 	if profile.StarterDollarsGranted ~= true then
 		profile.StarterDollarsGranted = false
@@ -916,6 +948,68 @@ function RoomPersistence.UpdateRoomDirectory(player, updates)
 	RoomPersistence.QueueSave(player)
 
 	return true, "Room settings saved.", deepCopy(roomDirectory)
+end
+
+function RoomPersistence.GetFavouriteRoomsSnapshot(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return {}
+	end
+
+	return deepCopy(ensureFavouriteRooms(profile))
+end
+
+function RoomPersistence.IsRoomFavourite(player, roomKey)
+	if not isValidRoomFavouriteKey(roomKey) then
+		return false
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false
+	end
+
+	return ensureFavouriteRooms(profile)[roomKey] == true
+end
+
+function RoomPersistence.SetRoomFavourite(player, roomKey, isFavourite)
+	if not isValidRoomFavouriteKey(roomKey) then
+		return false, "Invalid room favourite.", false
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", false
+	end
+
+	local favouriteRooms = ensureFavouriteRooms(profile)
+	local newFavouriteState = isFavourite == true
+
+	if newFavouriteState then
+		favouriteRooms[roomKey] = true
+	else
+		favouriteRooms[roomKey] = nil
+	end
+
+	profile.UpdatedAt = os.time()
+	RoomPersistence.QueueSave(player)
+
+	return true,
+		newFavouriteState and "Room added to favourites." or "Room removed from favourites.",
+		newFavouriteState
+end
+
+function RoomPersistence.ToggleRoomFavourite(player, roomKey)
+	if not isValidRoomFavouriteKey(roomKey) then
+		return false, "Invalid room favourite.", false
+	end
+
+	local currentlyFavourite = RoomPersistence.IsRoomFavourite(player, roomKey)
+
+	return RoomPersistence.SetRoomFavourite(player, roomKey, not currentlyFavourite)
 end
 
 function RoomPersistence.GetCurrency(player, currencyKey)

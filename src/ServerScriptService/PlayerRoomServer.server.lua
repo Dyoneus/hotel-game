@@ -45,6 +45,8 @@ local joinRoomRequest = remoteEvents:WaitForChild("JoinRoomRequest")
 local joinRoomResult = remoteEvents:WaitForChild("JoinRoomResult")
 local roomSettingsRequest = getOrCreateRemoteEvent("RoomSettingsRequest")
 local roomSettingsResult = getOrCreateRemoteEvent("RoomSettingsResult")
+local roomNavigatorRequest = getOrCreateRemoteEvent("RoomNavigatorRequest")
+local roomNavigatorResult = getOrCreateRemoteEvent("RoomNavigatorResult")
 
 local tutorialFinishedRequest = remoteEvents:WaitForChild("TutorialFinishedRequest")
 
@@ -568,6 +570,41 @@ local function applyPlayerRoomMetadataAttributes(roomModel, metadata)
 	roomModel:SetAttribute("Description", metadata.Description)
 end
 
+local function getPublicRoomEntry(player, publicRoomId, config)
+	if typeof(publicRoomId) ~= "string" or publicRoomId == "" or typeof(config) ~= "table" then
+		return nil
+	end
+
+	local activeRoomName = getPublicRoomActiveName(publicRoomId)
+	local activeRoom = activeRooms:FindFirstChild(activeRoomName)
+	local occupancy = getPlayerCountInRoom(activeRoomName)
+	local maxOccupancy = typeof(config.MaxOccupancy) == "number"
+		and config.MaxOccupancy > 0
+		and math.floor(config.MaxOccupancy) == config.MaxOccupancy
+		and config.MaxOccupancy
+		or 25
+	local roomKey = "PublicSpace:" .. publicRoomId
+
+	return {
+		RoomType = "PublicSpace",
+		RoomKey = roomKey,
+		Id = publicRoomId,
+		PublicRoomId = publicRoomId,
+		ActiveRoomName = activeRoomName,
+		DisplayName = config.DisplayName or publicRoomId,
+		Category = config.Category or "Public Spaces",
+		Description = config.Description or "",
+		Occupancy = occupancy,
+		PlayerCount = occupancy,
+		MaxOccupancy = maxOccupancy,
+		IsFavourite = player and RoomPersistence.IsRoomFavourite(player, roomKey) == true or false,
+		IsAvailable = true,
+		IsCurrentRoom = player and player:GetAttribute("CurrentRoomName") == activeRoomName or false,
+		SortOrder = config.SortOrder,
+		PublicRoomActive = activeRoom ~= nil,
+	}
+end
+
 local function buildRoomList(viewerPlayer)
 	local roomList = {}
 	local currentRoomName = viewerPlayer and viewerPlayer:GetAttribute("CurrentRoomName") or nil
@@ -603,6 +640,7 @@ local function buildRoomList(viewerPlayer)
 			if metadata.IsPublic or isOwner then
 				local playerCount = getPlayerCountInRoom(roomModel.Name)
 				local roomId = metadata.RoomId
+				local roomKey = "PlayerRoom:" .. tostring(ownerUserId) .. ":" .. roomId
 
 				table.insert(roomList, {
 					RoomName = roomModel.Name,
@@ -614,7 +652,7 @@ local function buildRoomList(viewerPlayer)
 
 					RoomType = "PlayerRoom",
 					RoomId = roomId,
-					RoomKey = "PlayerRoom:" .. tostring(ownerUserId) .. ":" .. roomId,
+					RoomKey = roomKey,
 					DisplayName = metadata.DisplayName,
 					Category = metadata.Category,
 					IsPublic = metadata.IsPublic,
@@ -624,6 +662,8 @@ local function buildRoomList(viewerPlayer)
 					Tags = metadata.Tags,
 					IsOwner = isOwner == true,
 					IsCurrentRoom = roomModel.Name == currentRoomName,
+					IsFavourite = viewerPlayer and RoomPersistence.IsRoomFavourite(viewerPlayer, roomKey) == true or false,
+					IsAvailable = true,
 				})
 			end
 		end
@@ -634,6 +674,75 @@ local function buildRoomList(viewerPlayer)
 	end)
 
 	return roomList
+end
+
+local function getFavouriteKeysArray(player)
+	local favourites = RoomPersistence.GetFavouriteRoomsSnapshot(player)
+	local favouriteKeys = {}
+
+	for roomKey, isFavourite in pairs(favourites) do
+		if isFavourite == true then
+			table.insert(favouriteKeys, roomKey)
+		end
+	end
+
+	table.sort(favouriteKeys)
+
+	return favouriteKeys
+end
+
+local function getFavouriteEntries(player)
+	local favouriteKeys = getFavouriteKeysArray(player)
+	local entries = {}
+	local activePlayerRoomsByKey = {}
+
+	for _, roomEntry in ipairs(buildRoomList(player)) do
+		if typeof(roomEntry.RoomKey) == "string" then
+			activePlayerRoomsByKey[roomEntry.RoomKey] = roomEntry
+		end
+	end
+
+	for _, roomKey in ipairs(favouriteKeys) do
+		local publicRoomId = string.match(roomKey, "^PublicSpace:(.+)$")
+
+		if publicRoomId then
+			local config = PublicRoomConfig.GetPublicRoom(publicRoomId)
+			local entry = getPublicRoomEntry(player, publicRoomId, config)
+
+			if entry then
+				entry.IsFavourite = true
+				table.insert(entries, entry)
+			end
+		else
+			local playerRoomEntry = activePlayerRoomsByKey[roomKey]
+
+			if playerRoomEntry then
+				playerRoomEntry.IsFavourite = true
+				playerRoomEntry.IsAvailable = true
+				table.insert(entries, playerRoomEntry)
+			end
+		end
+	end
+
+	return favouriteKeys, entries
+end
+
+local function canFavouriteRoomKey(player, roomKey)
+	local publicRoomId = string.match(roomKey, "^PublicSpace:(.+)$")
+
+	if publicRoomId then
+		return PublicRoomConfig.GetPublicRoom(publicRoomId) ~= nil
+	end
+
+	if string.match(roomKey, "^PlayerRoom:") then
+		for _, roomEntry in ipairs(buildRoomList(player)) do
+			if roomEntry.RoomKey == roomKey then
+				return true
+			end
+		end
+	end
+
+	return false
 end
 
 local function sendRoomListToPlayer(player)
@@ -1271,6 +1380,69 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 		Action = safeActionName,
 		Success = false,
 		Message = "Unknown room settings action.",
+	})
+end)
+
+roomNavigatorRequest.OnServerEvent:Connect(function(player, actionName, payload)
+	local safeActionName = typeof(actionName) == "string" and actionName or "Unknown"
+
+	if safeActionName == "GetFavourites" then
+		local favouriteKeys, entries = getFavouriteEntries(player)
+
+		roomNavigatorResult:FireClient(player, {
+			Kind = "Favourites",
+			Success = true,
+			Message = "Favourites loaded.",
+			FavouriteKeys = favouriteKeys,
+			Entries = entries,
+		})
+		return
+	end
+
+	if safeActionName == "ToggleFavourite" then
+		if typeof(payload) ~= "table" or typeof(payload.RoomKey) ~= "string" then
+			roomNavigatorResult:FireClient(player, {
+				Kind = "ToggleFavourite",
+				Success = false,
+				Message = "Invalid favourite room.",
+			})
+			return
+		end
+
+		local roomKey = payload.RoomKey
+
+		if not canFavouriteRoomKey(player, roomKey) then
+			roomNavigatorResult:FireClient(player, {
+				Kind = "ToggleFavourite",
+				Success = false,
+				RoomKey = roomKey,
+				IsFavourite = false,
+				Message = "This room cannot be favourited.",
+			})
+			return
+		end
+
+		local success, message, isFavourite = RoomPersistence.ToggleRoomFavourite(player, roomKey)
+
+		roomNavigatorResult:FireClient(player, {
+			Kind = "ToggleFavourite",
+			Success = success == true,
+			RoomKey = roomKey,
+			IsFavourite = isFavourite == true,
+			Message = message or (success and "Favourite updated." or "Could not update favourite."),
+		})
+
+		if success then
+			sendRoomListToPlayer(player)
+		end
+
+		return
+	end
+
+	roomNavigatorResult:FireClient(player, {
+		Kind = "Unknown",
+		Success = false,
+		Message = "Unknown room navigator action.",
 	})
 end)
 
