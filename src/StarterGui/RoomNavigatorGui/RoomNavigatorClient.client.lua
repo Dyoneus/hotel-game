@@ -1,9 +1,9 @@
---Explorer/StarterGui/RoomNavigatorGui/RoomCreationClient.lua
+-- Explorer/StarterGui/RoomNavigatorGui/RoomNavigatorClient.lua
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 
@@ -12,6 +12,31 @@ local roomListUpdate = remoteEvents:WaitForChild("RoomListUpdate")
 local joinRoomRequest = remoteEvents:WaitForChild("JoinRoomRequest")
 local joinRoomResult = remoteEvents:WaitForChild("JoinRoomResult")
 local roomCreationResult = remoteEvents:WaitForChild("RoomCreationResult")
+
+local DEFAULT_PUBLIC_CATEGORIES = {
+	"Welcome Lounge",
+	"Entertainment",
+	"Outside Spaces",
+	"Gamehall",
+	"Cafes",
+	"Restaurants",
+	"Dance Clubs",
+}
+
+local GUEST_ROOM_CATEGORIES = {
+	"Chat Rooms",
+	"Maze Rooms",
+	"Trading Rooms",
+	"Help Centres",
+	"Gaming & Race Rooms",
+}
+
+local TOP_TAB_PUBLIC = "PublicSpaces"
+local TOP_TAB_ROOMS = "Rooms"
+local ROOM_SUBTAB_SEARCH = "Search"
+local ROOM_SUBTAB_OWN = "OwnRooms"
+local ROOM_SUBTAB_FAVOURITES = "Favourites"
+local ROOM_SUBTAB_GUEST = "GuestRooms"
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -23,9 +48,50 @@ for _, child in ipairs(gui:GetChildren()) do
 	end
 end
 
-local selectedRoomName = nil
+local selectedTopTab = TOP_TAB_ROOMS
+local selectedRoomSubtab = ROOM_SUBTAB_GUEST
+local selectedGuestCategory = "Chat Rooms"
+local selectedRoomData = nil
 local selectedRow = nil
 local latestRoomList = {}
+local latestCurrentRoomName = nil
+local searchQuery = ""
+
+local function loadPublicCategories()
+	local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+
+	if not sharedFolder then
+		return DEFAULT_PUBLIC_CATEGORIES
+	end
+
+	local configModule = sharedFolder:FindFirstChild("PublicRoomConfig")
+
+	if not configModule or not configModule:IsA("ModuleScript") then
+		return DEFAULT_PUBLIC_CATEGORIES
+	end
+
+	local ok, config = pcall(require, configModule)
+
+	if not ok or typeof(config) ~= "table" or typeof(config.Categories) ~= "table" then
+		return DEFAULT_PUBLIC_CATEGORIES
+	end
+
+	local categories = {}
+
+	for _, categoryName in ipairs(config.Categories) do
+		if typeof(categoryName) == "string" and categoryName ~= "" then
+			table.insert(categories, categoryName)
+		end
+	end
+
+	if #categories == 0 then
+		return DEFAULT_PUBLIC_CATEGORIES
+	end
+
+	return categories
+end
+
+local publicCategories = loadPublicCategories()
 
 local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -87,9 +153,10 @@ openButton.AnchorPoint = Vector2.new(0, 1)
 openButton.Position = UDim2.new(0, 18, 1, -18)
 openButton.Size = UDim2.fromOffset(130, 42)
 openButton.BackgroundColor3 = Color3.fromRGB(35, 45, 60)
+openButton.BorderSizePixel = 0
 openButton.Text = "Rooms"
 openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-openButton.TextScaled = true
+openButton.TextSize = 20
 openButton.Font = Enum.Font.GothamBold
 openButton.Visible = false
 openButton.Parent = gui
@@ -97,106 +164,319 @@ openButton.Parent = gui
 createCorner(openButton, 10)
 
 local panel = Instance.new("Frame")
-panel.Name = "RoomNavigatorPanel"
-panel.AnchorPoint = Vector2.new(1, 0.5)
-panel.Position = UDim2.new(1, -24, 0.5, 0)
-panel.Size = UDim2.fromOffset(380, 520)
-panel.BackgroundColor3 = Color3.fromRGB(245, 245, 238)
+panel.Name = "HotelNavigatorPanel"
+panel.AnchorPoint = Vector2.new(0.5, 0.5)
+panel.Position = UDim2.fromScale(0.5, 0.5)
+panel.Size = UDim2.new(0.88, 0, 0.82, 0)
+panel.BackgroundColor3 = Color3.fromRGB(238, 240, 232)
 panel.BorderSizePixel = 0
 panel.Visible = false
 panel.Parent = gui
 
-createCorner(panel, 16)
-createStroke(panel, Color3.fromRGB(255, 255, 255), 2, 0.1)
+local panelSize = Instance.new("UISizeConstraint")
+panelSize.MaxSize = Vector2.new(900, 620)
+panelSize.MinSize = Vector2.new(620, 430)
+panelSize.Parent = panel
+
+createCorner(panel, 10)
+createStroke(panel, Color3.fromRGB(180, 188, 176), 1, 0)
+
+local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
+titleBar.Size = UDim2.new(1, 0, 0, 58)
+titleBar.BackgroundColor3 = Color3.fromRGB(42, 67, 83)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = panel
+
+createCorner(titleBar, 10)
+
+local titleCover = Instance.new("Frame")
+titleCover.Name = "TitleCover"
+titleCover.AnchorPoint = Vector2.new(0, 1)
+titleCover.Position = UDim2.new(0, 0, 1, 0)
+titleCover.Size = UDim2.new(1, 0, 0, 10)
+titleCover.BackgroundColor3 = titleBar.BackgroundColor3
+titleCover.BorderSizePixel = 0
+titleCover.Parent = titleBar
 
 local titleLabel = Instance.new("TextLabel")
 titleLabel.Name = "TitleLabel"
-titleLabel.Position = UDim2.fromOffset(18, 14)
-titleLabel.Size = UDim2.new(1, -36, 0, 36)
+titleLabel.Position = UDim2.fromOffset(20, 12)
+titleLabel.Size = UDim2.new(1, -82, 0, 34)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Rooms in This Server"
-titleLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-titleLabel.TextScaled = true
+titleLabel.Text = "Hotel Navigator"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.TextSize = 24
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Font = Enum.Font.GothamBold
-titleLabel.Parent = panel
+titleLabel.Parent = titleBar
 
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Name = "StatusLabel"
-statusLabel.Position = UDim2.fromOffset(18, 52)
-statusLabel.Size = UDim2.new(1, -36, 0, 24)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Select a room to join."
-statusLabel.TextColor3 = Color3.fromRGB(95, 95, 95)
-statusLabel.TextScaled = true
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.Parent = panel
+local closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseButton"
+closeButton.AnchorPoint = Vector2.new(1, 0)
+closeButton.Position = UDim2.new(1, -16, 0, 14)
+closeButton.Size = UDim2.fromOffset(32, 30)
+closeButton.BackgroundColor3 = Color3.fromRGB(224, 230, 222)
+closeButton.BorderSizePixel = 0
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(45, 48, 45)
+closeButton.TextSize = 14
+closeButton.Font = Enum.Font.GothamBold
+closeButton.Parent = titleBar
+
+createCorner(closeButton, 6)
+
+local topTabsFrame = Instance.new("Frame")
+topTabsFrame.Name = "TopTabs"
+topTabsFrame.Position = UDim2.fromOffset(18, 70)
+topTabsFrame.Size = UDim2.new(1, -36, 0, 42)
+topTabsFrame.BackgroundTransparency = 1
+topTabsFrame.Parent = panel
+
+local topTabsLayout = Instance.new("UIListLayout")
+topTabsLayout.FillDirection = Enum.FillDirection.Horizontal
+topTabsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+topTabsLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+topTabsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+topTabsLayout.Padding = UDim.new(0, 8)
+topTabsLayout.Parent = topTabsFrame
+
+local function createTextButton(name, text, size, parent)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.Size = size
+	button.BackgroundColor3 = Color3.fromRGB(216, 222, 214)
+	button.BorderSizePixel = 0
+	button.Text = text
+	button.TextColor3 = Color3.fromRGB(45, 48, 45)
+	button.TextSize = 15
+	button.Font = Enum.Font.GothamBold
+	button.AutoButtonColor = true
+	button.Parent = parent
+
+	createCorner(button, 7)
+
+	return button
+end
+
+local publicSpacesTab = createTextButton(
+	"PublicSpacesTab",
+	"Public Spaces",
+	UDim2.fromOffset(150, 38),
+	topTabsFrame
+)
+
+local roomsTab = createTextButton(
+	"RoomsTab",
+	"Rooms",
+	UDim2.fromOffset(120, 38),
+	topTabsFrame
+)
+
+local roomsNav = Instance.new("Frame")
+roomsNav.Name = "RoomsNavigation"
+roomsNav.Position = UDim2.fromOffset(18, 124)
+roomsNav.Size = UDim2.new(0, 150, 1, -266)
+roomsNav.BackgroundColor3 = Color3.fromRGB(229, 232, 224)
+roomsNav.BorderSizePixel = 0
+roomsNav.Parent = panel
+
+createCorner(roomsNav, 8)
+createStroke(roomsNav, Color3.fromRGB(205, 212, 200), 1, 0)
+
+local roomsNavLayout = Instance.new("UIListLayout")
+roomsNavLayout.SortOrder = Enum.SortOrder.LayoutOrder
+roomsNavLayout.Padding = UDim.new(0, 6)
+roomsNavLayout.Parent = roomsNav
+
+local roomsNavPadding = Instance.new("UIPadding")
+roomsNavPadding.PaddingTop = UDim.new(0, 10)
+roomsNavPadding.PaddingLeft = UDim.new(0, 10)
+roomsNavPadding.PaddingRight = UDim.new(0, 10)
+roomsNavPadding.Parent = roomsNav
+
+local searchSubtabButton = createTextButton("SearchSubtab", "Search", UDim2.new(1, 0, 0, 34), roomsNav)
+local ownSubtabButton = createTextButton("OwnRoomsSubtab", "Own Room(s)", UDim2.new(1, 0, 0, 34), roomsNav)
+local favouritesSubtabButton = createTextButton("FavouritesSubtab", "Favourites", UDim2.new(1, 0, 0, 34), roomsNav)
+local guestSubtabButton = createTextButton("GuestRoomsSubtab", "Guest Rooms", UDim2.new(1, 0, 0, 34), roomsNav)
+
+local contentFrame = Instance.new("Frame")
+contentFrame.Name = "ContentFrame"
+contentFrame.Position = UDim2.fromOffset(180, 124)
+contentFrame.Size = UDim2.new(1, -198, 1, -266)
+contentFrame.BackgroundColor3 = Color3.fromRGB(249, 250, 247)
+contentFrame.BorderSizePixel = 0
+contentFrame.Parent = panel
+
+createCorner(contentFrame, 8)
+createStroke(contentFrame, Color3.fromRGB(205, 212, 200), 1, 0)
+
+local sectionTitle = Instance.new("TextLabel")
+sectionTitle.Name = "SectionTitle"
+sectionTitle.Position = UDim2.fromOffset(14, 8)
+sectionTitle.Size = UDim2.new(1, -28, 0, 24)
+sectionTitle.BackgroundTransparency = 1
+sectionTitle.Text = ""
+sectionTitle.TextColor3 = Color3.fromRGB(48, 54, 48)
+sectionTitle.TextSize = 17
+sectionTitle.TextXAlignment = Enum.TextXAlignment.Left
+sectionTitle.Font = Enum.Font.GothamBold
+sectionTitle.Parent = contentFrame
+
+local searchBox = Instance.new("TextBox")
+searchBox.Name = "SearchBox"
+searchBox.Position = UDim2.fromOffset(14, 40)
+searchBox.Size = UDim2.new(1, -28, 0, 34)
+searchBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+searchBox.BorderSizePixel = 0
+searchBox.PlaceholderText = "Search rooms or owners"
+searchBox.Text = ""
+searchBox.TextColor3 = Color3.fromRGB(40, 40, 40)
+searchBox.PlaceholderColor3 = Color3.fromRGB(130, 130, 130)
+searchBox.TextSize = 14
+searchBox.TextXAlignment = Enum.TextXAlignment.Left
+searchBox.Font = Enum.Font.Gotham
+searchBox.ClearTextOnFocus = false
+searchBox.Visible = false
+searchBox.Parent = contentFrame
+
+createCorner(searchBox, 6)
+createStroke(searchBox, Color3.fromRGB(215, 220, 214), 1, 0)
+
+local searchPadding = Instance.new("UIPadding")
+searchPadding.PaddingLeft = UDim.new(0, 10)
+searchPadding.PaddingRight = UDim.new(0, 10)
+searchPadding.Parent = searchBox
+
+local categoryBar = Instance.new("Frame")
+categoryBar.Name = "GuestCategoryBar"
+categoryBar.Position = UDim2.fromOffset(14, 40)
+categoryBar.Size = UDim2.new(1, -28, 0, 38)
+categoryBar.BackgroundTransparency = 1
+categoryBar.Visible = false
+categoryBar.Parent = contentFrame
+
+local categoryLayout = Instance.new("UIListLayout")
+categoryLayout.FillDirection = Enum.FillDirection.Horizontal
+categoryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+categoryLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+categoryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+categoryLayout.Padding = UDim.new(0, 6)
+categoryLayout.Parent = categoryBar
 
 local listFrame = Instance.new("ScrollingFrame")
-listFrame.Name = "RoomList"
-listFrame.Position = UDim2.fromOffset(18, 88)
-listFrame.Size = UDim2.new(1, -36, 1, -170)
-listFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+listFrame.Name = "NavigatorList"
+listFrame.Position = UDim2.fromOffset(14, 84)
+listFrame.Size = UDim2.new(1, -28, 1, -98)
+listFrame.BackgroundTransparency = 1
 listFrame.BorderSizePixel = 0
 listFrame.ScrollBarThickness = 6
 listFrame.CanvasSize = UDim2.fromOffset(0, 0)
-listFrame.Parent = panel
-
-createCorner(listFrame, 12)
-createStroke(listFrame, Color3.fromRGB(220, 220, 220), 1, 0)
+listFrame.Parent = contentFrame
 
 local listLayout = Instance.new("UIListLayout")
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Padding = UDim.new(0, 8)
 listLayout.Parent = listFrame
 
-local listPadding = Instance.new("UIPadding")
-listPadding.PaddingTop = UDim.new(0, 10)
-listPadding.PaddingBottom = UDim.new(0, 10)
-listPadding.PaddingLeft = UDim.new(0, 10)
-listPadding.PaddingRight = UDim.new(0, 10)
-listPadding.Parent = listFrame
+local detailPanel = Instance.new("Frame")
+detailPanel.Name = "SelectedRoomDetails"
+detailPanel.AnchorPoint = Vector2.new(0, 1)
+detailPanel.Position = UDim2.new(0, 18, 1, -18)
+detailPanel.Size = UDim2.new(1, -36, 0, 116)
+detailPanel.BackgroundColor3 = Color3.fromRGB(224, 230, 220)
+detailPanel.BorderSizePixel = 0
+detailPanel.Parent = panel
 
-local joinButton = Instance.new("TextButton")
-joinButton.Name = "JoinButton"
-joinButton.AnchorPoint = Vector2.new(0.5, 1)
-joinButton.Position = UDim2.new(0.5, 0, 1, -64)
-joinButton.Size = UDim2.fromOffset(250, 42)
-joinButton.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
-joinButton.Text = "Select a Room"
-joinButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-joinButton.TextScaled = true
-joinButton.Font = Enum.Font.GothamBold
-joinButton.AutoButtonColor = false
-joinButton.Parent = panel
+createCorner(detailPanel, 8)
+createStroke(detailPanel, Color3.fromRGB(190, 200, 186), 1, 0)
 
-createCorner(joinButton, 10)
+local detailTitle = Instance.new("TextLabel")
+detailTitle.Name = "DetailTitle"
+detailTitle.Position = UDim2.fromOffset(14, 10)
+detailTitle.Size = UDim2.new(1, -260, 0, 24)
+detailTitle.BackgroundTransparency = 1
+detailTitle.Text = "Select a room"
+detailTitle.TextColor3 = Color3.fromRGB(42, 48, 42)
+detailTitle.TextSize = 17
+detailTitle.TextXAlignment = Enum.TextXAlignment.Left
+detailTitle.TextTruncate = Enum.TextTruncate.AtEnd
+detailTitle.Font = Enum.Font.GothamBold
+detailTitle.Parent = detailPanel
 
-local refreshButton = Instance.new("TextButton")
-refreshButton.Name = "RefreshButton"
-refreshButton.Position = UDim2.new(0, 18, 1, -48)
-refreshButton.Size = UDim2.fromOffset(100, 32)
-refreshButton.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
-refreshButton.Text = "Refresh"
-refreshButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-refreshButton.TextScaled = true
-refreshButton.Font = Enum.Font.GothamBold
-refreshButton.Parent = panel
+local detailOwner = Instance.new("TextLabel")
+detailOwner.Name = "DetailOwner"
+detailOwner.Position = UDim2.fromOffset(14, 38)
+detailOwner.Size = UDim2.new(1, -260, 0, 20)
+detailOwner.BackgroundTransparency = 1
+detailOwner.Text = "Owner: -"
+detailOwner.TextColor3 = Color3.fromRGB(82, 88, 82)
+detailOwner.TextSize = 13
+detailOwner.TextXAlignment = Enum.TextXAlignment.Left
+detailOwner.TextTruncate = Enum.TextTruncate.AtEnd
+detailOwner.Font = Enum.Font.Gotham
+detailOwner.Parent = detailPanel
 
-createCorner(refreshButton, 8)
+local detailMeta = Instance.new("TextLabel")
+detailMeta.Name = "DetailMeta"
+detailMeta.Position = UDim2.fromOffset(14, 62)
+detailMeta.Size = UDim2.new(1, -260, 0, 20)
+detailMeta.BackgroundTransparency = 1
+detailMeta.Text = "Occupancy: -"
+detailMeta.TextColor3 = Color3.fromRGB(82, 88, 82)
+detailMeta.TextSize = 13
+detailMeta.TextXAlignment = Enum.TextXAlignment.Left
+detailMeta.TextTruncate = Enum.TextTruncate.AtEnd
+detailMeta.Font = Enum.Font.Gotham
+detailMeta.Parent = detailPanel
 
-local closeButton = Instance.new("TextButton")
-closeButton.Name = "CloseButton"
-closeButton.AnchorPoint = Vector2.new(1, 0)
-closeButton.Position = UDim2.new(1, -18, 1, -48)
-closeButton.Size = UDim2.fromOffset(100, 32)
-closeButton.BackgroundColor3 = Color3.fromRGB(230, 230, 230)
-closeButton.Text = "Close"
-closeButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-closeButton.TextScaled = true
-closeButton.Font = Enum.Font.GothamBold
-closeButton.Parent = panel
+local detailStatus = Instance.new("TextLabel")
+detailStatus.Name = "DetailStatus"
+detailStatus.Position = UDim2.fromOffset(14, 86)
+detailStatus.Size = UDim2.new(1, -260, 0, 18)
+detailStatus.BackgroundTransparency = 1
+detailStatus.Text = ""
+detailStatus.TextColor3 = Color3.fromRGB(105, 90, 55)
+detailStatus.TextSize = 12
+detailStatus.TextXAlignment = Enum.TextXAlignment.Left
+detailStatus.Font = Enum.Font.GothamMedium
+detailStatus.Parent = detailPanel
 
-createCorner(closeButton, 8)
+local favouriteButton = createTextButton(
+	"FavouriteButton",
+	"Favourites Soon",
+	UDim2.fromOffset(130, 36),
+	detailPanel
+)
+favouriteButton.AnchorPoint = Vector2.new(1, 0)
+favouriteButton.Position = UDim2.new(1, -144, 0, 40)
+favouriteButton.BackgroundColor3 = Color3.fromRGB(180, 185, 180)
+favouriteButton.TextColor3 = Color3.fromRGB(245, 245, 245)
+favouriteButton.Active = false
+favouriteButton.AutoButtonColor = false
+
+local goButton = createTextButton("GoButton", "Go", UDim2.fromOffset(108, 36), detailPanel)
+goButton.AnchorPoint = Vector2.new(1, 0)
+goButton.Position = UDim2.new(1, -20, 0, 40)
+goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
+goButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+goButton.Active = false
+goButton.AutoButtonColor = false
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Name = "StatusLabel"
+statusLabel.AnchorPoint = Vector2.new(1, 0)
+statusLabel.Position = UDim2.new(1, -20, 0, 84)
+statusLabel.Size = UDim2.fromOffset(230, 20)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = ""
+statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
+statusLabel.TextSize = 12
+statusLabel.TextXAlignment = Enum.TextXAlignment.Right
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.Parent = detailPanel
+
+local categoryButtons = {}
 
 local function shouldShowRoomsButton()
 	return player:GetAttribute("OnboardingStep") == "Complete"
@@ -225,6 +505,8 @@ local function publishMajorMenuState(isOpen)
 	majorMenuStateChanged:Fire(isOpen, MENU_NAME)
 end
 
+local renderNavigator = nil
+
 local function setPanelVisible(isVisible)
 	local wasVisible = panel.Visible
 
@@ -236,149 +518,573 @@ local function setPanelVisible(isVisible)
 	panel.Visible = isVisible
 	updateOpenButton()
 
+	if isVisible then
+		roomListRequest:FireServer()
+
+		if renderNavigator then
+			renderNavigator()
+		end
+	end
+
 	if not isVisible and (wasVisible or openMajorMenuName == MENU_NAME) then
 		publishMajorMenuState(false)
 	end
 end
 
-local function updateJoinButton()
-	if selectedRoomName then
-		joinButton.Text = "Join Room"
-		joinButton.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
-	else
-		joinButton.Text = "Select a Room"
-		joinButton.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+local function getRoomDisplayName(roomData)
+	if typeof(roomData.DisplayName) == "string" and roomData.DisplayName ~= "" then
+		return roomData.DisplayName
 	end
+
+	local ownerDisplayName = roomData.OwnerDisplayName or roomData.OwnerName or "Unknown"
+	return tostring(ownerDisplayName) .. "'s Room"
+end
+
+local function getRoomOwnerText(roomData)
+	local owner = roomData.OwnerDisplayName or roomData.OwnerName or "Unknown"
+	return tostring(owner)
+end
+
+local function getOccupancyText(roomData)
+	local occupancy = roomData.Occupancy or roomData.PlayerCount or 0
+	local maxOccupancy = roomData.MaxOccupancy
+
+	if typeof(maxOccupancy) == "number" then
+		return tostring(occupancy) .. "/" .. tostring(maxOccupancy)
+	end
+
+	return tostring(occupancy)
+end
+
+local function updateTopTabButton(button, isSelected)
+	button.BackgroundColor3 = isSelected and Color3.fromRGB(72, 119, 143) or Color3.fromRGB(216, 222, 214)
+	button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 48, 45)
+end
+
+local function updateSubtabButton(button, isSelected)
+	button.BackgroundColor3 = isSelected and Color3.fromRGB(88, 128, 102) or Color3.fromRGB(244, 246, 242)
+	button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(48, 54, 48)
+end
+
+local function updateCategoryButtons()
+	for categoryName, button in pairs(categoryButtons) do
+		local isSelected = categoryName == selectedGuestCategory
+		button.BackgroundColor3 = isSelected and Color3.fromRGB(74, 118, 148) or Color3.fromRGB(228, 234, 226)
+		button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 50, 45)
+	end
+end
+
+local function updateNavigationState()
+	updateTopTabButton(publicSpacesTab, selectedTopTab == TOP_TAB_PUBLIC)
+	updateTopTabButton(roomsTab, selectedTopTab == TOP_TAB_ROOMS)
+
+	roomsNav.Visible = selectedTopTab == TOP_TAB_ROOMS
+
+	updateSubtabButton(searchSubtabButton, selectedRoomSubtab == ROOM_SUBTAB_SEARCH)
+	updateSubtabButton(ownSubtabButton, selectedRoomSubtab == ROOM_SUBTAB_OWN)
+	updateSubtabButton(favouritesSubtabButton, selectedRoomSubtab == ROOM_SUBTAB_FAVOURITES)
+	updateSubtabButton(guestSubtabButton, selectedRoomSubtab == ROOM_SUBTAB_GUEST)
+	updateCategoryButtons()
+
+	if selectedTopTab == TOP_TAB_ROOMS then
+		contentFrame.Position = UDim2.fromOffset(180, 124)
+		contentFrame.Size = UDim2.new(1, -198, 1, -266)
+	else
+		contentFrame.Position = UDim2.fromOffset(18, 124)
+		contentFrame.Size = UDim2.new(1, -36, 1, -266)
+	end
+end
+
+local function clearList()
+	for _, child in ipairs(listFrame:GetChildren()) do
+		if child:IsA("GuiObject") then
+			child:Destroy()
+		end
+	end
+end
+
+local function updateCanvasSize()
+	task.defer(function()
+		listFrame.CanvasSize = UDim2.fromOffset(0, listLayout.AbsoluteContentSize.Y + 12)
+	end)
 end
 
 local function setRowSelected(row, isSelected)
 	local stroke = row:FindFirstChild("RowStroke")
 
 	if stroke then
-		if isSelected then
-			stroke.Color = Color3.fromRGB(70, 150, 255)
-			stroke.Thickness = 3
-		else
-			stroke.Color = Color3.fromRGB(220, 220, 220)
-			stroke.Thickness = 1
-		end
+		stroke.Color = isSelected and Color3.fromRGB(68, 128, 166) or Color3.fromRGB(213, 220, 210)
+		stroke.Thickness = isSelected and 2 or 1
 	end
 
-	if isSelected then
-		row.BackgroundColor3 = Color3.fromRGB(235, 245, 255)
-	else
-		row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
-	end
+	row.BackgroundColor3 = isSelected and Color3.fromRGB(231, 243, 249) or Color3.fromRGB(255, 255, 255)
 end
 
-local function clearRows()
-	for _, child in ipairs(listFrame:GetChildren()) do
-		if child:IsA("TextButton") then
-			child:Destroy()
-		end
+local function updateDetailPanel()
+	if not selectedRoomData then
+		detailTitle.Text = "Select a room"
+		detailOwner.Text = "Owner: -"
+		detailMeta.Text = "Occupancy: -"
+		detailStatus.Text = ""
+		goButton.Text = "Go"
+		goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
+		goButton.Active = false
+		goButton.AutoButtonColor = false
+		return
 	end
+
+	detailTitle.Text = getRoomDisplayName(selectedRoomData)
+	detailOwner.Text = "Owner: " .. getRoomOwnerText(selectedRoomData)
+	detailMeta.Text = "Occupancy: "
+		.. getOccupancyText(selectedRoomData)
+		.. "  -  Category: "
+		.. tostring(selectedRoomData.Category or "Guest Rooms")
+	detailStatus.Text = selectedRoomData.IsCurrentRoom and "You are here." or ""
+
+	local canGo = typeof(selectedRoomData.RoomName) == "string" and selectedRoomData.RoomName ~= ""
+
+	goButton.Active = canGo
+	goButton.AutoButtonColor = canGo
+	goButton.BackgroundColor3 = canGo and Color3.fromRGB(68, 143, 82) or Color3.fromRGB(110, 115, 110)
+	goButton.Text = canGo and "Go" or "Unavailable"
 end
 
-local function createRoomRow(roomData, currentRoomName, order)
-	local row = Instance.new("TextButton")
-	row.Name = roomData.RoomName
+local function selectRoom(roomData, row)
+	if selectedRow then
+		setRowSelected(selectedRow, false)
+	end
+
+	selectedRoomData = roomData
+	selectedRow = row
+
+	if selectedRow then
+		setRowSelected(selectedRow, true)
+	end
+
+	updateDetailPanel()
+end
+
+local function joinSelectedRoom()
+	if not selectedRoomData then
+		return
+	end
+
+	local roomName = selectedRoomData.RoomName
+
+	if typeof(roomName) ~= "string" or roomName == "" then
+		statusLabel.Text = "This room is not available yet."
+		return
+	end
+
+	statusLabel.Text = "Joining..."
+	goButton.Text = "Joining..."
+	goButton.Active = false
+	goButton.AutoButtonColor = false
+	goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
+
+	joinRoomRequest:FireServer(roomName)
+end
+
+local function createEmptyState(message)
+	local emptyFrame = Instance.new("Frame")
+	emptyFrame.Name = "EmptyState"
+	emptyFrame.Size = UDim2.new(1, -4, 0, 76)
+	emptyFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	emptyFrame.BorderSizePixel = 0
+	emptyFrame.Parent = listFrame
+
+	createCorner(emptyFrame, 8)
+	createStroke(emptyFrame, Color3.fromRGB(220, 226, 218), 1, 0)
+
+	local label = Instance.new("TextLabel")
+	label.Name = "Message"
+	label.Position = UDim2.fromOffset(14, 12)
+	label.Size = UDim2.new(1, -28, 1, -24)
+	label.BackgroundTransparency = 1
+	label.Text = message
+	label.TextColor3 = Color3.fromRGB(90, 96, 90)
+	label.TextSize = 14
+	label.TextWrapped = true
+	label.Font = Enum.Font.Gotham
+	label.Parent = emptyFrame
+end
+
+local function createPublicSpaceRow(categoryName, order)
+	local row = Instance.new("Frame")
+	row.Name = tostring(categoryName)
 	row.LayoutOrder = order
-	row.Size = UDim2.new(1, -4, 0, 74)
-	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
-	row.Text = ""
-	row.AutoButtonColor = false
+	row.Size = UDim2.new(1, -4, 0, 62)
+	row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	row.BorderSizePixel = 0
 	row.Parent = listFrame
 
-	createCorner(row, 10)
+	createCorner(row, 8)
+	createStroke(row, Color3.fromRGB(220, 226, 218), 1, 0)
 
-	local stroke = createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "NameLabel"
+	nameLabel.Position = UDim2.fromOffset(14, 8)
+	nameLabel.Size = UDim2.new(1, -140, 0, 22)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = tostring(categoryName)
+	nameLabel.TextColor3 = Color3.fromRGB(45, 50, 45)
+	nameLabel.TextSize = 16
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = row
+
+	local noteLabel = Instance.new("TextLabel")
+	noteLabel.Name = "NoteLabel"
+	noteLabel.Position = UDim2.fromOffset(14, 32)
+	noteLabel.Size = UDim2.new(1, -140, 0, 18)
+	noteLabel.BackgroundTransparency = 1
+	noteLabel.Text = "Developer public spaces coming soon."
+	noteLabel.TextColor3 = Color3.fromRGB(95, 100, 95)
+	noteLabel.TextSize = 12
+	noteLabel.TextXAlignment = Enum.TextXAlignment.Left
+	noteLabel.Font = Enum.Font.Gotham
+	noteLabel.Parent = row
+
+	local soonBadge = Instance.new("TextLabel")
+	soonBadge.Name = "SoonBadge"
+	soonBadge.AnchorPoint = Vector2.new(1, 0.5)
+	soonBadge.Position = UDim2.new(1, -14, 0.5, 0)
+	soonBadge.Size = UDim2.fromOffset(104, 28)
+	soonBadge.BackgroundColor3 = Color3.fromRGB(205, 210, 205)
+	soonBadge.BorderSizePixel = 0
+	soonBadge.Text = "Coming soon"
+	soonBadge.TextColor3 = Color3.fromRGB(78, 82, 78)
+	soonBadge.TextSize = 12
+	soonBadge.Font = Enum.Font.GothamBold
+	soonBadge.Parent = row
+
+	createCorner(soonBadge, 6)
+end
+
+local function createRoomRow(roomData, order)
+	local row = Instance.new("TextButton")
+	row.Name = tostring(roomData.RoomName or roomData.RoomKey or "Room")
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, -4, 0, 72)
+	row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	row.BorderSizePixel = 0
+	row.Text = ""
+	row.AutoButtonColor = true
+	row.Parent = listFrame
+
+	createCorner(row, 8)
+
+	local stroke = createStroke(row, Color3.fromRGB(213, 220, 210), 1, 0)
 	stroke.Name = "RowStroke"
 
+	local roomNameLabel = Instance.new("TextLabel")
+	roomNameLabel.Name = "RoomName"
+	roomNameLabel.Position = UDim2.fromOffset(14, 8)
+	roomNameLabel.Size = UDim2.new(1, -170, 0, 22)
+	roomNameLabel.BackgroundTransparency = 1
+	roomNameLabel.Text = getRoomDisplayName(roomData)
+	roomNameLabel.TextColor3 = Color3.fromRGB(38, 44, 38)
+	roomNameLabel.TextSize = 16
+	roomNameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	roomNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	roomNameLabel.Font = Enum.Font.GothamBold
+	roomNameLabel.Parent = row
+
 	local ownerLabel = Instance.new("TextLabel")
-	ownerLabel.Name = "OwnerLabel"
-	ownerLabel.Position = UDim2.fromOffset(12, 8)
-	ownerLabel.Size = UDim2.new(1, -24, 0, 24)
+	ownerLabel.Name = "Owner"
+	ownerLabel.Position = UDim2.fromOffset(14, 32)
+	ownerLabel.Size = UDim2.new(1, -170, 0, 18)
 	ownerLabel.BackgroundTransparency = 1
+	ownerLabel.Text = "Owner: " .. getRoomOwnerText(roomData)
+	ownerLabel.TextColor3 = Color3.fromRGB(82, 88, 82)
+	ownerLabel.TextSize = 12
 	ownerLabel.TextXAlignment = Enum.TextXAlignment.Left
-	ownerLabel.Text = roomData.OwnerDisplayName .. "'s Room"
-	ownerLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-	ownerLabel.TextScaled = true
-	ownerLabel.Font = Enum.Font.GothamBold
+	ownerLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	ownerLabel.Font = Enum.Font.Gotham
 	ownerLabel.Parent = row
 
-	local infoLabel = Instance.new("TextLabel")
-	infoLabel.Name = "InfoLabel"
-	infoLabel.Position = UDim2.fromOffset(12, 36)
-	infoLabel.Size = UDim2.new(1, -24, 0, 22)
-	infoLabel.BackgroundTransparency = 1
-	infoLabel.TextXAlignment = Enum.TextXAlignment.Left
-	infoLabel.TextColor3 = Color3.fromRGB(95, 95, 95)
-	infoLabel.TextScaled = true
-	infoLabel.Font = Enum.Font.Gotham
-	infoLabel.Text = roomData.LayoutId .. "  •  " .. tostring(roomData.PlayerCount) .. " player(s)"
-	infoLabel.Parent = row
+	local categoryLabel = Instance.new("TextLabel")
+	categoryLabel.Name = "Category"
+	categoryLabel.Position = UDim2.fromOffset(14, 52)
+	categoryLabel.Size = UDim2.new(1, -170, 0, 16)
+	categoryLabel.BackgroundTransparency = 1
+	categoryLabel.Text = tostring(roomData.Category or "Guest Rooms")
+	categoryLabel.TextColor3 = Color3.fromRGB(102, 108, 102)
+	categoryLabel.TextSize = 11
+	categoryLabel.TextXAlignment = Enum.TextXAlignment.Left
+	categoryLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	categoryLabel.Font = Enum.Font.GothamMedium
+	categoryLabel.Parent = row
 
-	if roomData.RoomName == currentRoomName then
+	local occupancyLabel = Instance.new("TextLabel")
+	occupancyLabel.Name = "Occupancy"
+	occupancyLabel.AnchorPoint = Vector2.new(1, 0)
+	occupancyLabel.Position = UDim2.new(1, -84, 0, 11)
+	occupancyLabel.Size = UDim2.fromOffset(70, 20)
+	occupancyLabel.BackgroundTransparency = 1
+	occupancyLabel.Text = getOccupancyText(roomData)
+	occupancyLabel.TextColor3 = Color3.fromRGB(60, 90, 70)
+	occupancyLabel.TextSize = 14
+	occupancyLabel.TextXAlignment = Enum.TextXAlignment.Right
+	occupancyLabel.Font = Enum.Font.GothamBold
+	occupancyLabel.Parent = row
+
+	local rowGoButton = createTextButton("RowGoButton", "Go", UDim2.fromOffset(58, 28), row)
+	rowGoButton.AnchorPoint = Vector2.new(1, 1)
+	rowGoButton.Position = UDim2.new(1, -14, 1, -10)
+	rowGoButton.BackgroundColor3 = Color3.fromRGB(68, 143, 82)
+	rowGoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	rowGoButton.TextSize = 13
+
+	if roomData.IsCurrentRoom == true or roomData.RoomName == latestCurrentRoomName then
 		local hereBadge = Instance.new("TextLabel")
 		hereBadge.Name = "HereBadge"
 		hereBadge.AnchorPoint = Vector2.new(1, 0)
-		hereBadge.Position = UDim2.new(1, -10, 0, 10)
-		hereBadge.Size = UDim2.fromOffset(60, 22)
-		hereBadge.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
+		hereBadge.Position = UDim2.new(1, -14, 0, 38)
+		hereBadge.Size = UDim2.fromOffset(58, 20)
+		hereBadge.BackgroundColor3 = Color3.fromRGB(77, 126, 164)
+		hereBadge.BorderSizePixel = 0
 		hereBadge.Text = "Here"
 		hereBadge.TextColor3 = Color3.fromRGB(255, 255, 255)
-		hereBadge.TextScaled = true
+		hereBadge.TextSize = 11
 		hereBadge.Font = Enum.Font.GothamBold
 		hereBadge.Parent = row
 
-		createCorner(hereBadge, 8)
+		createCorner(hereBadge, 5)
 	end
 
 	row.MouseButton1Click:Connect(function()
-		if selectedRow then
-			setRowSelected(selectedRow, false)
-		end
-
-		selectedRoomName = roomData.RoomName
-		selectedRow = row
-
-		setRowSelected(row, true)
-		updateJoinButton()
+		selectRoom(roomData, row)
 	end)
+
+	rowGoButton.MouseButton1Click:Connect(function()
+		selectRoom(roomData, row)
+		joinSelectedRoom()
+	end)
+
+	if selectedRoomData and selectedRoomData.RoomKey == roomData.RoomKey then
+		selectedRow = row
+		setRowSelected(row, true)
+	end
 
 	return row
 end
 
-local function renderRoomList(roomList, currentRoomName)
-	latestRoomList = roomList
-	selectedRoomName = nil
-	selectedRow = nil
+local function filterRoomsByCategory(categoryName)
+	local rooms = {}
 
-	clearRows()
+	for _, roomData in ipairs(latestRoomList) do
+		local category = roomData.Category or "Chat Rooms"
 
-	if #roomList == 0 then
-		statusLabel.Text = "No rooms are available yet."
-	else
-		statusLabel.Text = "Select a room to join."
+		if category == categoryName then
+			table.insert(rooms, roomData)
+		end
 	end
 
-	for index, roomData in ipairs(roomList) do
-		createRoomRow(roomData, currentRoomName, index)
-	end
-
-	task.defer(function()
-		listFrame.CanvasSize = UDim2.fromOffset(
-			0,
-			listLayout.AbsoluteContentSize.Y + 20
-		)
-	end)
-
-	updateJoinButton()
+	return rooms
 end
+
+local function filterOwnRooms()
+	local rooms = {}
+
+	for _, roomData in ipairs(latestRoomList) do
+		if roomData.IsOwner == true then
+			table.insert(rooms, roomData)
+		end
+	end
+
+	return rooms
+end
+
+local function filterSearchRooms()
+	local query = string.lower(searchQuery or "")
+	local rooms = {}
+
+	for _, roomData in ipairs(latestRoomList) do
+		local displayName = string.lower(getRoomDisplayName(roomData))
+		local ownerName = string.lower(tostring(roomData.OwnerName or ""))
+		local ownerDisplayName = string.lower(tostring(roomData.OwnerDisplayName or ""))
+
+		if query == ""
+			or string.find(displayName, query, 1, true)
+			or string.find(ownerName, query, 1, true)
+			or string.find(ownerDisplayName, query, 1, true) then
+
+			table.insert(rooms, roomData)
+		end
+	end
+
+	return rooms
+end
+
+local function renderRoomRows(rooms, emptyMessage)
+	if #rooms == 0 then
+		createEmptyState(emptyMessage)
+		return
+	end
+
+	for index, roomData in ipairs(rooms) do
+		createRoomRow(roomData, index)
+	end
+end
+
+local function renderPublicSpaces()
+	sectionTitle.Text = "Public Spaces"
+	searchBox.Visible = false
+	categoryBar.Visible = false
+	listFrame.Position = UDim2.fromOffset(14, 44)
+	listFrame.Size = UDim2.new(1, -28, 1, -58)
+
+	selectedRoomData = nil
+	selectedRow = nil
+	updateDetailPanel()
+
+	for index, categoryName in ipairs(publicCategories) do
+		createPublicSpaceRow(categoryName, index)
+	end
+
+	if #publicCategories == 0 then
+		createEmptyState("Public spaces are coming soon.")
+	end
+end
+
+local function renderRooms()
+	listFrame.Size = UDim2.new(1, -28, 1, -98)
+	searchBox.Visible = selectedRoomSubtab == ROOM_SUBTAB_SEARCH
+	categoryBar.Visible = selectedRoomSubtab == ROOM_SUBTAB_GUEST
+
+	if selectedRoomSubtab == ROOM_SUBTAB_SEARCH then
+		sectionTitle.Text = "Search Rooms"
+		listFrame.Position = UDim2.fromOffset(14, 84)
+		renderRoomRows(filterSearchRooms(), "No active rooms match your search.")
+	elseif selectedRoomSubtab == ROOM_SUBTAB_OWN then
+		sectionTitle.Text = "Own Room(s)"
+		listFrame.Position = UDim2.fromOffset(14, 44)
+		listFrame.Size = UDim2.new(1, -28, 1, -58)
+		renderRoomRows(filterOwnRooms(), "You do not have an active room yet.")
+	elseif selectedRoomSubtab == ROOM_SUBTAB_FAVOURITES then
+		sectionTitle.Text = "Favourites"
+		listFrame.Position = UDim2.fromOffset(14, 44)
+		listFrame.Size = UDim2.new(1, -28, 1, -58)
+		selectedRoomData = nil
+		selectedRow = nil
+		updateDetailPanel()
+		createEmptyState("Favourites coming soon.")
+	else
+		sectionTitle.Text = "Guest Rooms"
+		listFrame.Position = UDim2.fromOffset(14, 84)
+		renderRoomRows(
+			filterRoomsByCategory(selectedGuestCategory),
+			"No active rooms in this category."
+		)
+	end
+end
+
+local function buildCategoryButtons()
+	for _, child in ipairs(categoryBar:GetChildren()) do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+
+	categoryButtons = {}
+
+	for _, categoryName in ipairs(GUEST_ROOM_CATEGORIES) do
+		local button = createTextButton(
+			"Category_" .. categoryName:gsub("%W", ""),
+			categoryName,
+			UDim2.fromOffset(categoryName == "Gaming & Race Rooms" and 150 or 112, 32),
+			categoryBar
+		)
+		button.TextSize = 12
+		categoryButtons[categoryName] = button
+
+		button.MouseButton1Click:Connect(function()
+			selectedGuestCategory = categoryName
+			selectedRoomData = nil
+			selectedRow = nil
+
+			if renderNavigator then
+				renderNavigator()
+			end
+		end)
+	end
+end
+
+renderNavigator = function()
+	updateNavigationState()
+	clearList()
+
+	if selectedTopTab == TOP_TAB_PUBLIC then
+		renderPublicSpaces()
+	else
+		renderRooms()
+	end
+
+	updateCanvasSize()
+	updateDetailPanel()
+end
+
+buildCategoryButtons()
+
+publicSpacesTab.MouseButton1Click:Connect(function()
+	selectedTopTab = TOP_TAB_PUBLIC
+	selectedRoomData = nil
+	selectedRow = nil
+	renderNavigator()
+end)
+
+roomsTab.MouseButton1Click:Connect(function()
+	selectedTopTab = TOP_TAB_ROOMS
+	selectedRoomData = nil
+	selectedRow = nil
+	renderNavigator()
+end)
+
+searchSubtabButton.MouseButton1Click:Connect(function()
+	selectedRoomSubtab = ROOM_SUBTAB_SEARCH
+	selectedRoomData = nil
+	selectedRow = nil
+	renderNavigator()
+end)
+
+ownSubtabButton.MouseButton1Click:Connect(function()
+	selectedRoomSubtab = ROOM_SUBTAB_OWN
+	selectedRoomData = nil
+	selectedRow = nil
+	renderNavigator()
+end)
+
+favouritesSubtabButton.MouseButton1Click:Connect(function()
+	selectedRoomSubtab = ROOM_SUBTAB_FAVOURITES
+	selectedRoomData = nil
+	selectedRow = nil
+	renderNavigator()
+end)
+
+guestSubtabButton.MouseButton1Click:Connect(function()
+	selectedRoomSubtab = ROOM_SUBTAB_GUEST
+	selectedRoomData = nil
+	selectedRow = nil
+	renderNavigator()
+end)
+
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+	searchQuery = searchBox.Text
+
+	if selectedTopTab == TOP_TAB_ROOMS and selectedRoomSubtab == ROOM_SUBTAB_SEARCH then
+		renderNavigator()
+	end
+end)
+
+goButton.MouseButton1Click:Connect(joinSelectedRoom)
+
+favouriteButton.MouseButton1Click:Connect(function()
+	statusLabel.Text = "Favourites are coming soon."
+end)
 
 openButton.MouseButton1Click:Connect(function()
 	setPanelVisible(true)
-	roomListRequest:FireServer()
 end)
 
 closeButton.MouseButton1Click:Connect(function()
@@ -401,55 +1107,34 @@ majorMenuStateChanged.Event:Connect(function(isOpen, menuName)
 	setLocalMajorMenuState(isOpen == true, menuName)
 end)
 
-refreshButton.MouseButton1Click:Connect(function()
-	roomListRequest:FireServer()
-end)
+roomListUpdate.OnClientEvent:Connect(function(roomList, currentRoomName)
+	latestRoomList = typeof(roomList) == "table" and roomList or {}
+	latestCurrentRoomName = currentRoomName
 
-joinButton.MouseButton1Click:Connect(function()
-	if not selectedRoomName then
-		return
+	if panel.Visible then
+		renderNavigator()
 	end
 
-	joinButton.Text = "Joining..."
-	joinButton.BackgroundColor3 = Color3.fromRGB(90, 90, 90)
-
-	joinRoomRequest:FireServer(selectedRoomName)
-end)
-
-roomListUpdate.OnClientEvent:Connect(function(roomList, currentRoomName)
-	renderRoomList(roomList, currentRoomName)
-
-	-- Only show the Rooms button when the player should have access to navigator.
-	-- For now, hide it during onboarding/tutorial flow.
 	updateOpenButton()
 end)
 
-joinRoomResult.OnClientEvent:Connect(function(success, message, roomName)
+joinRoomResult.OnClientEvent:Connect(function(success, message)
 	if success then
 		statusLabel.Text = message or "Joined room."
 		setPanelVisible(false)
 	else
 		statusLabel.Text = message or "Could not join room."
+		updateDetailPanel()
 	end
 
-	updateJoinButton()
 	roomListRequest:FireServer()
 end)
 
 roomCreationResult.OnClientEvent:Connect(function(status)
-	if status == "Created" then
-		-- New player just finished onboarding.
-		-- Do NOT open the room navigator.
-		setPanelVisible(false)
-		openButton.Visible = false
+	if status == "Created"
+		or status == "ShowCharacterCreation"
+		or status == "ShowCreation" then
 
-	elseif status == "ShowCharacterCreation" then
-		-- New player is in character creation.
-		setPanelVisible(false)
-		openButton.Visible = false
-
-	elseif status == "ShowCreation" then
-		-- New player is choosing a starter room.
 		setPanelVisible(false)
 		openButton.Visible = false
 	end
@@ -462,3 +1147,6 @@ player:GetAttributeChangedSignal("OnboardingStep"):Connect(function()
 		updateOpenButton()
 	end
 end)
+
+renderNavigator()
+updateOpenButton()

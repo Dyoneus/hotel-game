@@ -43,6 +43,15 @@ local function createDefaultProfile()
 		StarterDollarsGranted = false,
 
 		RoomState = nil,
+		RoomDirectory = {
+			RoomId = "Primary",
+			DisplayName = nil,
+			Category = "Chat Rooms",
+			IsPublic = true,
+			MaxOccupancy = 25,
+			Description = "",
+			Tags = {},
+		},
 		Inventory = {},
 		InventoryUntradable = {},
 		InventoryUnsellable = {},
@@ -426,6 +435,59 @@ local function getInventoryCountDetails(profile, templateId)
 	}
 end
 
+local function normalizeRoomTags(tags)
+	local normalized = {}
+
+	if typeof(tags) ~= "table" then
+		return normalized
+	end
+
+	for _, tag in ipairs(tags) do
+		if typeof(tag) == "string" and tag ~= "" and tag:match("%S") ~= nil then
+			table.insert(normalized, tag)
+		end
+	end
+
+	return normalized
+end
+
+local function ensureRoomDirectory(profile)
+	local roomDirectory = profile.RoomDirectory
+
+	if typeof(roomDirectory) ~= "table" then
+		roomDirectory = {}
+	end
+
+	if typeof(roomDirectory.RoomId) ~= "string" or roomDirectory.RoomId == "" then
+		roomDirectory.RoomId = "Primary"
+	end
+
+	if typeof(roomDirectory.DisplayName) ~= "string" or roomDirectory.DisplayName == "" then
+		roomDirectory.DisplayName = nil
+	end
+
+	if typeof(roomDirectory.Category) ~= "string" or roomDirectory.Category == "" then
+		roomDirectory.Category = "Chat Rooms"
+	end
+
+	if typeof(roomDirectory.IsPublic) ~= "boolean" then
+		roomDirectory.IsPublic = true
+	end
+
+	if not isPositiveInteger(roomDirectory.MaxOccupancy) then
+		roomDirectory.MaxOccupancy = 25
+	end
+
+	if typeof(roomDirectory.Description) ~= "string" then
+		roomDirectory.Description = ""
+	end
+
+	roomDirectory.Tags = normalizeRoomTags(roomDirectory.Tags)
+	profile.RoomDirectory = roomDirectory
+
+	return profile.RoomDirectory
+end
+
 local function fillDefaults(profile)
 	local defaults = createDefaultProfile()
 
@@ -442,6 +504,7 @@ local function fillDefaults(profile)
 	ensureInventory(profile)
 	ensureCurrencies(profile)
 	ensureDailyReward(profile)
+	ensureRoomDirectory(profile)
 
 	if profile.StarterDollarsGranted ~= true then
 		profile.StarterDollarsGranted = false
@@ -757,6 +820,16 @@ end
 
 function RoomPersistence.GetProfile(player)
 	return profilesByPlayer[player]
+end
+
+function RoomPersistence.GetRoomDirectorySnapshot(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil
+	end
+
+	return deepCopy(ensureRoomDirectory(profile))
 end
 
 function RoomPersistence.GetCurrency(player, currencyKey)

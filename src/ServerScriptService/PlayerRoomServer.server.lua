@@ -158,8 +158,91 @@ local function getPlayerCountInRoom(roomName)
 	return count
 end
 
-local function buildRoomList()
+local function copyRoomTags(tags)
+	local copy = {}
+
+	if typeof(tags) ~= "table" then
+		return copy
+	end
+
+	for _, tag in ipairs(tags) do
+		if typeof(tag) == "string" and tag ~= "" and tag:match("%S") ~= nil then
+			table.insert(copy, tag)
+		end
+	end
+
+	return copy
+end
+
+local function getFallbackRoomMetadata(ownerDisplayName)
+	return {
+		RoomId = "Primary",
+		DisplayName = tostring(ownerDisplayName) .. "'s Room",
+		Category = "Chat Rooms",
+		IsPublic = true,
+		MaxOccupancy = 25,
+		Description = "",
+		Tags = {},
+	}
+end
+
+local function getRoomMetadata(ownerPlayer, ownerDisplayName)
+	local metadata = ownerPlayer and RoomPersistence.GetRoomDirectorySnapshot(ownerPlayer) or nil
+	local fallback = getFallbackRoomMetadata(ownerDisplayName)
+
+	if typeof(metadata) ~= "table" then
+		return fallback
+	end
+
+	local roomId = metadata.RoomId
+	if typeof(roomId) ~= "string" or roomId == "" then
+		roomId = fallback.RoomId
+	end
+
+	local displayName = metadata.DisplayName
+	if typeof(displayName) ~= "string" or displayName == "" then
+		displayName = fallback.DisplayName
+	end
+
+	local category = metadata.Category
+	if typeof(category) ~= "string" or category == "" then
+		category = fallback.Category
+	end
+
+	local isPublic = metadata.IsPublic
+	if typeof(isPublic) ~= "boolean" then
+		isPublic = fallback.IsPublic
+	end
+
+	local maxOccupancy = metadata.MaxOccupancy
+	if typeof(maxOccupancy) ~= "number"
+		or maxOccupancy ~= maxOccupancy
+		or maxOccupancy <= 0
+		or maxOccupancy >= math.huge
+		or maxOccupancy ~= math.floor(maxOccupancy) then
+
+		maxOccupancy = fallback.MaxOccupancy
+	end
+
+	local description = metadata.Description
+	if typeof(description) ~= "string" then
+		description = fallback.Description
+	end
+
+	return {
+		RoomId = roomId,
+		DisplayName = displayName,
+		Category = category,
+		IsPublic = isPublic,
+		MaxOccupancy = maxOccupancy,
+		Description = description,
+		Tags = copyRoomTags(metadata.Tags),
+	}
+end
+
+local function buildRoomList(viewerPlayer)
 	local roomList = {}
+	local currentRoomName = viewerPlayer and viewerPlayer:GetAttribute("CurrentRoomName") or nil
 
 	for _, roomModel in ipairs(activeRooms:GetChildren()) do
 		if roomModel:IsA("Model") then
@@ -178,34 +261,56 @@ local function buildRoomList()
 				ownerDisplayName = ownerName
 			end
 
-			table.insert(roomList, {
-				RoomName = roomModel.Name,
-				OwnerUserId = ownerUserId,
-				OwnerName = ownerName,
-				OwnerDisplayName = ownerDisplayName,
-				LayoutId = layoutId or "Unknown",
-				PlayerCount = getPlayerCountInRoom(roomModel.Name),
-			})
+			local metadata = getRoomMetadata(ownerPlayer, ownerDisplayName)
+			local isOwner = typeof(ownerUserId) == "number"
+				and viewerPlayer
+				and viewerPlayer.UserId == ownerUserId
+
+			if metadata.IsPublic or isOwner then
+				local playerCount = getPlayerCountInRoom(roomModel.Name)
+				local roomId = metadata.RoomId
+
+				table.insert(roomList, {
+					RoomName = roomModel.Name,
+					OwnerUserId = ownerUserId,
+					OwnerName = ownerName,
+					OwnerDisplayName = ownerDisplayName,
+					LayoutId = layoutId or "Unknown",
+					PlayerCount = playerCount,
+
+					RoomType = "PlayerRoom",
+					RoomId = roomId,
+					RoomKey = "PlayerRoom:" .. tostring(ownerUserId) .. ":" .. roomId,
+					DisplayName = metadata.DisplayName,
+					Category = metadata.Category,
+					IsPublic = metadata.IsPublic,
+					Occupancy = playerCount,
+					MaxOccupancy = metadata.MaxOccupancy,
+					Description = metadata.Description,
+					Tags = metadata.Tags,
+					IsOwner = isOwner == true,
+					IsCurrentRoom = roomModel.Name == currentRoomName,
+				})
+			end
 		end
 	end
 
 	table.sort(roomList, function(a, b)
-		return tostring(a.OwnerDisplayName) < tostring(b.OwnerDisplayName)
+		return tostring(a.DisplayName or a.OwnerDisplayName) < tostring(b.DisplayName or b.OwnerDisplayName)
 	end)
 
 	return roomList
 end
 
 local function sendRoomListToPlayer(player)
-	local roomList = buildRoomList()
+	local roomList = buildRoomList(player)
 
 	roomListUpdate:FireClient(player, roomList, player:GetAttribute("CurrentRoomName"))
 end
 
 local function sendRoomListToAll()
-	local roomList = buildRoomList()
-
 	for _, player in ipairs(Players:GetPlayers()) do
+		local roomList = buildRoomList(player)
 		roomListUpdate:FireClient(player, roomList, player:GetAttribute("CurrentRoomName"))
 	end
 end
