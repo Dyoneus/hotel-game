@@ -10,11 +10,17 @@ GridConfig.HOVER_TILE_SIZE = 4
 GridConfig.FOOTPRINT_MARGIN = 0.4
 GridConfig.MAX_FOOTPRINT_TILES = 20
 GridConfig.RECOMMENDED_PLACEMENT_BOUNDS_HEIGHT = 4
+GridConfig.GRID_VALIDATION_TOLERANCE = 0.05
 
 GridConfig.TILE_SIZE_ATTRIBUTE = "TileSize"
 GridConfig.GRID_WIDTH_ATTRIBUTE = "GridWidth"
 GridConfig.GRID_DEPTH_ATTRIBUTE = "GridDepth"
 GridConfig.USES_TILE_GRID_ATTRIBUTE = "UsesTileGrid"
+
+-- Starter player-room standard:
+-- TileSize = 4, GridWidth = 5, GridDepth = 7.
+-- That means WalkableFloor.Size.X = 20 and WalkableFloor.Size.Z = 28.
+-- Validation is warning-only; room templates must still be adjusted in Studio.
 
 local MIN_FOOTPRINT_STUDS = 0.1
 
@@ -363,7 +369,7 @@ function GridConfig.ValidateRoomGrid(roomModel)
 	local gridDepth = GridConfig.GetGridDepth(roomModel, floor)
 	local expectedFloorX = gridWidth * tileSize
 	local expectedFloorZ = gridDepth * tileSize
-	local tolerance = 0.05
+	local tolerance = GridConfig.GRID_VALIDATION_TOLERANCE
 
 	if math.abs(floor.Size.X - expectedFloorX) > tolerance then
 		table.insert(warnings, string.format(

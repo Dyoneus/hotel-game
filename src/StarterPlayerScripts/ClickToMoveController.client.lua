@@ -356,8 +356,12 @@ local lastDestination = nil
 local CLICK_MOVE_COOLDOWN = 0.2
 local MIN_DESTINATION_DISTANCE = 2
 local WAYPOINT_SKIP_DISTANCE = 2
+local SNAP_CHARACTER_FACING_TO_GRID = true
 
 local warnedTileGridDisabled = false
+local activeGridFacingMoveId = nil
+local activeGridFacingHumanoid = nil
+local activeGridFacingPreviousAutoRotate = nil
 
 local function getMovementGridContext()
 	local roomModel = getCurrentRoomModel()
@@ -427,6 +431,106 @@ local function cellToWorld(cell, context)
 	end
 
 	return Vector3.new(worldPosition.X, context.moveY, worldPosition.Z)
+end
+
+local function signCellDelta(value)
+	if value > 0 then
+		return 1
+	end
+
+	if value < 0 then
+		return -1
+	end
+
+	return 0
+end
+
+local function getWorldFacingDirectionFromCells(fromCell, toCell, context)
+	if not fromCell or not toCell or not context or not context.floor then
+		return nil
+	end
+
+	local deltaX = toCell.x - fromCell.x
+	local deltaZ = toCell.z - fromCell.z
+	local localDirection = nil
+
+	if math.abs(deltaX) >= math.abs(deltaZ) and deltaX ~= 0 then
+		localDirection = Vector3.new(signCellDelta(deltaX), 0, 0)
+	elseif deltaZ ~= 0 then
+		localDirection = Vector3.new(0, 0, signCellDelta(deltaZ))
+	else
+		return nil
+	end
+
+	local worldDirection = context.floor.CFrame:VectorToWorldSpace(localDirection)
+	local flatDirection = Vector3.new(worldDirection.X, 0, worldDirection.Z)
+
+	if flatDirection.Magnitude < 0.001 then
+		return nil
+	end
+
+	return flatDirection.Unit
+end
+
+local function snapCharacterToGridFacing(rootPart, worldPosition, worldDirection)
+	if not SNAP_CHARACTER_FACING_TO_GRID then
+		return
+	end
+
+	if not rootPart or not rootPart:IsA("BasePart") or typeof(worldDirection) ~= "Vector3" then
+		return
+	end
+
+	local flatDirection = Vector3.new(worldDirection.X, 0, worldDirection.Z)
+
+	if flatDirection.Magnitude < 0.001 then
+		return
+	end
+
+	local position = typeof(worldPosition) == "Vector3" and worldPosition or rootPart.Position
+	rootPart.CFrame = CFrame.lookAt(position, position + flatDirection.Unit)
+end
+
+local function beginGridFacingControl(humanoid, moveId)
+	if not SNAP_CHARACTER_FACING_TO_GRID or not humanoid then
+		return
+	end
+
+	if activeGridFacingHumanoid and activeGridFacingHumanoid ~= humanoid then
+		if activeGridFacingPreviousAutoRotate ~= nil then
+			activeGridFacingHumanoid.AutoRotate = activeGridFacingPreviousAutoRotate
+		end
+
+		activeGridFacingHumanoid = nil
+		activeGridFacingPreviousAutoRotate = nil
+		activeGridFacingMoveId = nil
+	end
+
+	if activeGridFacingHumanoid ~= humanoid then
+		activeGridFacingHumanoid = humanoid
+		activeGridFacingPreviousAutoRotate = humanoid.AutoRotate
+	end
+
+	activeGridFacingMoveId = moveId
+	humanoid.AutoRotate = false
+end
+
+local function finishGridFacingControl(moveId)
+	if not SNAP_CHARACTER_FACING_TO_GRID then
+		return
+	end
+
+	if activeGridFacingMoveId ~= moveId then
+		return
+	end
+
+	if activeGridFacingHumanoid and activeGridFacingPreviousAutoRotate ~= nil then
+		activeGridFacingHumanoid.AutoRotate = activeGridFacingPreviousAutoRotate
+	end
+
+	activeGridFacingMoveId = nil
+	activeGridFacingHumanoid = nil
+	activeGridFacingPreviousAutoRotate = nil
 end
 
 local function clampToRoom(position, context)
@@ -773,8 +877,11 @@ local function moveCharacterTo(destination)
 
 	local movementPath = compressGridPath(path)
 
+	beginGridFacingControl(humanoid, moveId)
+
 	for index, cell in ipairs(movementPath) do
 		if moveId ~= currentMoveId then
+			finishGridFacingControl(moveId)
 			return
 		end
 
@@ -783,17 +890,35 @@ local function moveCharacterTo(destination)
 			continue
 		end
 
+		local previousCell = movementPath[index - 1]
 		local worldPosition = cellToWorld(cell, context)
+		local facingDirection = getWorldFacingDirectionFromCells(previousCell, cell, context)
+
+		if facingDirection then
+			snapCharacterToGridFacing(rootPart, rootPart.Position, facingDirection)
+		end
 
 		humanoid:MoveTo(worldPosition)
 
 		local reached = humanoid.MoveToFinished:Wait()
 
-		if not reached then
-			warn("Could not reach movement segment")
+		if moveId ~= currentMoveId then
+			finishGridFacingControl(moveId)
 			return
 		end
+
+		if not reached then
+			warn("Could not reach movement segment")
+			finishGridFacingControl(moveId)
+			return
+		end
+
+		if facingDirection then
+			snapCharacterToGridFacing(rootPart, rootPart.Position, facingDirection)
+		end
 	end
+
+	finishGridFacingControl(moveId)
 end
 
 local function getFurnitureModelFromTarget(target)

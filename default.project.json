@@ -84,6 +84,9 @@
         "FloorGridHoverClient": {
           "$path": "src/StarterPlayerScripts/FloorGridHoverClient.client.lua"
         },
+        "GridDebugOverlayClient": {
+          "$path": "src/StarterPlayerScripts/GridDebugOverlayClient.client.lua"
+        },
         "HotelVoidBackgroundClient": {
           "$path": "src/StarterPlayerScripts/HotelVoidBackgroundClient.client.lua"
         },
