@@ -13,6 +13,7 @@ local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local furnitureActionRequest = remoteEvents:WaitForChild("FurnitureActionRequest")
 local furnitureActionResult = remoteEvents:WaitForChild("FurnitureActionResult")
 local furnitureMenuRequest = remoteEvents:WaitForChild("FurnitureMenuRequest")
+local GridConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GridConfig"))
 
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -356,87 +357,106 @@ local CLICK_MOVE_COOLDOWN = 0.2
 local MIN_DESTINATION_DISTANCE = 2
 local WAYPOINT_SKIP_DISTANCE = 2
 
-local GRID_SIZE = 2
+-- Furniture placement migration happens in Patch 9F.
 local PLACEMENT_GRID_SIZE = 2
-
-local function snapToGrid(value)
-	return math.floor((value / GRID_SIZE) + 0.5) * GRID_SIZE
-end
+local warnedTileGridDisabled = false
 
 local function snapToPlacementGrid(value)
 	return math.floor((value / PLACEMENT_GRID_SIZE) + 0.5) * PLACEMENT_GRID_SIZE
 end
 
-local function getRoomBounds()
+local function getMovementGridContext()
+	local roomModel = getCurrentRoomModel()
 	local floor = getCurrentFloor()
 
-	if not floor then
+	if not roomModel or not floor or not floor:IsA("BasePart") then
 		return nil
 	end
 
-	local halfX = floor.Size.X / 2
-	local halfZ = floor.Size.Z / 2
+	if not GridConfig.UsesTileGrid(roomModel, floor) then
+		return nil, "Tile grid movement is disabled for this room."
+	end
+
+	local tileBounds = GridConfig.GetTileBounds(roomModel, floor)
+	local floorTopY = GridConfig.GetFloorTopY(floor)
+
+	if not tileBounds or not floorTopY then
+		return nil
+	end
 
 	return {
-		minX = floor.Position.X - halfX + GRID_SIZE / 2,
-		maxX = floor.Position.X + halfX - GRID_SIZE / 2,
-		minZ = floor.Position.Z - halfZ + GRID_SIZE / 2,
-		maxZ = floor.Position.Z + halfZ - GRID_SIZE / 2,
-		y = floor.Position.Y + floor.Size.Y / 2 + 0.5,
+		roomModel = roomModel,
+		floor = floor,
+		tileSize = tileBounds.TileSize,
+		gridWidth = tileBounds.GridWidth,
+		gridDepth = tileBounds.GridDepth,
+		halfWidthStuds = tileBounds.HalfWidthStuds,
+		halfDepthStuds = tileBounds.HalfDepthStuds,
+		floorTopY = floorTopY,
+		moveY = floorTopY + 0.5,
+		floorRotation = floor.CFrame - floor.CFrame.Position,
 	}
 end
 
-local function clampToRoom(position)
-	local bounds = getRoomBounds()
+local function localAxisToCellIndex(value, tileSize, tileCount, halfStuds)
+	local minCenter = -halfStuds + tileSize / 2
+	local index = math.floor(((value - minCenter) / tileSize) + 0.5)
 
-	if not bounds then
+	return math.clamp(index, 0, tileCount - 1)
+end
+
+local function cellIndexToLocalAxis(index, tileSize, halfStuds)
+	return -halfStuds + tileSize / 2 + index * tileSize
+end
+
+local function worldToCell(position, context)
+	local localPosition = GridConfig.WorldToFloorLocal(context.floor, position)
+
+	if not localPosition then
+		return nil
+	end
+
+	return {
+		x = localAxisToCellIndex(localPosition.X, context.tileSize, context.gridWidth, context.halfWidthStuds),
+		z = localAxisToCellIndex(localPosition.Z, context.tileSize, context.gridDepth, context.halfDepthStuds),
+	}
+end
+
+local function cellToWorld(cell, context)
+	local localX = cellIndexToLocalAxis(cell.x, context.tileSize, context.halfWidthStuds)
+	local localZ = cellIndexToLocalAxis(cell.z, context.tileSize, context.halfDepthStuds)
+	local localPosition = Vector3.new(localX, context.floor.Size.Y / 2 + 0.5, localZ)
+	local worldPosition = GridConfig.FloorLocalToWorld(context.floor, localPosition)
+
+	if not worldPosition then
+		return Vector3.new(0, context.moveY, 0)
+	end
+
+	return Vector3.new(worldPosition.X, context.moveY, worldPosition.Z)
+end
+
+local function clampToRoom(position, context)
+	local cell = worldToCell(position, context)
+
+	if not cell then
 		return position
 	end
 
-	local x = math.clamp(position.X, bounds.minX, bounds.maxX)
-	local z = math.clamp(position.Z, bounds.minZ, bounds.maxZ)
-
-	return Vector3.new(x, bounds.y, z)
+	return cellToWorld(cell, context)
 end
 
-local function isCellInsideRoom(cell)
-	local bounds = getRoomBounds()
-
-	if not bounds then
-		return false
-	end
-
-	return cell.x >= bounds.minX
-		and cell.x <= bounds.maxX
-		and cell.z >= bounds.minZ
-		and cell.z <= bounds.maxZ
-end
-
-local function worldToCell(position)
-	local snappedX = snapToGrid(position.X)
-	local snappedZ = snapToGrid(position.Z)
-
-	return {
-		x = snappedX,
-		z = snappedZ
-	}
-end
-
-local function cellToWorld(cell)
-	local bounds = getRoomBounds()
-
-	if not bounds then
-		return Vector3.new(cell.x, 1, cell.z)
-	end
-
-	return Vector3.new(cell.x, bounds.y, cell.z)
+local function isCellInsideRoom(cell, context)
+	return cell.x >= 0
+		and cell.x < context.gridWidth
+		and cell.z >= 0
+		and cell.z < context.gridDepth
 end
 
 local function cellKey(cell)
 	return tostring(cell.x) .. "," .. tostring(cell.z)
 end
 
-local function isCellBlocked(cell)
+local function isCellBlocked(cell, context)
 	local roomFolder = getCurrentRoomFolder()
 	local furnitureFolder = getCurrentFurnitureFolder()
 
@@ -444,10 +464,10 @@ local function isCellBlocked(cell)
 		return true
 	end
 
-	local center = cellToWorld(cell)
+	local center = cellToWorld(cell, context)
 
-	local boxSize = Vector3.new(GRID_SIZE * 0.8, 5, GRID_SIZE * 0.8)
-	local boxCFrame = CFrame.new(center)
+	local boxSize = Vector3.new(context.tileSize * 0.8, 5, context.tileSize * 0.8)
+	local boxCFrame = CFrame.new(center) * context.floorRotation
 
 	local overlapParams = OverlapParams.new()
 	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -495,10 +515,10 @@ end
 
 local function getNeighbors(cell)
 	return {
-		{ x = cell.x + GRID_SIZE, z = cell.z },
-		{ x = cell.x - GRID_SIZE, z = cell.z },
-		{ x = cell.x, z = cell.z + GRID_SIZE },
-		{ x = cell.x, z = cell.z - GRID_SIZE },
+		{ x = cell.x + 1, z = cell.z },
+		{ x = cell.x - 1, z = cell.z },
+		{ x = cell.x, z = cell.z + 1 },
+		{ x = cell.x, z = cell.z - 1 },
 	}
 end
 
@@ -510,7 +530,7 @@ local function cellsAreSame(a, b)
 	return a.x == b.x and a.z == b.z
 end
 
-local function findGridPath(startCell, goalCell)
+local function findGridPath(startCell, goalCell, context)
 	local queue = {}
 	local cameFrom = {}
 	local visited = {}
@@ -547,8 +567,8 @@ local function findGridPath(startCell, goalCell)
 			local key = cellKey(neighbor)
 
 			if not visited[key]
-				and isCellInsideRoom(neighbor)
-				and not isCellBlocked(neighbor) then
+				and isCellInsideRoom(neighbor, context)
+				and not isCellBlocked(neighbor, context) then
 
 				visited[key] = true
 				cameFrom[key] = current
@@ -621,16 +641,31 @@ local function moveCharacterTo(destination)
 	local humanoid = character:WaitForChild("Humanoid")
 	local rootPart = character:WaitForChild("HumanoidRootPart")
 
-	local clampedDestination = clampToRoom(destination)
+	local context, contextMessage = getMovementGridContext()
 
-	local startCell = worldToCell(rootPart.Position)
-	local goalCell = worldToCell(clampedDestination)
+	if not context then
+		if contextMessage and not warnedTileGridDisabled then
+			warn(contextMessage)
+			warnedTileGridDisabled = true
+		end
+
+		return
+	end
+
+	local clampedDestination = clampToRoom(destination, context)
+
+	local startCell = worldToCell(rootPart.Position, context)
+	local goalCell = worldToCell(clampedDestination, context)
+
+	if not startCell or not goalCell then
+		return
+	end
 
 	if startCell.x == goalCell.x and startCell.z == goalCell.z then
 		return
 	end
 
-	local path, reachedGoal = findGridPath(startCell, goalCell)
+	local path, reachedGoal = findGridPath(startCell, goalCell, context)
 
 	if not path or #path == 0 then
 		warn("No grid path found")
@@ -653,7 +688,7 @@ local function moveCharacterTo(destination)
 			continue
 		end
 
-		local worldPosition = cellToWorld(cell)
+		local worldPosition = cellToWorld(cell, context)
 
 		humanoid:MoveTo(worldPosition)
 
