@@ -4,6 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
+local PublicRoomConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("PublicRoomConfig"))
 
 local playerRooms = {}
 local playerRoomSlots = {}
@@ -32,7 +33,12 @@ local VALID_LAYOUTS = {
 	Layout_03 = true,
 }
 
-local ROOM_SPACING = 200
+local PLAYER_ROOM_ZONE_ORIGIN = Vector3.new(0, 0, 0)
+local PLAYER_ROOM_SPACING = 1000
+local PUBLIC_ROOM_ZONE_ORIGIN = Vector3.new(100000, 0, 0)
+local PUBLIC_ROOM_SPACING = 10000
+-- Public rooms are intentionally isolated from player rooms. Large public
+-- spaces should set WorldPosition and FootprintRadius in PublicRoomConfig.
 
 local playerRooms = {}
 local playerRoomSlots = {}
@@ -50,7 +56,43 @@ local function getRoomPositionForPlayer(player)
 
 	local slot = playerRoomSlots[player]
 
-	return Vector3.new((slot - 1) * ROOM_SPACING, 0, 0)
+	return PLAYER_ROOM_ZONE_ORIGIN + Vector3.new((slot - 1) * PLAYER_ROOM_SPACING, 0, 0)
+end
+
+local function getPublicRoomActiveName(publicRoomId)
+	return "Public_" .. publicRoomId
+end
+
+local function getPublicRoomIndex(publicRoomId, config)
+	local sortOrder = config.SortOrder
+
+	if typeof(sortOrder) == "number"
+		and sortOrder == math.floor(sortOrder)
+		and sortOrder > 0
+		and sortOrder < math.huge then
+
+		return sortOrder
+	end
+
+	local rooms = PublicRoomConfig.GetPublicRoomsArray()
+
+	for index, room in ipairs(rooms) do
+		if room.Id == publicRoomId then
+			return index
+		end
+	end
+
+	return 1
+end
+
+local function getRoomPositionForPublicRoom(publicRoomId, config)
+	if typeof(config.WorldPosition) == "Vector3" then
+		return config.WorldPosition
+	end
+
+	local publicIndex = getPublicRoomIndex(publicRoomId, config)
+
+	return PUBLIC_ROOM_ZONE_ORIGIN + Vector3.new((publicIndex - 1) * PUBLIC_ROOM_SPACING, 0, 0)
 end
 
 local function removePlayerRoom(player)
@@ -246,6 +288,10 @@ local function buildRoomList(viewerPlayer)
 
 	for _, roomModel in ipairs(activeRooms:GetChildren()) do
 		if roomModel:IsA("Model") then
+			if roomModel:GetAttribute("RoomType") == "PublicSpace" then
+				continue
+			end
+
 			local ownerUserId = roomModel:GetAttribute("OwnerUserId")
 			local layoutId = roomModel:GetAttribute("LayoutId")
 			local ownerPlayer = getRoomOwnerPlayer(roomModel)
@@ -369,6 +415,138 @@ local function enterSavedRoomForPlayer(player, profile)
 	return true
 end
 
+local function getPublicRoomTemplate(templateName)
+	if typeof(templateName) ~= "string" or templateName == "" then
+		return nil
+	end
+
+	local publicRoomTemplates = ReplicatedStorage:FindFirstChild("PublicRoomTemplates")
+
+	if publicRoomTemplates then
+		local publicTemplate = publicRoomTemplates:FindFirstChild(templateName)
+
+		if publicTemplate then
+			return publicTemplate
+		end
+	end
+
+	return roomTemplates:FindFirstChild(templateName)
+end
+
+local function getPublicRoomMaxOccupancy(config)
+	local maxOccupancy = config.MaxOccupancy
+
+	if typeof(maxOccupancy) ~= "number"
+		or maxOccupancy ~= maxOccupancy
+		or maxOccupancy <= 0
+		or maxOccupancy >= math.huge
+		or maxOccupancy ~= math.floor(maxOccupancy) then
+
+		return 25
+	end
+
+	return maxOccupancy
+end
+
+local function applyPublicRoomAttributes(roomModel, publicRoomId, config)
+	roomModel:SetAttribute("RoomType", "PublicSpace")
+	roomModel:SetAttribute("PublicRoomId", publicRoomId)
+	roomModel:SetAttribute("DisplayName", config.DisplayName)
+	roomModel:SetAttribute("MaxOccupancy", getPublicRoomMaxOccupancy(config))
+	roomModel:SetAttribute("Category", config.Category)
+	roomModel:SetAttribute("OwnerUserId", 0)
+end
+
+local function getOrCreatePublicRoom(publicRoomId, config)
+	local activeRoomName = getPublicRoomActiveName(publicRoomId)
+	local existingRoom = activeRooms:FindFirstChild(activeRoomName)
+
+	if existingRoom then
+		if not existingRoom:IsA("Model") then
+			return nil, "Public room is not a model."
+		end
+
+		applyPublicRoomAttributes(existingRoom, publicRoomId, config)
+		return existingRoom
+	end
+
+	local template = getPublicRoomTemplate(config.TemplateName)
+
+	if not template then
+		return nil, "Public room template is missing."
+	end
+
+	local roomClone = template:Clone()
+
+	if not roomClone:IsA("Model") then
+		roomClone:Destroy()
+		return nil, "Public room template must be a Model."
+	end
+
+	roomClone.Name = activeRoomName
+	roomClone.Parent = activeRooms
+
+	local moved = moveRoomAnchorToPosition(roomClone, getRoomPositionForPublicRoom(publicRoomId, config))
+
+	if not moved then
+		roomClone:Destroy()
+		return nil, "Public room is missing RoomAnchor."
+	end
+
+	applyPublicRoomAttributes(roomClone, publicRoomId, config)
+
+	return roomClone
+end
+
+local function joinPublicRoom(player, publicRoomId)
+	if typeof(publicRoomId) ~= "string" or publicRoomId == "" then
+		joinRoomResult:FireClient(player, false, "Invalid public room.")
+		return
+	end
+
+	local config = PublicRoomConfig.GetPublicRoom(publicRoomId)
+
+	if typeof(config) ~= "table" then
+		joinRoomResult:FireClient(player, false, "Public room not found.")
+		return
+	end
+
+	local roomModel, createError = getOrCreatePublicRoom(publicRoomId, config)
+
+	if not roomModel then
+		warn("Could not create public room:", publicRoomId, createError)
+		joinRoomResult:FireClient(player, false, createError or "Could not open public room.")
+		return
+	end
+
+	local maxOccupancy = getPublicRoomMaxOccupancy(config)
+	local currentOccupancy = getPlayerCountInRoom(roomModel.Name)
+	local alreadyInRoom = player:GetAttribute("CurrentRoomName") == roomModel.Name
+
+	if not alreadyInRoom and currentOccupancy >= maxOccupancy then
+		joinRoomResult:FireClient(player, false, "Public room is full.")
+		return
+	end
+
+	local success, errorMessage = pcall(function()
+		movePlayerToRoom(player, roomModel)
+	end)
+
+	if not success then
+		warn("Join public room failed:", errorMessage)
+		joinRoomResult:FireClient(player, false, "Could not enter public room.")
+		return
+	end
+
+	player:SetAttribute("CurrentRoomName", roomModel.Name)
+	player:SetAttribute("RoomMode", "Play")
+	player:SetAttribute("ControlMode", "Hotel")
+
+	joinRoomResult:FireClient(player, true, "Joined public space.", roomModel.Name)
+
+	sendRoomListToAll()
+end
+
 local function getRoomByName(roomName)
 	if typeof(roomName) ~= "string" then
 		return nil
@@ -382,6 +560,11 @@ local function joinRoom(player, roomName)
 
 	if not roomModel or not roomModel:IsA("Model") then
 		joinRoomResult:FireClient(player, false, "Room not found.")
+		return
+	end
+
+	if roomModel:GetAttribute("RoomType") == "PublicSpace" then
+		joinPublicRoom(player, roomModel:GetAttribute("PublicRoomId"))
 		return
 	end
 
@@ -638,8 +821,18 @@ roomListRequest.OnServerEvent:Connect(function(player)
 	sendRoomListToPlayer(player)
 end)
 
-joinRoomRequest.OnServerEvent:Connect(function(player, roomName)
-	joinRoom(player, roomName)
+joinRoomRequest.OnServerEvent:Connect(function(player, payload)
+	if typeof(payload) == "table" then
+		if payload.RoomType == "PublicSpace" then
+			joinPublicRoom(player, payload.PublicRoomId)
+		else
+			joinRoomResult:FireClient(player, false, "Unknown room type.")
+		end
+
+		return
+	end
+
+	joinRoom(player, payload)
 end)
 
 tutorialFinishedRequest.OnServerEvent:Connect(function(player)

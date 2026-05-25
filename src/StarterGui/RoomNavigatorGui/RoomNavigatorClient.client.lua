@@ -54,44 +54,139 @@ local selectedGuestCategory = "Chat Rooms"
 local selectedRoomData = nil
 local selectedRow = nil
 local latestRoomList = {}
-local latestCurrentRoomName = nil
+local latestCurrentRoomName = player:GetAttribute("CurrentRoomName")
 local searchQuery = ""
 
-local function loadPublicCategories()
+local function copyPublicRoomData(roomData)
+	if typeof(roomData) ~= "table" then
+		return nil
+	end
+
+	local publicRoomId = roomData.Id
+
+	if typeof(publicRoomId) ~= "string" or publicRoomId == "" then
+		return nil
+	end
+
+	local activeRoomName = "Public_" .. publicRoomId
+
+	return {
+		RoomType = "PublicSpace",
+		Id = publicRoomId,
+		PublicRoomId = publicRoomId,
+		RoomKey = "PublicSpace:" .. publicRoomId,
+		ActiveRoomName = activeRoomName,
+		DisplayName = roomData.DisplayName or publicRoomId,
+		Category = roomData.Category or "Public Spaces",
+		Description = roomData.Description or "",
+		MaxOccupancy = roomData.MaxOccupancy,
+		SortOrder = roomData.SortOrder,
+	}
+end
+
+local function addUniqueCategory(categories, categoryName)
+	if typeof(categoryName) ~= "string" or categoryName == "" then
+		return
+	end
+
+	for _, existingCategory in ipairs(categories) do
+		if existingCategory == categoryName then
+			return
+		end
+	end
+
+	table.insert(categories, categoryName)
+end
+
+local function loadPublicConfig()
+	local categories = {}
+	local rooms = {}
+
+	for _, categoryName in ipairs(DEFAULT_PUBLIC_CATEGORIES) do
+		table.insert(categories, categoryName)
+	end
+
 	local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
 
 	if not sharedFolder then
-		return DEFAULT_PUBLIC_CATEGORIES
+		return categories, rooms
 	end
 
 	local configModule = sharedFolder:FindFirstChild("PublicRoomConfig")
 
 	if not configModule or not configModule:IsA("ModuleScript") then
-		return DEFAULT_PUBLIC_CATEGORIES
+		return categories, rooms
 	end
 
 	local ok, config = pcall(require, configModule)
 
-	if not ok or typeof(config) ~= "table" or typeof(config.Categories) ~= "table" then
-		return DEFAULT_PUBLIC_CATEGORIES
+	if not ok or typeof(config) ~= "table" then
+		return categories, rooms
 	end
 
-	local categories = {}
+	if typeof(config.GetPublicCategories) == "function" then
+		local categoriesOk, publicCategoriesResult = pcall(config.GetPublicCategories)
 
-	for _, categoryName in ipairs(config.Categories) do
-		if typeof(categoryName) == "string" and categoryName ~= "" then
-			table.insert(categories, categoryName)
+		if categoriesOk and typeof(publicCategoriesResult) == "table" then
+			categories = {}
+
+			for _, categoryName in ipairs(publicCategoriesResult) do
+				addUniqueCategory(categories, categoryName)
+			end
+		end
+	elseif typeof(config.Categories) == "table" then
+		categories = {}
+
+		for _, categoryName in ipairs(config.Categories) do
+			addUniqueCategory(categories, categoryName)
 		end
 	end
 
 	if #categories == 0 then
-		return DEFAULT_PUBLIC_CATEGORIES
+		for _, categoryName in ipairs(DEFAULT_PUBLIC_CATEGORIES) do
+			table.insert(categories, categoryName)
+		end
 	end
 
-	return categories
+	if typeof(config.GetPublicRoomsArray) == "function" then
+		local roomsOk, publicRoomsResult = pcall(config.GetPublicRoomsArray)
+
+		if roomsOk and typeof(publicRoomsResult) == "table" then
+			for _, roomData in ipairs(publicRoomsResult) do
+				local publicRoom = copyPublicRoomData(roomData)
+
+				if publicRoom then
+					addUniqueCategory(categories, publicRoom.Category)
+					table.insert(rooms, publicRoom)
+				end
+			end
+		end
+	elseif typeof(config.PublicRooms) == "table" then
+		for _, roomData in pairs(config.PublicRooms) do
+			local publicRoom = copyPublicRoomData(roomData)
+
+			if publicRoom then
+				addUniqueCategory(categories, publicRoom.Category)
+				table.insert(rooms, publicRoom)
+			end
+		end
+	end
+
+	table.sort(rooms, function(a, b)
+		local aOrder = typeof(a.SortOrder) == "number" and a.SortOrder or math.huge
+		local bOrder = typeof(b.SortOrder) == "number" and b.SortOrder or math.huge
+
+		if aOrder == bOrder then
+			return tostring(a.DisplayName or a.PublicRoomId) < tostring(b.DisplayName or b.PublicRoomId)
+		end
+
+		return aOrder < bOrder
+	end)
+
+	return categories, rooms
 end
 
-local publicCategories = loadPublicCategories()
+local publicCategories, publicRooms = loadPublicConfig()
 
 local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -541,19 +636,62 @@ local function getRoomDisplayName(roomData)
 end
 
 local function getRoomOwnerText(roomData)
+	if roomData.RoomType == "PublicSpace" then
+		return "Hotel"
+	end
+
 	local owner = roomData.OwnerDisplayName or roomData.OwnerName or "Unknown"
 	return tostring(owner)
 end
 
 local function getOccupancyText(roomData)
-	local occupancy = roomData.Occupancy or roomData.PlayerCount or 0
+	local occupancy = roomData.Occupancy or roomData.PlayerCount
 	local maxOccupancy = roomData.MaxOccupancy
 
-	if typeof(maxOccupancy) == "number" then
+	if typeof(occupancy) == "number" and typeof(maxOccupancy) == "number" then
 		return tostring(occupancy) .. "/" .. tostring(maxOccupancy)
 	end
 
-	return tostring(occupancy)
+	if typeof(maxOccupancy) == "number" then
+		return "Max " .. tostring(maxOccupancy)
+	end
+
+	return tostring(occupancy or 0)
+end
+
+local function isEntryCurrentRoom(entry)
+	if typeof(entry) ~= "table" then
+		return false
+	end
+
+	local currentRoomName = player:GetAttribute("CurrentRoomName") or latestCurrentRoomName
+
+	if typeof(currentRoomName) ~= "string" or currentRoomName == "" then
+		return false
+	end
+
+	if entry.IsCurrentRoom == true then
+		return true
+	end
+
+	if typeof(entry.RoomName) == "string" and entry.RoomName == currentRoomName then
+		return true
+	end
+
+	if typeof(entry.ActiveRoomName) == "string" and entry.ActiveRoomName == currentRoomName then
+		return true
+	end
+
+	local publicRoomId = entry.PublicRoomId or entry.Id
+
+	if typeof(publicRoomId) == "string"
+		and publicRoomId ~= ""
+		and "Public_" .. publicRoomId == currentRoomName then
+
+		return true
+	end
+
+	return false
 end
 
 local function updateTopTabButton(button, isSelected)
@@ -639,9 +777,24 @@ local function updateDetailPanel()
 		.. getOccupancyText(selectedRoomData)
 		.. "  -  Category: "
 		.. tostring(selectedRoomData.Category or "Guest Rooms")
-	detailStatus.Text = selectedRoomData.IsCurrentRoom and "You are here." or ""
+	local isCurrentRoom = isEntryCurrentRoom(selectedRoomData)
 
-	local canGo = typeof(selectedRoomData.RoomName) == "string" and selectedRoomData.RoomName ~= ""
+	detailStatus.Text = isCurrentRoom and "You are here." or ""
+
+	if isCurrentRoom then
+		goButton.Active = false
+		goButton.AutoButtonColor = false
+		goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
+		goButton.Text = "Here"
+		return
+	end
+
+	local canGo = (typeof(selectedRoomData.RoomName) == "string" and selectedRoomData.RoomName ~= "")
+		or (
+			selectedRoomData.RoomType == "PublicSpace"
+			and typeof(selectedRoomData.PublicRoomId) == "string"
+			and selectedRoomData.PublicRoomId ~= ""
+		)
 
 	goButton.Active = canGo
 	goButton.AutoButtonColor = canGo
@@ -666,6 +819,32 @@ end
 
 local function joinSelectedRoom()
 	if not selectedRoomData then
+		return
+	end
+
+	if isEntryCurrentRoom(selectedRoomData) then
+		return
+	end
+
+	if selectedRoomData.RoomType == "PublicSpace" then
+		local publicRoomId = selectedRoomData.PublicRoomId
+
+		if typeof(publicRoomId) ~= "string" or publicRoomId == "" then
+			statusLabel.Text = "This public space is not available yet."
+			return
+		end
+
+		statusLabel.Text = "Joining..."
+		goButton.Text = "Joining..."
+		goButton.Active = false
+		goButton.AutoButtonColor = false
+		goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
+
+		joinRoomRequest:FireServer({
+			RoomType = "PublicSpace",
+			PublicRoomId = publicRoomId,
+		})
+
 		return
 	end
 
@@ -709,7 +888,114 @@ local function createEmptyState(message)
 	label.Parent = emptyFrame
 end
 
-local function createPublicSpaceRow(categoryName, order)
+local function createPublicSpaceRow(publicRoomData, order)
+	local row = Instance.new("TextButton")
+	row.Name = tostring(publicRoomData.PublicRoomId or publicRoomData.DisplayName or "PublicSpace")
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, -4, 0, 82)
+	row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	row.BorderSizePixel = 0
+	row.Text = ""
+	row.AutoButtonColor = true
+	row.Parent = listFrame
+
+	createCorner(row, 8)
+
+	local stroke = createStroke(row, Color3.fromRGB(220, 226, 218), 1, 0)
+	stroke.Name = "RowStroke"
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "NameLabel"
+	nameLabel.Position = UDim2.fromOffset(14, 8)
+	nameLabel.Size = UDim2.new(1, -140, 0, 22)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = tostring(publicRoomData.DisplayName or publicRoomData.PublicRoomId)
+	nameLabel.TextColor3 = Color3.fromRGB(45, 50, 45)
+	nameLabel.TextSize = 16
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = row
+
+	local noteLabel = Instance.new("TextLabel")
+	noteLabel.Name = "NoteLabel"
+	noteLabel.Position = UDim2.fromOffset(14, 32)
+	noteLabel.Size = UDim2.new(1, -150, 0, 18)
+	noteLabel.BackgroundTransparency = 1
+	noteLabel.Text = tostring(publicRoomData.Description or "")
+	noteLabel.TextColor3 = Color3.fromRGB(95, 100, 95)
+	noteLabel.TextSize = 12
+	noteLabel.TextXAlignment = Enum.TextXAlignment.Left
+	noteLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	noteLabel.Font = Enum.Font.Gotham
+	noteLabel.Parent = row
+
+	local categoryLabel = Instance.new("TextLabel")
+	categoryLabel.Name = "Category"
+	categoryLabel.Position = UDim2.fromOffset(14, 56)
+	categoryLabel.Size = UDim2.new(1, -150, 0, 16)
+	categoryLabel.BackgroundTransparency = 1
+	categoryLabel.Text = tostring(publicRoomData.Category or "Public Spaces")
+	categoryLabel.TextColor3 = Color3.fromRGB(102, 108, 102)
+	categoryLabel.TextSize = 11
+	categoryLabel.TextXAlignment = Enum.TextXAlignment.Left
+	categoryLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	categoryLabel.Font = Enum.Font.GothamMedium
+	categoryLabel.Parent = row
+
+	local occupancyLabel = Instance.new("TextLabel")
+	occupancyLabel.Name = "Occupancy"
+	occupancyLabel.AnchorPoint = Vector2.new(1, 0)
+	occupancyLabel.Position = UDim2.new(1, -84, 0, 11)
+	occupancyLabel.Size = UDim2.fromOffset(70, 20)
+	occupancyLabel.BackgroundTransparency = 1
+	occupancyLabel.Text = getOccupancyText(publicRoomData)
+	occupancyLabel.TextColor3 = Color3.fromRGB(60, 90, 70)
+	occupancyLabel.TextSize = 14
+	occupancyLabel.TextXAlignment = Enum.TextXAlignment.Right
+	occupancyLabel.Font = Enum.Font.GothamBold
+	occupancyLabel.Parent = row
+
+	if isEntryCurrentRoom(publicRoomData) then
+		local hereBadge = Instance.new("TextLabel")
+		hereBadge.Name = "HereBadge"
+		hereBadge.AnchorPoint = Vector2.new(1, 1)
+		hereBadge.Position = UDim2.new(1, -14, 1, -10)
+		hereBadge.Size = UDim2.fromOffset(58, 28)
+		hereBadge.BackgroundColor3 = Color3.fromRGB(77, 126, 164)
+		hereBadge.BorderSizePixel = 0
+		hereBadge.Text = "Here"
+		hereBadge.TextColor3 = Color3.fromRGB(255, 255, 255)
+		hereBadge.TextSize = 12
+		hereBadge.Font = Enum.Font.GothamBold
+		hereBadge.Parent = row
+
+		createCorner(hereBadge, 5)
+	else
+		local rowGoButton = createTextButton("RowGoButton", "Go", UDim2.fromOffset(58, 28), row)
+		rowGoButton.AnchorPoint = Vector2.new(1, 1)
+		rowGoButton.Position = UDim2.new(1, -14, 1, -10)
+		rowGoButton.BackgroundColor3 = Color3.fromRGB(68, 143, 82)
+		rowGoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		rowGoButton.TextSize = 13
+
+		rowGoButton.MouseButton1Click:Connect(function()
+			selectRoom(publicRoomData, row)
+			joinSelectedRoom()
+		end)
+	end
+
+	row.MouseButton1Click:Connect(function()
+		selectRoom(publicRoomData, row)
+	end)
+
+	if selectedRoomData and selectedRoomData.RoomKey == publicRoomData.RoomKey then
+		selectedRow = row
+		setRowSelected(row, true)
+	end
+end
+
+local function createPublicCategoryPlaceholderRow(categoryName, order)
 	local row = Instance.new("Frame")
 	row.Name = tostring(categoryName)
 	row.LayoutOrder = order
@@ -829,37 +1115,37 @@ local function createRoomRow(roomData, order)
 	occupancyLabel.Font = Enum.Font.GothamBold
 	occupancyLabel.Parent = row
 
-	local rowGoButton = createTextButton("RowGoButton", "Go", UDim2.fromOffset(58, 28), row)
-	rowGoButton.AnchorPoint = Vector2.new(1, 1)
-	rowGoButton.Position = UDim2.new(1, -14, 1, -10)
-	rowGoButton.BackgroundColor3 = Color3.fromRGB(68, 143, 82)
-	rowGoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	rowGoButton.TextSize = 13
-
-	if roomData.IsCurrentRoom == true or roomData.RoomName == latestCurrentRoomName then
+	if isEntryCurrentRoom(roomData) then
 		local hereBadge = Instance.new("TextLabel")
 		hereBadge.Name = "HereBadge"
-		hereBadge.AnchorPoint = Vector2.new(1, 0)
-		hereBadge.Position = UDim2.new(1, -14, 0, 38)
-		hereBadge.Size = UDim2.fromOffset(58, 20)
+		hereBadge.AnchorPoint = Vector2.new(1, 1)
+		hereBadge.Position = UDim2.new(1, -14, 1, -10)
+		hereBadge.Size = UDim2.fromOffset(58, 28)
 		hereBadge.BackgroundColor3 = Color3.fromRGB(77, 126, 164)
 		hereBadge.BorderSizePixel = 0
 		hereBadge.Text = "Here"
 		hereBadge.TextColor3 = Color3.fromRGB(255, 255, 255)
-		hereBadge.TextSize = 11
+		hereBadge.TextSize = 12
 		hereBadge.Font = Enum.Font.GothamBold
 		hereBadge.Parent = row
 
 		createCorner(hereBadge, 5)
+	else
+		local rowGoButton = createTextButton("RowGoButton", "Go", UDim2.fromOffset(58, 28), row)
+		rowGoButton.AnchorPoint = Vector2.new(1, 1)
+		rowGoButton.Position = UDim2.new(1, -14, 1, -10)
+		rowGoButton.BackgroundColor3 = Color3.fromRGB(68, 143, 82)
+		rowGoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		rowGoButton.TextSize = 13
+
+		rowGoButton.MouseButton1Click:Connect(function()
+			selectRoom(roomData, row)
+			joinSelectedRoom()
+		end)
 	end
 
 	row.MouseButton1Click:Connect(function()
 		selectRoom(roomData, row)
-	end)
-
-	rowGoButton.MouseButton1Click:Connect(function()
-		selectRoom(roomData, row)
-		joinSelectedRoom()
 	end)
 
 	if selectedRoomData and selectedRoomData.RoomKey == roomData.RoomKey then
@@ -935,15 +1221,15 @@ local function renderPublicSpaces()
 	listFrame.Position = UDim2.fromOffset(14, 44)
 	listFrame.Size = UDim2.new(1, -28, 1, -58)
 
-	selectedRoomData = nil
-	selectedRow = nil
-	updateDetailPanel()
-
-	for index, categoryName in ipairs(publicCategories) do
-		createPublicSpaceRow(categoryName, index)
-	end
-
-	if #publicCategories == 0 then
+	if #publicRooms > 0 then
+		for index, publicRoomData in ipairs(publicRooms) do
+			createPublicSpaceRow(publicRoomData, index)
+		end
+	elseif #publicCategories > 0 then
+		for index, categoryName in ipairs(publicCategories) do
+			createPublicCategoryPlaceholderRow(categoryName, index)
+		end
+	else
 		createEmptyState("Public spaces are coming soon.")
 	end
 end
@@ -1145,6 +1431,16 @@ player:GetAttributeChangedSignal("OnboardingStep"):Connect(function()
 		setPanelVisible(false)
 	else
 		updateOpenButton()
+	end
+end)
+
+player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
+	latestCurrentRoomName = player:GetAttribute("CurrentRoomName")
+
+	if panel.Visible and renderNavigator then
+		renderNavigator()
+	else
+		updateDetailPanel()
 	end
 end)
 
