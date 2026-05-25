@@ -71,6 +71,9 @@
         },
         "FixedHotelCamera": {
           "$path": "src/StarterPlayerScripts/FixedHotelCamera.client.lua"
+        },
+        "FloorGridHoverClient": {
+          "$path": "src/StarterPlayerScripts/FloorGridHoverClient.client.lua"
         }
       }
     },
