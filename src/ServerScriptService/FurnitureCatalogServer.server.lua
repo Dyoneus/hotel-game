@@ -7,6 +7,7 @@ local HttpService = game:GetService("HttpService")
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
 local shared = ReplicatedStorage:WaitForChild("Shared")
 local FurnitureCatalogConfig = require(shared:WaitForChild("FurnitureCatalogConfig"))
+local GridConfig = require(shared:WaitForChild("GridConfig"))
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
@@ -24,7 +25,6 @@ if not furnitureTemplates then
 	)
 end
 
-local GRID_SIZE = 2
 local PLACE_COOLDOWN_SECONDS = 0.75
 local ADD_TO_INVENTORY_COOLDOWN_SECONDS = 0.5
 local MAX_PURCHASE_QUANTITY = 99
@@ -452,61 +452,66 @@ local function findPlacementCFrame(roomModel, furnitureModel)
 		return nil
 	end
 
+	if not GridConfig.UsesTileGrid(roomModel, floor) then
+		return nil
+	end
+
 	local originalPivot = furnitureModel:GetPivot()
 	local originalRotation = originalPivot - originalPivot.Position
 
 	local boundingCFrame, boundingSize = furnitureModel:GetBoundingBox()
 	local bottomY = boundingCFrame.Position.Y - boundingSize.Y / 2
-	local floorTopY = floor.Position.Y + floor.Size.Y / 2
+	local floorTopY = GridConfig.GetFloorTopY(floor)
 	local pivotYOffsetFromBottom = originalPivot.Position.Y - bottomY
+	local tileBounds = GridConfig.GetTileBounds(roomModel, floor)
 
-	local maxXSteps = math.max(
-		0,
-		math.floor((floor.Size.X / 2 - GRID_SIZE) / GRID_SIZE)
-	)
+	if not floorTopY or not tileBounds then
+		return nil
+	end
 
-	local maxZSteps = math.max(
-		0,
-		math.floor((floor.Size.Z / 2 - GRID_SIZE) / GRID_SIZE)
-	)
+	local centerX = (tileBounds.GridWidth - 1) / 2
+	local centerZ = (tileBounds.GridDepth - 1) / 2
+	local candidates = {}
 
-	local maxRadius = math.max(maxXSteps, maxZSteps)
+	for xIndex = 0, tileBounds.GridWidth - 1 do
+		for zIndex = 0, tileBounds.GridDepth - 1 do
+			table.insert(candidates, {
+				xIndex = xIndex,
+				zIndex = zIndex,
+				distance = math.abs(xIndex - centerX) + math.abs(zIndex - centerZ),
+			})
+		end
+	end
 
-	for radius = 0, maxRadius do
-		for xStep = -radius, radius do
-			for zStep = -radius, radius do
-				local isOuterRing = math.abs(xStep) == radius
-					or math.abs(zStep) == radius
+	table.sort(candidates, function(a, b)
+		return a.distance < b.distance
+	end)
 
-				if isOuterRing
-					and math.abs(xStep) <= maxXSteps
-					and math.abs(zStep) <= maxZSteps then
+	for _, candidate in ipairs(candidates) do
+		local localFloorPosition = Vector3.new(
+			-tileBounds.HalfWidthStuds + tileBounds.TileSize / 2 + candidate.xIndex * tileBounds.TileSize,
+			0,
+			-tileBounds.HalfDepthStuds + tileBounds.TileSize / 2 + candidate.zIndex * tileBounds.TileSize
+		)
 
-					local localFloorPosition = Vector3.new(
-						xStep * GRID_SIZE,
-						0,
-						zStep * GRID_SIZE
-					)
+		local worldPosition = GridConfig.FloorLocalToWorld(floor, localFloorPosition)
 
-					local worldPosition = floor.CFrame:PointToWorldSpace(localFloorPosition)
+		if worldPosition then
+			local candidateCFrame =
+				CFrame.new(
+					worldPosition.X,
+					floorTopY + pivotYOffsetFromBottom,
+					worldPosition.Z
+				)
+				* originalRotation
 
-					local candidateCFrame =
-						CFrame.new(
-							worldPosition.X,
-							floorTopY + pivotYOffsetFromBottom,
-							worldPosition.Z
-						)
-						* originalRotation
+			furnitureModel:PivotTo(candidateCFrame)
 
-					furnitureModel:PivotTo(candidateCFrame)
+			if modelFitsInsideRoom(furnitureModel, floor)
+				and not modelBlockedAtCurrentCFrame(roomModel, furnitureModel)
+				and not modelWouldOverlapCharacter(roomModel, furnitureModel) then
 
-					if modelFitsInsideRoom(furnitureModel, floor)
-						and not modelBlockedAtCurrentCFrame(roomModel, furnitureModel)
-						and not modelWouldOverlapCharacter(roomModel, furnitureModel) then
-
-						return candidateCFrame
-					end
-				end
+				return candidateCFrame
 			end
 		end
 	end
@@ -527,32 +532,40 @@ end
 
 local function getRequestedPlacementCFrame(roomModel, furnitureModel, targetPosition, rotationY)
 	if typeof(targetPosition) ~= "Vector3" then
-		return nil
+		return nil, "Click a valid floor tile to place this furniture."
 	end
 
 	local floor = getWalkableFloor(roomModel)
 
 	if not floor then
-		return nil
+		return nil, "Click a valid floor tile to place this furniture."
 	end
 
-	local snappedX = math.floor((targetPosition.X / GRID_SIZE) + 0.5) * GRID_SIZE
-	local snappedZ = math.floor((targetPosition.Z / GRID_SIZE) + 0.5) * GRID_SIZE
+	if not GridConfig.UsesTileGrid(roomModel, floor) then
+		return nil, "Furniture can only be placed in grid rooms."
+	end
+
+	local tileSize = GridConfig.GetTileSize(roomModel, floor)
+	local snappedWorldPosition = GridConfig.SnapWorldToTileCenter(floor, targetPosition, tileSize)
+	local floorTopY = GridConfig.GetFloorTopY(floor)
+
+	if not snappedWorldPosition or not floorTopY then
+		return nil, "Invalid placement position."
+	end
 
 	local originalPivot = furnitureModel:GetPivot()
 	local originalRotation = originalPivot - originalPivot.Position
 
 	local boundingCFrame, boundingSize = furnitureModel:GetBoundingBox()
 	local bottomY = boundingCFrame.Position.Y - boundingSize.Y / 2
-	local floorTopY = floor.Position.Y + floor.Size.Y / 2
 	local pivotYOffsetFromBottom = originalPivot.Position.Y - bottomY
 
 	local yawRotation = CFrame.Angles(0, math.rad(normalizeRotationY(rotationY)), 0)
 
 	return CFrame.new(
-		snappedX,
+		snappedWorldPosition.X,
 		floorTopY + pivotYOffsetFromBottom,
-		snappedZ
+		snappedWorldPosition.Z
 	) * yawRotation * originalRotation
 end
 
@@ -969,7 +982,7 @@ local function handlePlaceItem(player, payload, options)
 	furnitureClone:SetAttribute("Tradable", true)
 	furnitureClone:SetAttribute("Sellable", true)
 
-	local placementCFrame = getRequestedPlacementCFrame(
+	local placementCFrame, placementError = getRequestedPlacementCFrame(
 		roomModel,
 		furnitureClone,
 		targetPosition,
@@ -978,7 +991,7 @@ local function handlePlaceItem(player, payload, options)
 
 	if not placementCFrame then
 		furnitureClone:Destroy()
-		sendResult(player, resultKind, false, "Invalid placement position.")
+		sendResult(player, resultKind, false, placementError or "Invalid placement position.")
 		return
 	end
 

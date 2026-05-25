@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
+local GridConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GridConfig"))
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local furnitureActionRequest = remoteEvents:WaitForChild("FurnitureActionRequest")
@@ -31,7 +32,6 @@ local furnitureActionResult = getOrCreateRemoteEvent("FurnitureActionResult")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
 
 local GRID_SIZE = 2
-local PLACEMENT_GRID_SIZE = 2
 
 local SIT_STAND_COOLDOWN_SECONDS = 0.35
 
@@ -545,10 +545,6 @@ local function snapToGrid(value)
 	return math.floor((value / GRID_SIZE) + 0.5) * GRID_SIZE
 end
 
-local function snapToPlacementGrid(value)
-	return math.floor((value / PLACEMENT_GRID_SIZE) + 0.5) * PLACEMENT_GRID_SIZE
-end
-
 local function clampToRoom(player, position)
 	local bounds = getMovementRoomBounds(player)
 
@@ -1053,16 +1049,25 @@ local function getFurnitureRoomBounds(player)
 end
 
 local function snapPositionInsideRoom(player, position)
+	local roomModel = getCurrentRoomModel(player)
 	local floor = getCurrentFloor(player)
 
-	if not floor then
-		return nil
+	if not roomModel or not floor or not floor:IsA("BasePart") then
+		return nil, "Invalid furniture target position"
 	end
 
-	local snappedX = snapToPlacementGrid(position.X)
-	local snappedZ = snapToPlacementGrid(position.Z)
+	if not GridConfig.UsesTileGrid(roomModel, floor) then
+		return nil, "Furniture can only be moved in grid rooms."
+	end
 
-	return Vector3.new(snappedX, position.Y, snappedZ)
+	local tileSize = GridConfig.GetTileSize(roomModel, floor)
+	local snappedWorldPosition = GridConfig.SnapWorldToTileCenter(floor, position, tileSize)
+
+	if not snappedWorldPosition then
+		return nil, "Invalid furniture target position"
+	end
+
+	return Vector3.new(snappedWorldPosition.X, position.Y, snappedWorldPosition.Z)
 end
 
 local helperPartNames = {
@@ -1346,9 +1351,10 @@ local function moveFurniture(player, furnitureModel, targetPosition)
 	end
 
 	local currentPivot = furnitureModel:GetPivot()
-	local snappedPosition = snapPositionInsideRoom(player, targetPosition)
+	local snappedPosition, snapError = snapPositionInsideRoom(player, targetPosition)
 
 	if not snappedPosition then
+		warn(snapError or "Invalid furniture target position")
 		return
 	end
 
@@ -1360,12 +1366,8 @@ local function moveFurniture(player, furnitureModel, targetPosition)
 
 	local currentRotation = currentPivot - currentPivot.Position
 	local targetCFrame = CFrame.new(finalPosition) * currentRotation
-
-	targetCFrame = clampFurnitureCFrameInsideRoom(player, furnitureModel, targetCFrame)
-
-	if not targetCFrame then
-		return
-	end
+	-- Keep the final pivot on the GridConfig tile center. If the model does not fit
+	-- at that tile, validation below rejects it instead of clamping off-grid.
 
 	if not modelFitsInsideRoom(player, furnitureModel, targetCFrame) then
 		warn("Furniture move blocked: model would be outside room")

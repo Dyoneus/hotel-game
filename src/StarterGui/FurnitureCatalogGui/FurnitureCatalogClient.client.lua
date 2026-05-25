@@ -11,6 +11,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local furnitureCatalogRequest = remoteEvents:WaitForChild("FurnitureCatalogRequest")
 local furnitureCatalogResult = remoteEvents:WaitForChild("FurnitureCatalogResult")
+local GridConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GridConfig"))
 
 local activeRooms = workspace:WaitForChild("ActiveRooms")
 local furnitureTemplates = ReplicatedStorage:WaitForChild("FurnitureTemplates")
@@ -53,7 +54,6 @@ local placementRotationY = 0
 local placementBaseRotation = CFrame.new()
 local placementSource = nil
 
-local PLACEMENT_GRID_SIZE = 2
 local OVERLAP_SHRINK = 0.08
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
 
@@ -318,6 +318,21 @@ local function getCurrentFloor()
 	return nil
 end
 
+local function getCurrentPlacementGrid()
+	local roomModel = getCurrentRoomModel()
+	local floor = getCurrentFloor()
+
+	if not roomModel or not floor then
+		return nil, nil, "Click a valid floor tile to place this furniture."
+	end
+
+	if not GridConfig.UsesTileGrid(roomModel, floor) then
+		return nil, nil, "Furniture can only be placed in grid rooms."
+	end
+
+	return roomModel, floor, nil
+end
+
 local function isCurrentRoomOwner()
 	local roomModel = getCurrentRoomModel()
 
@@ -529,10 +544,6 @@ local helperPartNames = {
 	RoomAnchor = true,
 	DoorSpawn = true,
 }
-
-local function snapToPlacementGrid(value)
-	return math.floor((value / PLACEMENT_GRID_SIZE) + 0.5) * PLACEMENT_GRID_SIZE
-end
 
 local function isHelperPart(part)
 	return helperPartNames[part.Name] == true
@@ -773,30 +784,34 @@ end
 
 local function getPreviewPlacementCFrame(model)
 	local floorPosition = getMouseFloorPosition()
-	local floor = getCurrentFloor()
+	local roomModel, floor = getCurrentPlacementGrid()
 
 	if not floorPosition or not floor then
 		return nil
 	end
 
-	local snappedX = snapToPlacementGrid(floorPosition.X)
-	local snappedZ = snapToPlacementGrid(floorPosition.Z)
+	local tileSize = GridConfig.GetTileSize(roomModel, floor)
+	local snappedWorldPosition = GridConfig.SnapWorldToTileCenter(floor, floorPosition, tileSize)
+	local floorTopY = GridConfig.GetFloorTopY(floor)
+
+	if not snappedWorldPosition or not floorTopY then
+		return nil
+	end
 
 	local boundingCFrame, boundingSize = model:GetBoundingBox()
 	local bottomY = boundingCFrame.Position.Y - boundingSize.Y / 2
-	local floorTopY = floor.Position.Y + floor.Size.Y / 2
 	local pivotYOffsetFromBottom = model:GetPivot().Position.Y - bottomY
 
 	local targetCFrame =
 		CFrame.new(
-			snappedX,
+			snappedWorldPosition.X,
 			floorTopY + pivotYOffsetFromBottom,
-			snappedZ
+			snappedWorldPosition.Z
 		)
 		* CFrame.Angles(0, math.rad(placementRotationY), 0)
 		* placementBaseRotation
 
-	return clampPreviewCFrameInsideRoom(model, targetCFrame)
+	return targetCFrame
 end
 
 local function isPreviewInsideRoom(model)
@@ -1036,6 +1051,13 @@ end
 
 local function createCatalogPlacementPreview(itemData)
 	destroyCatalogPlacementPreview()
+
+	local _, _, gridError = getCurrentPlacementGrid()
+
+	if gridError then
+		setStatus(gridError)
+		return
+	end
 
 	local templateName = itemData.TemplateName or itemData.Id
 	local template = furnitureTemplates:FindFirstChild(templateName)

@@ -357,13 +357,7 @@ local CLICK_MOVE_COOLDOWN = 0.2
 local MIN_DESTINATION_DISTANCE = 2
 local WAYPOINT_SKIP_DISTANCE = 2
 
--- Furniture placement migration happens in Patch 9F.
-local PLACEMENT_GRID_SIZE = 2
 local warnedTileGridDisabled = false
-
-local function snapToPlacementGrid(value)
-	return math.floor((value / PLACEMENT_GRID_SIZE) + 0.5) * PLACEMENT_GRID_SIZE
-end
 
 local function getMovementGridContext()
 	local roomModel = getCurrentRoomModel()
@@ -456,6 +450,86 @@ local function cellKey(cell)
 	return tostring(cell.x) .. "," .. tostring(cell.z)
 end
 
+local movementIgnoredFurniturePartNames = {
+	CollisionBuffer = true,
+	PlacementBounds = true,
+	SitPoint = true,
+	SleepPoint = true,
+	PlayPoint = true,
+	EnterPoint = true,
+	TalkPoint = true,
+	ClickHitbox = true,
+}
+
+local function isMovementIgnoredFurniturePart(part)
+	return movementIgnoredFurniturePartNames[part.Name] == true
+end
+
+local function getFurnitureFootprintCenter(furnitureModel)
+	local placementBoundsPositionSum = Vector3.zero
+	local placementBoundsCount = 0
+
+	for _, descendant in ipairs(furnitureModel:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant.Name == "PlacementBounds" then
+			placementBoundsPositionSum += descendant.Position
+			placementBoundsCount += 1
+		end
+	end
+
+	if placementBoundsCount > 0 then
+		return placementBoundsPositionSum / placementBoundsCount
+	end
+
+	return furnitureModel:GetPivot().Position
+end
+
+local function getRotatedFurnitureFootprint(furnitureModel, context)
+	local footprintWidth, footprintDepth = GridConfig.GetFurnitureFootprint(furnitureModel)
+
+	-- Patch 9G will clean up template footprint attributes. For now, this supports
+	-- future rectangular footprints while defaulting current furniture to 1x1.
+	if footprintWidth ~= footprintDepth then
+		local localLookVector = context.floor.CFrame:VectorToObjectSpace(furnitureModel:GetPivot().LookVector)
+
+		if math.abs(localLookVector.X) > math.abs(localLookVector.Z) then
+			footprintWidth, footprintDepth = footprintDepth, footprintWidth
+		end
+	end
+
+	return footprintWidth, footprintDepth
+end
+
+local function cellIsInsideFurnitureFootprint(cell, centerCell, footprintWidth, footprintDepth)
+	local minX = centerCell.x - math.floor((footprintWidth - 1) / 2)
+	local maxX = minX + footprintWidth - 1
+	local minZ = centerCell.z - math.floor((footprintDepth - 1) / 2)
+	local maxZ = minZ + footprintDepth - 1
+
+	return cell.x >= minX
+		and cell.x <= maxX
+		and cell.z >= minZ
+		and cell.z <= maxZ
+end
+
+local function isCellBlockedByFurnitureFootprint(cell, context, furnitureFolder)
+	for _, furnitureModel in ipairs(furnitureFolder:GetChildren()) do
+		if furnitureModel:IsA("Model") then
+			local footprintCenter = getFurnitureFootprintCenter(furnitureModel)
+			local centerCell = worldToCell(footprintCenter, context)
+
+			if centerCell then
+				local footprintWidth, footprintDepth = getRotatedFurnitureFootprint(furnitureModel, context)
+
+				if cellIsInsideFurnitureFootprint(cell, centerCell, footprintWidth, footprintDepth) then
+					return true
+				end
+			end
+		end
+	end
+
+	return false
+end
+
 local function isCellBlocked(cell, context)
 	local roomFolder = getCurrentRoomFolder()
 	local furnitureFolder = getCurrentFurnitureFolder()
@@ -464,9 +538,13 @@ local function isCellBlocked(cell, context)
 		return true
 	end
 
+	if isCellBlockedByFurnitureFootprint(cell, context, furnitureFolder) then
+		return true
+	end
+
 	local center = cellToWorld(cell, context)
 
-	local boxSize = Vector3.new(context.tileSize * 0.8, 5, context.tileSize * 0.8)
+	local boxSize = Vector3.new(context.tileSize * 0.55, 5, context.tileSize * 0.55)
 	local boxCFrame = CFrame.new(center) * context.floorRotation
 
 	local overlapParams = OverlapParams.new()
@@ -487,20 +565,16 @@ local function isCellBlocked(cell, context)
 			continue
 		end
 
-		if part.Name == "SitPoint"
-			or part.Name == "SleepPoint"
-			or part.Name == "PlayPoint"
-			or part.Name == "EnterPoint"
-			or part.Name == "TalkPoint" then
+		if isMovementIgnoredFurniturePart(part) then
+			continue
+		end
+
+		if part:IsDescendantOf(furnitureFolder) then
 			continue
 		end
 
 		if part:IsA("BasePart") and part.CanCollide == false then
 			continue
-		end
-
-		if part:IsDescendantOf(furnitureFolder) then
-			return true
 		end
 
 		if part:IsDescendantOf(roomFolder) then
@@ -749,6 +823,28 @@ local function getMouseFloorPosition()
 	return mouse.Hit.Position
 end
 
+local function getGridSnappedFloorPosition(floorPosition)
+	local roomModel = getCurrentRoomModel()
+	local floor = getCurrentFloor()
+
+	if not roomModel or not floor or not floor:IsA("BasePart") then
+		return nil
+	end
+
+	if not GridConfig.UsesTileGrid(roomModel, floor) then
+		return nil
+	end
+
+	local tileSize = GridConfig.GetTileSize(roomModel, floor)
+	local snappedWorldPosition = GridConfig.SnapWorldToTileCenter(floor, floorPosition, tileSize)
+
+	if not snappedWorldPosition then
+		return nil
+	end
+
+	return Vector3.new(snappedWorldPosition.X, floorPosition.Y, snappedWorldPosition.Z)
+end
+
 local function getFloorPlacementBounds()
 	local floor = getCurrentFloor()
 
@@ -896,29 +992,31 @@ local function getSnappedPlacementPosition()
 		return nil
 	end
 
-	local snappedX = snapToPlacementGrid(floorPosition.X)
-	local snappedZ = snapToPlacementGrid(floorPosition.Z)
+	local snappedFloorPosition = getGridSnappedFloorPosition(floorPosition)
+
+	if not snappedFloorPosition then
+		return nil
+	end
 
 	if not movingFurniture then
-		return Vector3.new(snappedX, floorPosition.Y, snappedZ)
+		return snappedFloorPosition
 	end
 
 	local currentPivot = movingFurniture:GetPivot()
 	local currentRotation = currentPivot - currentPivot.Position
 
 	local targetPosition = Vector3.new(
-		snappedX,
+		snappedFloorPosition.X,
 		currentPivot.Position.Y,
-		snappedZ
+		snappedFloorPosition.Z
 	)
 
 	local targetCFrame = CFrame.new(targetPosition) * currentRotation
-	local clampedCFrame = clampFurnitureCFrameInsideRoom(movingFurniture, targetCFrame)
 
 	return Vector3.new(
-		clampedCFrame.Position.X,
+		targetCFrame.Position.X,
 		floorPosition.Y,
-		clampedCFrame.Position.Z
+		targetCFrame.Position.Z
 	)
 end
 
