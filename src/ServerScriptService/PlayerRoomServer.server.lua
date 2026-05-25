@@ -8,6 +8,7 @@ local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
 local PublicRoomConfig = require(sharedFolder:WaitForChild("PublicRoomConfig"))
 local RoomTextPolicyConfig = require(sharedFolder:WaitForChild("RoomTextPolicyConfig"))
+local GridConfig = require(sharedFolder:WaitForChild("GridConfig"))
 
 local playerRooms = {}
 local playerRoomSlots = {}
@@ -396,6 +397,23 @@ local function moveRoomAnchorToPosition(roomModel, targetAnchorPosition)
 	return true
 end
 
+local function warnRoomGridValidation(roomModel, context)
+	local _, warnings = GridConfig.ValidateRoomGrid(roomModel)
+
+	if typeof(warnings) ~= "table" or #warnings == 0 then
+		return
+	end
+
+	for _, warningMessage in ipairs(warnings) do
+		warn(string.format(
+			"[RoomGrid] %s %s: %s",
+			tostring(context or "Room"),
+			tostring(roomModel and roomModel.Name or "unknown"),
+			tostring(warningMessage)
+		))
+	end
+end
+
 local function cloneRoomForPlayer(player, layoutId)
 	if not VALID_LAYOUTS[layoutId] then
 		warn("Invalid layout requested:", layoutId)
@@ -433,6 +451,7 @@ local function cloneRoomForPlayer(player, layoutId)
 
 	roomClone:SetAttribute("OwnerUserId", player.UserId)
 	roomClone:SetAttribute("LayoutId", layoutId)
+	warnRoomGridValidation(roomClone, "PlayerRoom")
 
 	playerRooms[player] = roomClone
 	

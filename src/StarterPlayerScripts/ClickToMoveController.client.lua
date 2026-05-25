@@ -530,6 +530,23 @@ local function isCellBlockedByFurnitureFootprint(cell, context, furnitureFolder)
 	return false
 end
 
+local function worldPositionIsInsideCell(worldPosition, cell, context)
+	local localPosition = GridConfig.WorldToFloorLocal(context.floor, worldPosition)
+
+	if not localPosition then
+		return false
+	end
+
+	local localCellX = cellIndexToLocalAxis(cell.x, context.tileSize, context.halfWidthStuds)
+	local localCellZ = cellIndexToLocalAxis(cell.z, context.tileSize, context.halfDepthStuds)
+	local halfCell = context.tileSize / 2
+
+	return localPosition.X > localCellX - halfCell
+		and localPosition.X < localCellX + halfCell
+		and localPosition.Z > localCellZ - halfCell
+		and localPosition.Z < localCellZ + halfCell
+end
+
 local function isCellBlocked(cell, context)
 	local roomFolder = getCurrentRoomFolder()
 	local furnitureFolder = getCurrentFurnitureFolder()
@@ -544,7 +561,7 @@ local function isCellBlocked(cell, context)
 
 	local center = cellToWorld(cell, context)
 
-	local boxSize = Vector3.new(context.tileSize * 0.55, 5, context.tileSize * 0.55)
+	local boxSize = Vector3.new(context.tileSize * 0.4, 5, context.tileSize * 0.4)
 	local boxCFrame = CFrame.new(center) * context.floorRotation
 
 	local overlapParams = OverlapParams.new()
@@ -579,7 +596,11 @@ local function isCellBlocked(cell, context)
 
 		if part:IsDescendantOf(roomFolder) then
 			if part.Name:find("Boundary") or part.Name:find("Wall") then
-				return true
+				if worldPositionIsInsideCell(part.Position, cell, context) then
+					return true
+				end
+
+				continue
 			end
 		end
 	end

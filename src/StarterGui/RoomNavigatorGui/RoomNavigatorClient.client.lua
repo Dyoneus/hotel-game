@@ -44,6 +44,7 @@ local ROOM_SUBTAB_FAVOURITES = "Favourites"
 local ROOM_SUBTAB_GUEST = "GuestRooms"
 local ROOM_NAME_MAX_LENGTH = 30
 local ROOM_DESCRIPTION_MAX_LENGTH = 100
+local ROOM_JOIN_FADE_OUT_SECONDS = 0.28
 local CONTENT_TOP_OFFSET = 124
 local DETAIL_BOTTOM_OFFSET = 18
 local DETAIL_GAP = 8
@@ -77,6 +78,8 @@ local searchQuery = ""
 local selectedSettingsCategory = "Chat Rooms"
 local selectedSettingsIsPublic = true
 local roomSettingsRequestInFlight = false
+local joinRoomRequestInFlight = false
+local joinRoomRequestToken = 0
 local suppressSettingsTextChanged = false
 local statusShakeTween = nil
 
@@ -260,6 +263,7 @@ end
 local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
 local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
 local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
+local roomTransitionRequest = getOrCreateClientEvent("RoomTransitionRequest")
 
 local MENU_NAME = "Rooms"
 local anyMajorMenuOpen = false
@@ -1500,6 +1504,14 @@ local function updateDetailPanel()
 		return
 	end
 
+	if joinRoomRequestInFlight then
+		goButton.Active = false
+		goButton.AutoButtonColor = false
+		goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
+		goButton.Text = "Joining..."
+		return
+	end
+
 	local canGo = (typeof(selectedRoomData.RoomName) == "string" and selectedRoomData.RoomName ~= "")
 		or (
 			selectedRoomData.RoomType == "PublicSpace"
@@ -1534,6 +1546,10 @@ local function selectRoom(roomData, row)
 end
 
 local function joinSelectedRoom()
+	if joinRoomRequestInFlight then
+		return
+	end
+
 	if not selectedRoomData then
 		return
 	end
@@ -1541,6 +1557,8 @@ local function joinSelectedRoom()
 	if isEntryCurrentRoom(selectedRoomData) then
 		return
 	end
+
+	local joinPayload = nil
 
 	if selectedRoomData.RoomType == "PublicSpace" then
 		local publicRoomId = selectedRoomData.PublicRoomId
@@ -1550,26 +1568,24 @@ local function joinSelectedRoom()
 			return
 		end
 
-		setStatusMessage("Joining...")
-		goButton.Text = "Joining..."
-		goButton.Active = false
-		goButton.AutoButtonColor = false
-		goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
-
-		joinRoomRequest:FireServer({
+		joinPayload = {
 			RoomType = "PublicSpace",
 			PublicRoomId = publicRoomId,
-		})
+		}
+	else
+		local roomName = selectedRoomData.RoomName
 
-		return
+		if typeof(roomName) ~= "string" or roomName == "" then
+			showSettingsError("This room is not available yet.")
+			return
+		end
+
+		joinPayload = roomName
 	end
 
-	local roomName = selectedRoomData.RoomName
-
-	if typeof(roomName) ~= "string" or roomName == "" then
-		showSettingsError("This room is not available yet.")
-		return
-	end
+	joinRoomRequestInFlight = true
+	joinRoomRequestToken += 1
+	local thisRequestToken = joinRoomRequestToken
 
 	setStatusMessage("Joining...")
 	goButton.Text = "Joining..."
@@ -1577,7 +1593,25 @@ local function joinSelectedRoom()
 	goButton.AutoButtonColor = false
 	goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
 
-	joinRoomRequest:FireServer(roomName)
+	roomTransitionRequest:Fire("FadeOut")
+
+	task.delay(ROOM_JOIN_FADE_OUT_SECONDS, function()
+		if not joinRoomRequestInFlight or joinRoomRequestToken ~= thisRequestToken then
+			return
+		end
+
+		joinRoomRequest:FireServer(joinPayload)
+	end)
+
+	task.delay(8, function()
+		if joinRoomRequestInFlight and joinRoomRequestToken == thisRequestToken then
+			joinRoomRequestInFlight = false
+			joinRoomRequestToken += 1
+			roomTransitionRequest:Fire("FadeIn")
+			showSettingsError("Room join timed out. Please try again.")
+			updateDetailPanel()
+		end
+	end)
 end
 
 local function createEmptyState(message)
@@ -2298,6 +2332,10 @@ roomListUpdate.OnClientEvent:Connect(function(roomList, currentRoomName)
 end)
 
 joinRoomResult.OnClientEvent:Connect(function(success, message)
+	joinRoomRequestInFlight = false
+	joinRoomRequestToken += 1
+	roomTransitionRequest:Fire("FadeIn")
+
 	if success then
 		setStatusMessage(message or "Joined room.", "success")
 		setPanelVisible(false)
