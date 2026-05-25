@@ -19,16 +19,17 @@ local originalLighting = {
 	ColorShift_Top = Lighting.ColorShift_Top,
 }
 
+local originalAtmosphereProperties = {}
+
 local VOID_FOLDER_NAME = "HotelVoidBackgroundLocal"
 local VOID_PLANE_NAME = "HotelVoidPlane"
-local OLD_BACKDROP_PREFIX = "HotelVoidBackdrop"
 
-local LIGHTING_AMBIENT = Color3.fromRGB(70, 70, 70)
 local BLACK = Color3.new(0, 0, 0)
 local PLANE_THICKNESS = 0.12
-local PLANE_BELOW_FLOOR = 0.35
-local MIN_VOID_SIZE = 500
-local MAX_VOID_SIZE = 4000
+local PLANE_BELOW_FLOOR = 0.45
+local MIN_VOID_SIZE = 800
+local MAX_VOID_SIZE = 6000
+local VOID_SIZE_MULTIPLIER = 10
 local UPDATE_INTERVAL_SECONDS = 0.25
 
 local voidFolder = nil
@@ -122,6 +123,48 @@ local function getOrCreateVoidFolder()
 	return voidFolder
 end
 
+local function nameStartsWithHotelVoid(instance)
+	return typeof(instance.Name) == "string" and instance.Name:sub(1, #"HotelVoid") == "HotelVoid"
+end
+
+local function cleanupLegacyVoidObjects(preserveActivePlane)
+	local activePlane = preserveActivePlane and voidPlane or nil
+	local currentCamera = Workspace.CurrentCamera
+
+	if voidFolder and voidFolder.Parent then
+		for _, child in ipairs(voidFolder:GetChildren()) do
+			if child ~= activePlane and nameStartsWithHotelVoid(child) then
+				child:Destroy()
+			end
+		end
+	end
+
+	if currentCamera then
+		for _, descendant in ipairs(currentCamera:GetDescendants()) do
+			if descendant ~= activePlane and nameStartsWithHotelVoid(descendant) then
+				descendant:Destroy()
+			end
+		end
+	end
+
+	for _, child in ipairs(Workspace:GetChildren()) do
+		if child ~= voidFolder and child ~= activePlane and nameStartsWithHotelVoid(child) then
+			child:Destroy()
+		end
+	end
+end
+
+local function destroyVoidGeometry()
+	if voidFolder and voidFolder.Parent then
+		voidFolder:Destroy()
+	end
+
+	voidFolder = nil
+	voidPlane = nil
+
+	cleanupLegacyVoidObjects(false)
+end
+
 local function configureVoidPart(part)
 	part.Anchored = true
 	part.CanCollide = false
@@ -183,9 +226,49 @@ local function setVoidVisible(isVisible)
 
 	if voidFolder then
 		for _, child in ipairs(voidFolder:GetChildren()) do
-			if child:IsA("BasePart") and child.Name:sub(1, #OLD_BACKDROP_PREFIX) == OLD_BACKDROP_PREFIX then
+			if child ~= voidPlane and nameStartsWithHotelVoid(child) then
 				child:Destroy()
 			end
+		end
+	end
+end
+
+local function rememberAtmosphere(atmosphere)
+	if originalAtmosphereProperties[atmosphere] then
+		return
+	end
+
+	originalAtmosphereProperties[atmosphere] = {
+		Density = atmosphere.Density,
+		Offset = atmosphere.Offset,
+		Color = atmosphere.Color,
+		Decay = atmosphere.Decay,
+		Glare = atmosphere.Glare,
+		Haze = atmosphere.Haze,
+	}
+end
+
+local function suppressAtmosphereGradient()
+	for _, child in ipairs(Lighting:GetChildren()) do
+		if child:IsA("Atmosphere") then
+			rememberAtmosphere(child)
+			child.Density = 0
+			child.Offset = 0
+			child.Glare = 0
+			child.Haze = 0
+		end
+	end
+end
+
+local function restoreAtmospheres()
+	for atmosphere, properties in pairs(originalAtmosphereProperties) do
+		if atmosphere.Parent then
+			atmosphere.Density = properties.Density
+			atmosphere.Offset = properties.Offset
+			atmosphere.Color = properties.Color
+			atmosphere.Decay = properties.Decay
+			atmosphere.Glare = properties.Glare
+			atmosphere.Haze = properties.Haze
 		end
 	end
 end
@@ -200,19 +283,21 @@ local function restoreLighting()
 	Lighting.ClockTime = originalLighting.ClockTime
 	Lighting.ColorShift_Bottom = originalLighting.ColorShift_Bottom
 	Lighting.ColorShift_Top = originalLighting.ColorShift_Top
+
+	restoreAtmospheres()
 end
 
-local function applyHotelLighting(maxDimension)
-	local resolvedMaxDimension = math.max(tonumber(maxDimension) or 0, 1)
-
-	Lighting.Ambient = LIGHTING_AMBIENT
-	Lighting.OutdoorAmbient = BLACK
+local function applyPlayerRoomVoidLighting()
+	Lighting.Ambient = originalLighting.Ambient
+	Lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
 	Lighting.FogColor = BLACK
-	Lighting.FogStart = math.max(resolvedMaxDimension * 2, 80)
-	Lighting.FogEnd = math.clamp(resolvedMaxDimension * 8, 300, 4000)
-	Lighting.Brightness = math.max(originalLighting.Brightness, 1)
-	Lighting.ColorShift_Bottom = BLACK
-	Lighting.ColorShift_Top = BLACK
+	Lighting.FogStart = 100000
+	Lighting.FogEnd = 100001
+	Lighting.Brightness = originalLighting.Brightness
+	Lighting.ColorShift_Bottom = originalLighting.ColorShift_Bottom
+	Lighting.ColorShift_Top = originalLighting.ColorShift_Top
+
+	suppressAtmosphereGradient()
 end
 
 local function getReferenceFrame()
@@ -237,27 +322,28 @@ end
 local function updateVoidGeometry()
 	if not shouldUsePlayerRoomVoid() then
 		restoreLighting()
-		setVoidVisible(false)
+		destroyVoidGeometry()
 		return
 	end
 
 	local referenceCFrame, referenceSize = getReferenceFrame()
 
 	if not referenceCFrame or not referenceSize then
-		setVoidVisible(false)
-		applyHotelLighting(MIN_VOID_SIZE)
+		destroyVoidGeometry()
+		applyPlayerRoomVoidLighting()
 		return
 	end
 
 	local maxDimension = math.max(referenceSize.X, referenceSize.Z)
-	local voidSize = math.clamp(maxDimension * 8, MIN_VOID_SIZE, MAX_VOID_SIZE)
-	local floorTopLocalY = referenceSize.Y / 2
+	local voidSize = math.clamp(maxDimension * VOID_SIZE_MULTIPLIER, MIN_VOID_SIZE, MAX_VOID_SIZE)
+	local floorBottomLocalY = -referenceSize.Y / 2
 
-	applyHotelLighting(maxDimension)
+	applyPlayerRoomVoidLighting()
+	cleanupLegacyVoidObjects(true)
 
 	local plane = getVoidPlane()
 	plane.Size = Vector3.new(voidSize, PLANE_THICKNESS, voidSize)
-	plane.CFrame = referenceCFrame * CFrame.new(0, -floorTopLocalY - PLANE_THICKNESS / 2 - PLANE_BELOW_FLOOR, 0)
+	plane.CFrame = referenceCFrame * CFrame.new(0, floorBottomLocalY - PLANE_THICKNESS / 2 - PLANE_BELOW_FLOOR, 0)
 
 	setVoidVisible(true)
 end
@@ -268,7 +354,7 @@ local function setPlayerRoomVoidActive(isActive)
 			updateVoidGeometry()
 		else
 			restoreLighting()
-			setVoidVisible(false)
+			destroyVoidGeometry()
 		end
 
 		return
@@ -280,7 +366,7 @@ local function setPlayerRoomVoidActive(isActive)
 		updateVoidGeometry()
 	else
 		restoreLighting()
-		setVoidVisible(false)
+		destroyVoidGeometry()
 	end
 end
 
@@ -291,6 +377,7 @@ end
 player:GetAttributeChangedSignal("ControlMode"):Connect(refreshMode)
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
 	lastUpdateAt = 0
+	destroyVoidGeometry()
 	refreshMode()
 end)
 
@@ -321,11 +408,8 @@ end)
 
 script.Destroying:Connect(function()
 	restoreLighting()
-
-	if voidFolder then
-		voidFolder:Destroy()
-		voidFolder = nil
-	end
+	destroyVoidGeometry()
 end)
 
+cleanupLegacyVoidObjects(false)
 refreshMode()
