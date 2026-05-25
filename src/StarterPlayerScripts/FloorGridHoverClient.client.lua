@@ -1,14 +1,15 @@
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+
+local GridConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GridConfig"))
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local activeRooms = Workspace:WaitForChild("ActiveRooms")
 
-local SNAP_GRID_SIZE = 2
-local HOVER_BOX_SIZE = 4
 local HOVER_BOX_HEIGHT = 0.06
 local RAYCAST_DISTANCE = 5000
 
@@ -74,7 +75,7 @@ local function getHoverPart()
 	hoverPart.Material = Enum.Material.Neon
 	hoverPart.Color = Color3.fromRGB(80, 210, 255)
 	hoverPart.Transparency = 0.48
-	hoverPart.Size = Vector3.new(HOVER_BOX_SIZE, HOVER_BOX_HEIGHT, HOVER_BOX_SIZE)
+	hoverPart.Size = Vector3.new(GridConfig.HOVER_TILE_SIZE, HOVER_BOX_HEIGHT, GridConfig.HOVER_TILE_SIZE)
 	hoverPart.Parent = Workspace
 
 	return hoverPart
@@ -86,10 +87,10 @@ local function hideHover()
 	end
 end
 
-local function showHover(cframe)
+local function showHover(cframe, tileSize)
 	local part = getHoverPart()
 	part.CFrame = cframe
-	part.Size = Vector3.new(HOVER_BOX_SIZE, HOVER_BOX_HEIGHT, HOVER_BOX_SIZE)
+	part.Size = Vector3.new(tileSize, HOVER_BOX_HEIGHT, tileSize)
 	part.Transparency = 0.48
 end
 
@@ -103,9 +104,7 @@ local function getCurrentRoomModel()
 	return activeRooms:FindFirstChild(roomName)
 end
 
-local function getCurrentFloor()
-	local roomModel = getCurrentRoomModel()
-
+local function getCurrentFloor(roomModel)
 	if not roomModel then
 		return nil
 	end
@@ -130,22 +129,6 @@ local function shouldHideHover()
 	return player:GetAttribute("ControlMode") ~= "Hotel"
 		or player:GetAttribute("CatalogPlacementActive") == true
 		or anyMajorMenuOpen == true
-end
-
-local function snapToGrid(value)
-	return math.floor((value / SNAP_GRID_SIZE) + 0.5) * SNAP_GRID_SIZE
-end
-
-local function snapAndClampToFloor(value, halfExtent)
-	if halfExtent <= SNAP_GRID_SIZE / 2 then
-		return 0
-	end
-
-	local snapped = snapToGrid(value)
-	local minValue = -halfExtent + SNAP_GRID_SIZE / 2
-	local maxValue = halfExtent - SNAP_GRID_SIZE / 2
-
-	return math.clamp(snapped, minValue, maxValue)
 end
 
 local function getMouseFloorHit(floor)
@@ -178,9 +161,28 @@ local function updateHover()
 		return
 	end
 
-	local floor = getCurrentFloor()
+	local roomModel = getCurrentRoomModel()
+
+	if not roomModel then
+		hideHover()
+		return
+	end
+
+	local floor = getCurrentFloor(roomModel)
 
 	if not floor then
+		hideHover()
+		return
+	end
+
+	if not GridConfig.UsesTileGrid(roomModel, floor) then
+		hideHover()
+		return
+	end
+
+	local floorTopY = GridConfig.GetFloorTopY(floor)
+
+	if not floorTopY then
 		hideHover()
 		return
 	end
@@ -192,14 +194,30 @@ local function updateHover()
 		return
 	end
 
-	local localHitPosition = floor.CFrame:PointToObjectSpace(hitPosition)
-	local snappedLocalX = snapAndClampToFloor(localHitPosition.X, floor.Size.X / 2)
-	local snappedLocalZ = snapAndClampToFloor(localHitPosition.Z, floor.Size.Z / 2)
+	local tileSize = GridConfig.GetTileSize(roomModel, floor)
+	local _, snappedLocalPosition = GridConfig.SnapWorldToTileCenter(floor, hitPosition, tileSize)
+
+	if not snappedLocalPosition then
+		hideHover()
+		return
+	end
+
 	local localY = floor.Size.Y / 2 + HOVER_BOX_HEIGHT / 2 + 0.01
-	local worldPosition = floor.CFrame:PointToWorldSpace(Vector3.new(snappedLocalX, localY, snappedLocalZ))
+	local worldPosition = GridConfig.FloorLocalToWorld(
+		floor,
+		Vector3.new(snappedLocalPosition.X, localY, snappedLocalPosition.Z)
+	)
+
+	if not worldPosition then
+		hideHover()
+		return
+	end
+
+	worldPosition = Vector3.new(worldPosition.X, floorTopY + HOVER_BOX_HEIGHT / 2 + 0.01, worldPosition.Z)
+
 	local floorRotation = floor.CFrame - floor.CFrame.Position
 
-	showHover(CFrame.new(worldPosition) * floorRotation)
+	showHover(CFrame.new(worldPosition) * floorRotation, tileSize)
 end
 
 renderConnection = RunService.RenderStepped:Connect(updateHover)
