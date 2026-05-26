@@ -7,7 +7,7 @@ local Workspace = game:GetService("Workspace")
 local FLOOR_GRID_LINES_ENABLED = true
 local DEBUG_GRID_LINES = false
 
-local GRID_LINE_COLOR = Color3.fromRGB(170, 170, 170)
+local GRID_LINE_COLOR = Color3.fromRGB(120, 120, 120)
 local GRID_LINE_TRANSPARENCY = 0.55
 local GRID_LINE_THICKNESS = 0.06
 local GRID_LINE_HEIGHT = 0.03

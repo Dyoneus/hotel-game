@@ -357,11 +357,13 @@ local CLICK_MOVE_COOLDOWN = 0.2
 local MIN_DESTINATION_DISTANCE = 2
 local WAYPOINT_SKIP_DISTANCE = 2
 local SNAP_CHARACTER_FACING_TO_GRID = true
+local HOTEL_GRID_WALK_SPEED = 12
 
 local warnedTileGridDisabled = false
 local activeGridFacingMoveId = nil
 local activeGridFacingHumanoid = nil
 local activeGridFacingPreviousAutoRotate = nil
+local activeGridFacingPreviousWalkSpeed = nil
 
 local function getMovementGridContext()
 	local roomModel = getCurrentRoomModel()
@@ -503,16 +505,19 @@ local function beginGridFacingControl(humanoid, moveId)
 
 		activeGridFacingHumanoid = nil
 		activeGridFacingPreviousAutoRotate = nil
+		activeGridFacingPreviousWalkSpeed = nil
 		activeGridFacingMoveId = nil
 	end
 
 	if activeGridFacingHumanoid ~= humanoid then
 		activeGridFacingHumanoid = humanoid
 		activeGridFacingPreviousAutoRotate = humanoid.AutoRotate
+		activeGridFacingPreviousWalkSpeed = humanoid.WalkSpeed
 	end
 
 	activeGridFacingMoveId = moveId
 	humanoid.AutoRotate = false
+	humanoid.WalkSpeed = HOTEL_GRID_WALK_SPEED
 end
 
 local function finishGridFacingControl(moveId)
@@ -528,9 +533,14 @@ local function finishGridFacingControl(moveId)
 		activeGridFacingHumanoid.AutoRotate = activeGridFacingPreviousAutoRotate
 	end
 
+	if activeGridFacingHumanoid and activeGridFacingPreviousWalkSpeed ~= nil then
+		activeGridFacingHumanoid.WalkSpeed = activeGridFacingPreviousWalkSpeed
+	end
+
 	activeGridFacingMoveId = nil
 	activeGridFacingHumanoid = nil
 	activeGridFacingPreviousAutoRotate = nil
+	activeGridFacingPreviousWalkSpeed = nil
 end
 
 local function clampToRoom(position, context)
@@ -953,20 +963,35 @@ local function getFurnitureTopPosition(furnitureModel)
 	return topPosition
 end
 
-local function getMouseFloorPosition()
+local function getMouseFloorRaycastResult()
 	local currentFloor = getCurrentFloor()
 
 	if not currentFloor then
 		return nil
 	end
 
-	if mouse.Target ~= currentFloor then
+	local camera = workspace.CurrentCamera
+
+	if not camera then
 		return nil
 	end
 
-	-- Do not clamp here.
-	-- Furniture placement will clamp based on the whole model size instead.
-	return mouse.Hit.Position
+	local ray = camera:ScreenPointToRay(mouse.X, mouse.Y)
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Include
+	raycastParams.FilterDescendantsInstances = { currentFloor }
+
+	return workspace:Raycast(ray.Origin, ray.Direction * 1000, raycastParams)
+end
+
+local function getMouseFloorPosition()
+	local floorRaycastResult = getMouseFloorRaycastResult()
+
+	if not floorRaycastResult then
+		return nil
+	end
+
+	return floorRaycastResult.Position
 end
 
 local function getGridSnappedFloorPosition(floorPosition)
@@ -1787,15 +1812,7 @@ mouse.Button1Down:Connect(function()
 	end
 
 	local target = mouse.Target
-	local hitPosition = mouse.Hit.Position
-
-	if not target then
-		standUpIfSeated()
-		closeFurnitureMenu()
-		return
-	end
-
-	local currentFloor = getCurrentFloor()
+	local floorRaycastResult = getMouseFloorRaycastResult()
 
 	-- IMPORTANT:
 	-- If we are moving furniture, handle placement before checking furniture clicks.
@@ -1826,11 +1843,11 @@ mouse.Button1Down:Connect(function()
 		return
 	end
 
-	if target == currentFloor then
+	if floorRaycastResult then
 		standUpIfSeated()
 		closeFurnitureMenu()
 
-		moveCharacterTo(hitPosition)
+		moveCharacterTo(floorRaycastResult.Position)
 		return
 	end
 
