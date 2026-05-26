@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
+local RoomPermissionService = require(ServerScriptService:WaitForChild("RoomPermissionService"))
 local GridConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GridConfig"))
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
@@ -83,21 +84,6 @@ local function getMovementRoomBounds(player)
 		-- Match the client-side walking height.
 		y = floor.Position.Y + floor.Size.Y / 2 + 0.5,
 	}
-end
-
-local function isRoomOwner(player)
-	local roomModel = getCurrentRoomModel(player)
-
-	if not roomModel then
-		return false
-	end
-
-	return roomModel:GetAttribute("OwnerUserId") == player.UserId
-end
-
-local function canEditRoom(player)
-	return player:GetAttribute("RoomMode") == "Edit"
-		and isRoomOwner(player)
 end
 
 local function sendPickUpResult(player, success, message, templateId, newCount, tradable, sellable, inventoryDetails)
@@ -1334,14 +1320,42 @@ local function modelWouldOverlapStandCFrame(furnitureModel, targetCFrame, standC
 		and position.Z <= modelBounds.maxZ + buffer
 end
 
+local function getPersistencePlayerForRoomAction(roomModel)
+	if not roomModel then
+		return nil, "no current room"
+	end
+
+	local ownerPlayer = RoomPermissionService.GetRoomOwnerPlayer(roomModel)
+
+	if not ownerPlayer then
+		return nil, "room owner is not available"
+	end
+
+	if not RoomPersistence.GetProfile(ownerPlayer) then
+		return nil, "room owner profile is not loaded"
+	end
+
+	return ownerPlayer
+end
+
 local function moveFurniture(player, furnitureModel, targetPosition)
-	if not canEditRoom(player) then
-		warn("Move denied: player is not in edit mode or is not room owner")
+	if player:GetAttribute("RoomMode") ~= "Edit"
+		or not RoomPermissionService.CanMoveFurniture(player, furnitureModel) then
+
+		warn("Move denied: player does not have permission")
 		return
 	end
 	
 	if not isValidFurnitureForPlayer(player, furnitureModel) then
 		warn("Invalid furniture move request")
+		return
+	end
+
+	local roomModel = getCurrentRoomModel(player)
+	local persistencePlayer, persistenceError = getPersistencePlayerForRoomAction(roomModel)
+
+	if not persistencePlayer then
+		warn("Move denied:", persistenceError)
 		return
 	end
 
@@ -1416,17 +1430,27 @@ local function moveFurniture(player, furnitureModel, targetPosition)
 
 	furnitureModel:PivotTo(targetCFrame)
 
-	RoomPersistence.CaptureRoomState(player, getCurrentRoomModel(player))
+	RoomPersistence.CaptureRoomState(persistencePlayer, roomModel)
 end
 
 local function rotateFurniture(player, furnitureModel)
-	if not canEditRoom(player) then
-		warn("Rotate denied: player is not in edit mode or is not room owner")
+	if player:GetAttribute("RoomMode") ~= "Edit"
+		or not RoomPermissionService.CanRotateFurniture(player, furnitureModel) then
+
+		warn("Rotate denied: player does not have permission")
 		return
 	end
 
 	if not isValidFurnitureForPlayer(player, furnitureModel) then
 		warn("Invalid furniture rotate request")
+		return
+	end
+
+	local roomModel = getCurrentRoomModel(player)
+	local persistencePlayer, persistenceError = getPersistencePlayerForRoomAction(roomModel)
+
+	if not persistencePlayer then
+		warn("Rotate denied:", persistenceError)
 		return
 	end
 	
@@ -1462,11 +1486,13 @@ local function rotateFurniture(player, furnitureModel)
 
 	furnitureModel:PivotTo(targetCFrame)
 
-	RoomPersistence.CaptureRoomState(player, getCurrentRoomModel(player))
+	RoomPersistence.CaptureRoomState(persistencePlayer, roomModel)
 end
 
 local function pickUpFurniture(player, furnitureModel)
-	if not canEditRoom(player) then
+	if player:GetAttribute("RoomMode") ~= "Edit"
+		or not RoomPermissionService.CanPickUpFurniture(player, furnitureModel) then
+
 		sendPickUpResult(player, false, "Pick Up denied: enter Edit Mode in your own room first.")
 		return
 	end
