@@ -78,6 +78,7 @@ local playerRooms = {}
 local playerRoomSlots = {}
 local nextRoomSlot = 0
 local roomSettingsLastRequestAtByUserId = {}
+local roomPermissionLastRequestAtByUserId = {}
 
 local function getRoomName(player)
 	return "Room_" .. player.UserId
@@ -334,6 +335,40 @@ local function isRoomSettingsRequestRateLimited(player)
 	return false
 end
 
+local function isRoomPermissionRequestRateLimited(player)
+	local now = os.clock()
+	local lastRequestAt = roomPermissionLastRequestAtByUserId[player.UserId]
+
+	if lastRequestAt and now - lastRequestAt < ROOM_SETTINGS_COOLDOWN_SECONDS then
+		return true
+	end
+
+	roomPermissionLastRequestAtByUserId[player.UserId] = now
+
+	return false
+end
+
+local function normalizeTargetUserId(value)
+	local numericUserId = nil
+
+	if typeof(value) == "number" then
+		numericUserId = value
+	elseif typeof(value) == "string" then
+		numericUserId = tonumber(trimRoomText(value))
+	end
+
+	if typeof(numericUserId) ~= "number"
+		or numericUserId ~= numericUserId
+		or numericUserId <= 0
+		or numericUserId >= math.huge
+		or numericUserId ~= math.floor(numericUserId) then
+
+		return nil
+	end
+
+	return math.floor(numericUserId)
+end
+
 local function getPublicRoomActiveName(publicRoomId)
 	return "Public_" .. publicRoomId
 end
@@ -479,6 +514,24 @@ local function getRoomOwnerPlayer(roomModel)
 	end
 
 	return Players:GetPlayerByUserId(ownerUserId)
+end
+
+local function getOwnPlayerRoomForSettings(player)
+	local roomModel = playerRooms[player] or activeRooms:FindFirstChild(getRoomName(player))
+
+	if not roomModel or not roomModel:IsA("Model") then
+		return nil
+	end
+
+	if roomModel:GetAttribute("RoomType") == "PublicSpace" then
+		return nil
+	end
+
+	if roomModel:GetAttribute("OwnerUserId") ~= player.UserId then
+		return nil
+	end
+
+	return roomModel
 end
 
 local function getPlayerCountInRoom(roomName)
@@ -775,6 +828,51 @@ local function sendRoomListToAll()
 		local roomList = buildRoomList(player)
 		roomListUpdate:FireClient(player, roomList, player:GetAttribute("CurrentRoomName"))
 	end
+end
+
+local function buildRoomEditorsList(ownerPlayer)
+	local roomPermissions = RoomPersistence.GetRoomPermissionsSnapshot(ownerPlayer)
+	local editors = {}
+
+	if typeof(roomPermissions) ~= "table" or typeof(roomPermissions.Editors) ~= "table" then
+		return editors
+	end
+
+	for userIdKey, isAllowed in pairs(roomPermissions.Editors) do
+		if isAllowed == true then
+			local userId = tonumber(userIdKey)
+
+			if userId and userId > 0 and userId ~= ownerPlayer.UserId then
+				local editorPlayer = Players:GetPlayerByUserId(userId)
+				local entry = {
+					UserId = userId,
+				}
+
+				if editorPlayer then
+					entry.Name = editorPlayer.Name
+					entry.DisplayName = editorPlayer.DisplayName
+				end
+
+				table.insert(editors, entry)
+			end
+		end
+	end
+
+	table.sort(editors, function(a, b)
+		return a.UserId < b.UserId
+	end)
+
+	return editors
+end
+
+local function sendRoomEditorsResult(player, actionName, success, message)
+	roomSettingsResult:FireClient(player, {
+		Kind = "RoomSettings",
+		Action = actionName,
+		Success = success == true,
+		Message = message,
+		Editors = buildRoomEditorsList(player),
+	})
 end
 
 local function enterSavedRoomForPlayer(player, profile)
@@ -1079,6 +1177,7 @@ end)
 Players.PlayerRemoving:Connect(function(player)
 	roomCreationInFlightByUserId[player.UserId] = nil
 	roomSettingsLastRequestAtByUserId[player.UserId] = nil
+	roomPermissionLastRequestAtByUserId[player.UserId] = nil
 	
 	if RoomPersistence.IsWriteBlocked(player) then
 		RoomPersistence.ReleasePlayer(player)
@@ -1258,6 +1357,109 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			Success = false,
 			Message = "Please wait a moment before updating room settings.",
 		})
+		return
+	end
+
+	if (safeActionName == "AddRoomEditor" or safeActionName == "RemoveRoomEditor")
+		and isRoomPermissionRequestRateLimited(player) then
+
+		roomSettingsResult:FireClient(player, {
+			Kind = "RoomSettings",
+			Action = safeActionName,
+			Success = false,
+			Message = "Please wait a moment before updating room editors.",
+		})
+		return
+	end
+
+	if safeActionName == "GetRoomEditors" then
+		if not getOwnPlayerRoomForSettings(player) then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = "GetRoomEditors",
+				Success = false,
+				Message = "Only the room owner can manage editors.",
+			})
+			return
+		end
+
+		roomSettingsResult:FireClient(player, {
+			Kind = "RoomSettings",
+			Action = "GetRoomEditors",
+			Success = true,
+			Message = "Room editors loaded.",
+			Editors = buildRoomEditorsList(player),
+		})
+		return
+	end
+
+	if safeActionName == "AddRoomEditor" or safeActionName == "RemoveRoomEditor" then
+		local roomModel = getOwnPlayerRoomForSettings(player)
+
+		if not roomModel then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = safeActionName,
+				Success = false,
+				Message = "Only the room owner can manage editors.",
+			})
+			return
+		end
+
+		if typeof(payload) ~= "table" then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = safeActionName,
+				Success = false,
+				Message = "Invalid UserId.",
+			})
+			return
+		end
+
+		local targetUserId = normalizeTargetUserId(payload.TargetUserId)
+
+		if not targetUserId then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = safeActionName,
+				Success = false,
+				Message = "Invalid UserId.",
+			})
+			return
+		end
+
+		if targetUserId == player.UserId then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = safeActionName,
+				Success = false,
+				Message = "You are already the room owner.",
+			})
+			return
+		end
+
+		local shouldAllow = safeActionName == "AddRoomEditor"
+		local success, message = RoomPersistence.SetRoomEditorPermission(player, targetUserId, shouldAllow)
+
+		if success and not shouldAllow then
+			local removedPlayer = Players:GetPlayerByUserId(targetUserId)
+
+			if removedPlayer
+				and removedPlayer.UserId ~= player.UserId
+				and removedPlayer:GetAttribute("CurrentRoomName") == roomModel.Name
+				and removedPlayer:GetAttribute("RoomMode") == "Edit" then
+
+				removedPlayer:SetAttribute("RoomMode", "Play")
+			end
+		end
+
+		sendRoomEditorsResult(
+			player,
+			safeActionName,
+			success == true,
+			success and (shouldAllow and "Editor added." or "Editor removed.")
+				or (message or "Could not update room editors.")
+		)
 		return
 	end
 

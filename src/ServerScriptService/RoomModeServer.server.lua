@@ -1,12 +1,14 @@
 -- Explorer/ServerScriptService/RoomModeServer.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local setRoomModeRequest = remoteEvents:WaitForChild("SetRoomModeRequest")
 local roomModeResult = remoteEvents:WaitForChild("RoomModeResult")
 
 local activeRooms = workspace:WaitForChild("ActiveRooms")
+local RoomPermissionService = require(ServerScriptService:WaitForChild("RoomPermissionService"))
 
 local VALID_ROOM_MODES = {
 	Play = true,
@@ -30,14 +32,6 @@ local function getCurrentRoomModel(player)
 	end
 
 	return roomModel
-end
-
-local function isRoomOwner(player, roomModel)
-	if not roomModel then
-		return false
-	end
-
-	return roomModel:GetAttribute("OwnerUserId") == player.UserId
 end
 
 local function sendResult(player, success, message, roomMode)
@@ -99,9 +93,9 @@ local function setRoomMode(player, requestedMode)
 			return
 		end
 
-		if not isRoomOwner(player, roomModel) then
+		if not RoomPermissionService.CanEditRoom(player, roomModel) then
 			player:SetAttribute("RoomMode", "Play")
-			sendResult(player, false, "Only the room owner can enter Edit Mode.", "Play")
+			sendResult(player, false, "You do not have permission to edit this room.", "Play")
 			return
 		end
 

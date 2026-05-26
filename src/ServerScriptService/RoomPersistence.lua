@@ -60,6 +60,11 @@ local function createDefaultProfile()
 			Tags = {},
 		},
 		FavouriteRooms = {},
+		RoomPermissions = {
+			Editors = {},
+			RoomActions = {},
+			FurniturePermissions = {},
+		},
 		Inventory = {},
 		InventoryUntradable = {},
 		InventoryUnsellable = {},
@@ -480,6 +485,76 @@ local function trimString(value)
 	return value:match("^%s*(.-)%s*$") or ""
 end
 
+local function normalizePermissionUserId(userId)
+	local numericUserId = nil
+
+	if typeof(userId) == "number" then
+		numericUserId = userId
+	elseif typeof(userId) == "string" then
+		numericUserId = tonumber(trimString(userId))
+	end
+
+	if not isPositiveInteger(numericUserId) then
+		return nil
+	end
+
+	return tostring(math.floor(numericUserId))
+end
+
+local function normalizePermissionActionName(actionName)
+	if typeof(actionName) ~= "string" then
+		return nil
+	end
+
+	local normalized = trimString(actionName)
+
+	if normalized == "" then
+		return nil
+	end
+
+	return normalized
+end
+
+local function normalizePermissionPersistentId(persistentId)
+	if typeof(persistentId) ~= "string" then
+		return nil
+	end
+
+	local normalized = trimString(persistentId)
+
+	if normalized == "" then
+		return nil
+	end
+
+	return normalized
+end
+
+local function normalizePermissionUserDictionary(userDictionary)
+	local normalized = {}
+
+	if typeof(userDictionary) ~= "table" then
+		return normalized
+	end
+
+	for userId, isAllowed in pairs(userDictionary) do
+		local normalizedUserId = normalizePermissionUserId(userId)
+
+		if normalizedUserId and isAllowed == true then
+			normalized[normalizedUserId] = true
+		end
+	end
+
+	return normalized
+end
+
+local function dictionaryHasEntries(dictionary)
+	for _ in pairs(dictionary) do
+		return true
+	end
+
+	return false
+end
+
 local function ensureRoomDirectory(profile)
 	local roomDirectory = profile.RoomDirectory
 
@@ -537,6 +612,60 @@ local function ensureFavouriteRooms(profile)
 	return profile.FavouriteRooms
 end
 
+local function ensureRoomPermissions(profile)
+	local roomPermissions = profile.RoomPermissions
+
+	if typeof(roomPermissions) ~= "table" then
+		roomPermissions = {}
+	end
+
+	roomPermissions.Editors = normalizePermissionUserDictionary(roomPermissions.Editors)
+
+	local normalizedRoomActions = {}
+
+	if typeof(roomPermissions.RoomActions) == "table" then
+		for actionName, userDictionary in pairs(roomPermissions.RoomActions) do
+			local normalizedActionName = normalizePermissionActionName(actionName)
+			local normalizedUsers = normalizePermissionUserDictionary(userDictionary)
+
+			if normalizedActionName and dictionaryHasEntries(normalizedUsers) then
+				normalizedRoomActions[normalizedActionName] = normalizedUsers
+			end
+		end
+	end
+
+	roomPermissions.RoomActions = normalizedRoomActions
+
+	local normalizedFurniturePermissions = {}
+
+	if typeof(roomPermissions.FurniturePermissions) == "table" then
+		for persistentId, actionPermissions in pairs(roomPermissions.FurniturePermissions) do
+			local normalizedPersistentId = normalizePermissionPersistentId(persistentId)
+			local normalizedActionPermissions = {}
+
+			if normalizedPersistentId and typeof(actionPermissions) == "table" then
+				for actionName, userDictionary in pairs(actionPermissions) do
+					local normalizedActionName = normalizePermissionActionName(actionName)
+					local normalizedUsers = normalizePermissionUserDictionary(userDictionary)
+
+					if normalizedActionName and dictionaryHasEntries(normalizedUsers) then
+						normalizedActionPermissions[normalizedActionName] = normalizedUsers
+					end
+				end
+			end
+
+			if normalizedPersistentId and dictionaryHasEntries(normalizedActionPermissions) then
+				normalizedFurniturePermissions[normalizedPersistentId] = normalizedActionPermissions
+			end
+		end
+	end
+
+	roomPermissions.FurniturePermissions = normalizedFurniturePermissions
+	profile.RoomPermissions = roomPermissions
+
+	return profile.RoomPermissions
+end
+
 local function fillDefaults(profile)
 	local defaults = createDefaultProfile()
 
@@ -555,6 +684,7 @@ local function fillDefaults(profile)
 	ensureDailyReward(profile)
 	ensureRoomDirectory(profile)
 	ensureFavouriteRooms(profile)
+	ensureRoomPermissions(profile)
 
 	if profile.StarterDollarsGranted ~= true then
 		profile.StarterDollarsGranted = false
@@ -1010,6 +1140,235 @@ function RoomPersistence.ToggleRoomFavourite(player, roomKey)
 	local currentlyFavourite = RoomPersistence.IsRoomFavourite(player, roomKey)
 
 	return RoomPersistence.SetRoomFavourite(player, roomKey, not currentlyFavourite)
+end
+
+local function getLoadedProfileByUserId(userId)
+	local normalizedUserId = normalizePermissionUserId(userId)
+
+	if not normalizedUserId then
+		return nil, nil
+	end
+
+	local numericUserId = tonumber(normalizedUserId)
+
+	for player, profile in pairs(profilesByPlayer) do
+		if player.UserId == numericUserId then
+			return profile, player
+		end
+	end
+
+	return nil, nil
+end
+
+local function getLoadedProfileForPlayer(player)
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return nil
+	end
+
+	return profilesByPlayer[player]
+end
+
+local function savePermissionMutation(ownerPlayer, profile)
+	profile.UpdatedAt = os.time()
+	RoomPersistence.QueueSave(ownerPlayer)
+end
+
+function RoomPersistence.GetRoomPermissionsSnapshot(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil
+	end
+
+	return deepCopy(ensureRoomPermissions(profile))
+end
+
+function RoomPersistence.GetRoomPermissionsSnapshotByUserId(ownerUserId)
+	local profile = getLoadedProfileByUserId(ownerUserId)
+
+	if not profile then
+		return nil
+	end
+
+	return deepCopy(ensureRoomPermissions(profile))
+end
+
+function RoomPersistence.SetRoomEditorPermission(ownerPlayer, targetUserId, isAllowed)
+	local targetUserIdKey = normalizePermissionUserId(targetUserId)
+
+	if not targetUserIdKey then
+		return false, "Invalid target user."
+	end
+
+	local profile = getLoadedProfileForPlayer(ownerPlayer)
+
+	if not profile then
+		return false, "Owner profile is not loaded."
+	end
+
+	local roomPermissions = ensureRoomPermissions(profile)
+
+	if isAllowed == true then
+		roomPermissions.Editors[targetUserIdKey] = true
+	else
+		roomPermissions.Editors[targetUserIdKey] = nil
+	end
+
+	savePermissionMutation(ownerPlayer, profile)
+
+	return true, isAllowed == true and "Room editor permission granted." or "Room editor permission removed."
+end
+
+function RoomPersistence.IsRoomEditor(ownerPlayer, targetUserId)
+	local targetUserIdKey = normalizePermissionUserId(targetUserId)
+
+	if not targetUserIdKey then
+		return false
+	end
+
+	local profile = getLoadedProfileForPlayer(ownerPlayer)
+
+	if not profile then
+		return false
+	end
+
+	return ensureRoomPermissions(profile).Editors[targetUserIdKey] == true
+end
+
+function RoomPersistence.SetRoomActionPermission(ownerPlayer, actionName, targetUserId, isAllowed)
+	local normalizedActionName = normalizePermissionActionName(actionName)
+	local targetUserIdKey = normalizePermissionUserId(targetUserId)
+
+	if not normalizedActionName then
+		return false, "Invalid action name."
+	end
+
+	if not targetUserIdKey then
+		return false, "Invalid target user."
+	end
+
+	local profile = getLoadedProfileForPlayer(ownerPlayer)
+
+	if not profile then
+		return false, "Owner profile is not loaded."
+	end
+
+	local roomPermissions = ensureRoomPermissions(profile)
+
+	if isAllowed == true then
+		roomPermissions.RoomActions[normalizedActionName] =
+			roomPermissions.RoomActions[normalizedActionName] or {}
+		roomPermissions.RoomActions[normalizedActionName][targetUserIdKey] = true
+	else
+		local actionPermissions = roomPermissions.RoomActions[normalizedActionName]
+
+		if actionPermissions then
+			actionPermissions[targetUserIdKey] = nil
+
+			if not dictionaryHasEntries(actionPermissions) then
+				roomPermissions.RoomActions[normalizedActionName] = nil
+			end
+		end
+	end
+
+	savePermissionMutation(ownerPlayer, profile)
+
+	return true, isAllowed == true and "Room action permission granted." or "Room action permission removed."
+end
+
+function RoomPersistence.IsRoomActionAllowed(ownerPlayer, actionName, targetUserId)
+	local normalizedActionName = normalizePermissionActionName(actionName)
+	local targetUserIdKey = normalizePermissionUserId(targetUserId)
+
+	if not normalizedActionName or not targetUserIdKey then
+		return false
+	end
+
+	local profile = getLoadedProfileForPlayer(ownerPlayer)
+
+	if not profile then
+		return false
+	end
+
+	local roomPermissions = ensureRoomPermissions(profile)
+	local actionPermissions = roomPermissions.RoomActions[normalizedActionName]
+
+	return typeof(actionPermissions) == "table" and actionPermissions[targetUserIdKey] == true
+end
+
+function RoomPersistence.SetFurniturePermission(ownerPlayer, persistentId, actionName, targetUserId, isAllowed)
+	local normalizedPersistentId = normalizePermissionPersistentId(persistentId)
+	local normalizedActionName = normalizePermissionActionName(actionName)
+	local targetUserIdKey = normalizePermissionUserId(targetUserId)
+
+	if not normalizedPersistentId then
+		return false, "Invalid furniture id."
+	end
+
+	if not normalizedActionName then
+		return false, "Invalid action name."
+	end
+
+	if not targetUserIdKey then
+		return false, "Invalid target user."
+	end
+
+	local profile = getLoadedProfileForPlayer(ownerPlayer)
+
+	if not profile then
+		return false, "Owner profile is not loaded."
+	end
+
+	local roomPermissions = ensureRoomPermissions(profile)
+
+	if isAllowed == true then
+		roomPermissions.FurniturePermissions[normalizedPersistentId] =
+			roomPermissions.FurniturePermissions[normalizedPersistentId] or {}
+		roomPermissions.FurniturePermissions[normalizedPersistentId][normalizedActionName] =
+			roomPermissions.FurniturePermissions[normalizedPersistentId][normalizedActionName] or {}
+		roomPermissions.FurniturePermissions[normalizedPersistentId][normalizedActionName][targetUserIdKey] = true
+	else
+		local furniturePermissions = roomPermissions.FurniturePermissions[normalizedPersistentId]
+		local actionPermissions = furniturePermissions and furniturePermissions[normalizedActionName]
+
+		if actionPermissions then
+			actionPermissions[targetUserIdKey] = nil
+
+			if not dictionaryHasEntries(actionPermissions) then
+				furniturePermissions[normalizedActionName] = nil
+			end
+
+			if not dictionaryHasEntries(furniturePermissions) then
+				roomPermissions.FurniturePermissions[normalizedPersistentId] = nil
+			end
+		end
+	end
+
+	savePermissionMutation(ownerPlayer, profile)
+
+	return true, isAllowed == true and "Furniture permission granted." or "Furniture permission removed."
+end
+
+function RoomPersistence.IsFurnitureActionAllowed(ownerPlayer, persistentId, actionName, targetUserId)
+	local normalizedPersistentId = normalizePermissionPersistentId(persistentId)
+	local normalizedActionName = normalizePermissionActionName(actionName)
+	local targetUserIdKey = normalizePermissionUserId(targetUserId)
+
+	if not normalizedPersistentId or not normalizedActionName or not targetUserIdKey then
+		return false
+	end
+
+	local profile = getLoadedProfileForPlayer(ownerPlayer)
+
+	if not profile then
+		return false
+	end
+
+	local roomPermissions = ensureRoomPermissions(profile)
+	local furniturePermissions = roomPermissions.FurniturePermissions[normalizedPersistentId]
+	local actionPermissions = furniturePermissions and furniturePermissions[normalizedActionName]
+
+	return typeof(actionPermissions) == "table" and actionPermissions[targetUserIdKey] == true
 end
 
 function RoomPersistence.GetCurrency(player, currencyKey)
