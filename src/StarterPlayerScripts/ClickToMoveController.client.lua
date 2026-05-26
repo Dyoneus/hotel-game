@@ -98,6 +98,75 @@ local furnitureMenuGui = playerGui:WaitForChild("FurnitureMenuGui")
 local menuFrame = furnitureMenuGui:WaitForChild("MenuFrame")
 menuFrame.AnchorPoint = Vector2.new(0.5, 1)
 
+local MENU_WIDTH = 248
+local MENU_HEADER_HEIGHT = 68
+local MENU_MARGIN = 12
+local MENU_TOP_MARGIN = 56
+local MENU_BUTTON_HEIGHT = 34
+local MENU_BUTTON_GAP = 8
+local MENU_BUTTON_RADIUS = 8
+local MENU_CARD_RADIUS = 12
+local MENU_TEXT_DARK = Color3.fromRGB(38, 42, 48)
+local MENU_TEXT_MUTED = Color3.fromRGB(105, 110, 118)
+
+local function ensureCorner(parent, radius)
+	local corner = parent:FindFirstChildOfClass("UICorner")
+
+	if not corner then
+		corner = Instance.new("UICorner")
+		corner.Parent = parent
+	end
+
+	corner.CornerRadius = UDim.new(0, radius)
+	return corner
+end
+
+local function ensureStroke(parent, color, thickness, transparency)
+	local stroke = parent:FindFirstChildOfClass("UIStroke")
+
+	if not stroke then
+		stroke = Instance.new("UIStroke")
+		stroke.Parent = parent
+	end
+
+	stroke.Color = color
+	stroke.Thickness = thickness
+	stroke.Transparency = transparency or 0
+	return stroke
+end
+
+local function getOrCreateMenuTextLabel(name)
+	local label = menuFrame:FindFirstChild(name)
+
+	if label and label:IsA("TextLabel") then
+		return label
+	end
+
+	if label then
+		label:Destroy()
+	end
+
+	label = Instance.new("TextLabel")
+	label.Name = name
+	label.BackgroundTransparency = 1
+	label.BorderSizePixel = 0
+	label.Parent = menuFrame
+	return label
+end
+
+local function styleActionButton(button, backgroundColor)
+	button.BackgroundColor3 = backgroundColor
+	button.BackgroundTransparency = 0
+	button.BorderSizePixel = 0
+	button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	button.TextSize = 14
+	button.Font = Enum.Font.GothamBold
+	button.AutoButtonColor = true
+
+	ensureCorner(button, MENU_BUTTON_RADIUS)
+	ensureStroke(button, Color3.fromRGB(255, 255, 255), 1, 0.72)
+end
+
 local titleLabel = menuFrame:WaitForChild("TitleLabel")
 local sitButton = menuFrame:WaitForChild("SitButton")
 local closeButton = menuFrame:WaitForChild("CloseButton")
@@ -141,6 +210,109 @@ end
 
 pickUpButton.Visible = false
 
+local subtitleLabel = getOrCreateMenuTextLabel("SubtitleLabel")
+local occupiedBadge = getOrCreateMenuTextLabel("OccupiedBadge")
+
+menuFrame.Size = UDim2.fromOffset(MENU_WIDTH, 164)
+menuFrame.BackgroundColor3 = Color3.fromRGB(248, 249, 250)
+menuFrame.BackgroundTransparency = 0
+menuFrame.BorderSizePixel = 0
+menuFrame.ClipsDescendants = false
+menuFrame.Active = true
+
+ensureCorner(menuFrame, MENU_CARD_RADIUS)
+ensureStroke(menuFrame, Color3.fromRGB(30, 35, 42), 1, 0.82)
+
+titleLabel.Position = UDim2.fromOffset(14, 12)
+titleLabel.Size = UDim2.new(1, -62, 0, 22)
+titleLabel.BackgroundTransparency = 1
+titleLabel.TextColor3 = MENU_TEXT_DARK
+titleLabel.TextSize = 16
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.TextTruncate = Enum.TextTruncate.AtEnd
+titleLabel.Font = Enum.Font.GothamBold
+
+subtitleLabel.Position = UDim2.fromOffset(14, 36)
+subtitleLabel.Size = UDim2.new(1, -104, 0, 18)
+subtitleLabel.TextColor3 = MENU_TEXT_MUTED
+subtitleLabel.TextSize = 12
+subtitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+subtitleLabel.TextTruncate = Enum.TextTruncate.AtEnd
+subtitleLabel.Font = Enum.Font.GothamMedium
+
+occupiedBadge.AnchorPoint = Vector2.new(1, 0)
+occupiedBadge.Position = UDim2.new(1, -14, 0, 36)
+occupiedBadge.Size = UDim2.fromOffset(76, 22)
+occupiedBadge.BackgroundTransparency = 0
+occupiedBadge.BackgroundColor3 = Color3.fromRGB(238, 209, 118)
+occupiedBadge.Text = "Occupied"
+occupiedBadge.TextColor3 = Color3.fromRGB(70, 54, 24)
+occupiedBadge.TextSize = 11
+occupiedBadge.Font = Enum.Font.GothamBold
+occupiedBadge.Visible = false
+ensureCorner(occupiedBadge, 11)
+
+closeButton.AnchorPoint = Vector2.new(1, 0)
+closeButton.Position = UDim2.new(1, -12, 0, 10)
+closeButton.Size = UDim2.fromOffset(28, 28)
+closeButton.BackgroundColor3 = Color3.fromRGB(214, 91, 91)
+closeButton.BackgroundTransparency = 0
+closeButton.BorderSizePixel = 0
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.TextSize = 14
+closeButton.Font = Enum.Font.GothamBold
+ensureCorner(closeButton, 8)
+ensureStroke(closeButton, Color3.fromRGB(255, 255, 255), 1, 0.7)
+
+sitButton.Text = "Sit"
+moveButton.Text = "Move"
+rotateButton.Text = "Rotate"
+pickUpButton.Text = "Pick Up"
+
+styleActionButton(sitButton, Color3.fromRGB(72, 143, 91))
+styleActionButton(moveButton, Color3.fromRGB(76, 123, 181))
+styleActionButton(rotateButton, Color3.fromRGB(76, 123, 181))
+styleActionButton(pickUpButton, Color3.fromRGB(190, 102, 68))
+
+local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp)
+	local contentX = 14
+	local contentWidth = MENU_WIDTH - 28
+	local y = MENU_HEADER_HEIGHT
+	local halfWidth = math.floor((contentWidth - MENU_BUTTON_GAP) / 2)
+
+	sitButton.Visible = showSit == true
+	moveButton.Visible = showMove == true
+	rotateButton.Visible = showRotate == true
+	pickUpButton.Visible = showPickUp == true
+
+	if showSit then
+		sitButton.Position = UDim2.fromOffset(contentX, y)
+		sitButton.Size = UDim2.fromOffset(contentWidth, MENU_BUTTON_HEIGHT)
+		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
+	end
+
+	if showMove or showRotate then
+		moveButton.Position = UDim2.fromOffset(contentX, y)
+		moveButton.Size = UDim2.fromOffset(halfWidth, MENU_BUTTON_HEIGHT)
+		rotateButton.Position = UDim2.fromOffset(contentX + halfWidth + MENU_BUTTON_GAP, y)
+		rotateButton.Size = UDim2.fromOffset(contentWidth - halfWidth - MENU_BUTTON_GAP, MENU_BUTTON_HEIGHT)
+		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
+	end
+
+	if showPickUp then
+		pickUpButton.Position = UDim2.fromOffset(contentX, y)
+		pickUpButton.Size = UDim2.fromOffset(contentWidth, MENU_BUTTON_HEIGHT)
+		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
+	end
+
+	-- Future Open/Close support should add an action button here only after
+	-- a server-side OpenClose action exists and permission checks call
+	-- RoomPermissionService.CanOpenCloseFurniture.
+
+	menuFrame.Size = UDim2.fromOffset(MENU_WIDTH, math.max(y + 6, 116))
+end
+
 local function getCurrentRoomModel()
 	local roomName = player:GetAttribute("CurrentRoomName")
 
@@ -179,6 +351,67 @@ local function getCurrentFloor()
 	end
 
 	return roomFolder:FindFirstChild("WalkableFloor")
+end
+
+local function instanceHasWalkableSurfaceAttribute(instance)
+	if typeof(instance) ~= "Instance" then
+		return false
+	end
+
+	return instance:GetAttribute("WalkableSurface") == true
+		or instance:GetAttribute("IsWalkableSurface") == true
+		or instance:GetAttribute("IsWalkableDecoration") == true
+end
+
+local function isWalkableSurfacePart(part)
+	return typeof(part) == "Instance"
+		and part:IsA("BasePart")
+		and (
+			part.Name == "WalkableFloor"
+			or instanceHasWalkableSurfaceAttribute(part)
+		)
+end
+
+local function getWalkableSurfaceFloor(part)
+	if not isWalkableSurfacePart(part) then
+		return nil
+	end
+
+	local floor = getCurrentFloor()
+
+	if not floor then
+		return nil
+	end
+
+	if part == floor then
+		return floor
+	end
+
+	local roomModel = getCurrentRoomModel()
+
+	if roomModel and part:IsDescendantOf(roomModel) then
+		return floor
+	end
+
+	return nil
+end
+
+local function furnitureModelIsWalkableDecoration(furnitureModel)
+	if typeof(furnitureModel) ~= "Instance" or not furnitureModel:IsA("Model") then
+		return false
+	end
+
+	if instanceHasWalkableSurfaceAttribute(furnitureModel) then
+		return true
+	end
+
+	for _, descendant in ipairs(furnitureModel:GetDescendants()) do
+		if instanceHasWalkableSurfaceAttribute(descendant) then
+			return true
+		end
+	end
+
+	return false
 end
 
 local function isEditMode()
@@ -364,6 +597,8 @@ local activeGridFacingMoveId = nil
 local activeGridFacingHumanoid = nil
 local activeGridFacingPreviousAutoRotate = nil
 local activeGridFacingPreviousWalkSpeed = nil
+local activeGridFacingRootPart = nil
+local activeGridFacingDirection = nil
 
 local function getMovementGridContext()
 	local roomModel = getCurrentRoomModel()
@@ -490,6 +725,7 @@ local function snapCharacterToGridFacing(rootPart, worldPosition, worldDirection
 	end
 
 	local position = typeof(worldPosition) == "Vector3" and worldPosition or rootPart.Position
+	rootPart.AssemblyAngularVelocity = Vector3.zero
 	rootPart.CFrame = CFrame.lookAt(position, position + flatDirection.Unit)
 end
 
@@ -503,9 +739,15 @@ local function beginGridFacingControl(humanoid, moveId)
 			activeGridFacingHumanoid.AutoRotate = activeGridFacingPreviousAutoRotate
 		end
 
+		if activeGridFacingPreviousWalkSpeed ~= nil then
+			activeGridFacingHumanoid.WalkSpeed = activeGridFacingPreviousWalkSpeed
+		end
+
 		activeGridFacingHumanoid = nil
 		activeGridFacingPreviousAutoRotate = nil
 		activeGridFacingPreviousWalkSpeed = nil
+		activeGridFacingRootPart = nil
+		activeGridFacingDirection = nil
 		activeGridFacingMoveId = nil
 	end
 
@@ -518,6 +760,32 @@ local function beginGridFacingControl(humanoid, moveId)
 	activeGridFacingMoveId = moveId
 	humanoid.AutoRotate = false
 	humanoid.WalkSpeed = HOTEL_GRID_WALK_SPEED
+end
+
+local function setActiveGridFacingSegment(moveId, rootPart, worldDirection)
+	if activeGridFacingMoveId ~= moveId
+		or not rootPart
+		or not rootPart:IsA("BasePart")
+		or typeof(worldDirection) ~= "Vector3" then
+
+		return
+	end
+
+	local flatDirection = Vector3.new(worldDirection.X, 0, worldDirection.Z)
+
+	if flatDirection.Magnitude < 0.001 then
+		return
+	end
+
+	activeGridFacingRootPart = rootPart
+	activeGridFacingDirection = flatDirection.Unit
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+	snapCharacterToGridFacing(rootPart, rootPart.Position, activeGridFacingDirection)
+end
+
+local function clearActiveGridFacingSegment()
+	activeGridFacingRootPart = nil
+	activeGridFacingDirection = nil
 end
 
 local function finishGridFacingControl(moveId)
@@ -541,6 +809,28 @@ local function finishGridFacingControl(moveId)
 	activeGridFacingHumanoid = nil
 	activeGridFacingPreviousAutoRotate = nil
 	activeGridFacingPreviousWalkSpeed = nil
+	clearActiveGridFacingSegment()
+end
+
+local function maintainActiveGridFacing()
+	if not activeGridFacingRootPart
+		or not activeGridFacingRootPart.Parent
+		or not activeGridFacingDirection then
+
+		return
+	end
+
+	if activeGridFacingMoveId ~= currentMoveId then
+		clearActiveGridFacingSegment()
+		return
+	end
+
+	activeGridFacingRootPart.AssemblyAngularVelocity = Vector3.zero
+	snapCharacterToGridFacing(
+		activeGridFacingRootPart,
+		activeGridFacingRootPart.Position,
+		activeGridFacingDirection
+	)
 end
 
 local function clampToRoom(position, context)
@@ -627,7 +917,7 @@ end
 
 local function isCellBlockedByFurnitureFootprint(cell, context, furnitureFolder)
 	for _, furnitureModel in ipairs(furnitureFolder:GetChildren()) do
-		if furnitureModel:IsA("Model") then
+		if furnitureModel:IsA("Model") and not furnitureModelIsWalkableDecoration(furnitureModel) then
 			local footprintCenter = getFurnitureFootprintCenter(furnitureModel)
 			local centerCell = worldToCell(footprintCenter, context)
 
@@ -692,7 +982,7 @@ local function isCellBlocked(cell, context)
 	local parts = workspace:GetPartBoundsInBox(boxCFrame, boxSize, overlapParams)
 
 	for _, part in ipairs(parts) do
-		if part.Name == "WalkableFloor" then
+		if isWalkableSurfacePart(part) then
 			continue
 		end
 
@@ -905,6 +1195,7 @@ local function moveCharacterTo(destination)
 		local facingDirection = getWorldFacingDirectionFromCells(previousCell, cell, context)
 
 		if facingDirection then
+			setActiveGridFacingSegment(moveId, rootPart, facingDirection)
 			snapCharacterToGridFacing(rootPart, rootPart.Position, facingDirection)
 		end
 
@@ -924,7 +1215,8 @@ local function moveCharacterTo(destination)
 		end
 
 		if facingDirection then
-			snapCharacterToGridFacing(rootPart, rootPart.Position, facingDirection)
+			local reachedPosition = Vector3.new(worldPosition.X, rootPart.Position.Y, worldPosition.Z)
+			snapCharacterToGridFacing(rootPart, reachedPosition, facingDirection)
 		end
 	end
 
@@ -963,10 +1255,34 @@ local function getFurnitureTopPosition(furnitureModel)
 	return topPosition
 end
 
-local function getMouseFloorRaycastResult()
+local function getCurrentWalkableSurfaceParts()
 	local currentFloor = getCurrentFloor()
 
-	if not currentFloor then
+	if not currentFloor or not currentFloor:IsA("BasePart") then
+		return {}
+	end
+
+	local walkableSurfaces = {
+		currentFloor,
+	}
+
+	local roomModel = getCurrentRoomModel()
+
+	if roomModel then
+		for _, descendant in ipairs(roomModel:GetDescendants()) do
+			if descendant ~= currentFloor and isWalkableSurfacePart(descendant) then
+				table.insert(walkableSurfaces, descendant)
+			end
+		end
+	end
+
+	return walkableSurfaces
+end
+
+local function getMouseFloorRaycastResult()
+	local walkableSurfaces = getCurrentWalkableSurfaceParts()
+
+	if #walkableSurfaces == 0 then
 		return nil
 	end
 
@@ -979,7 +1295,7 @@ local function getMouseFloorRaycastResult()
 	local ray = camera:ScreenPointToRay(mouse.X, mouse.Y)
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Include
-	raycastParams.FilterDescendantsInstances = { currentFloor }
+	raycastParams.FilterDescendantsInstances = walkableSurfaces
 
 	return workspace:Raycast(ray.Origin, ray.Direction * 1000, raycastParams)
 end
@@ -1574,7 +1890,34 @@ local function updateMenuPosition()
 	local screenPosition, onScreen = camera:WorldToScreenPoint(worldPosition)
 
 	if onScreen then
-		menuFrame.Position = UDim2.fromOffset(screenPosition.X, screenPosition.Y)
+		local menuSize = menuFrame.AbsoluteSize
+
+		if menuSize.X <= 0 or menuSize.Y <= 0 then
+			menuSize = Vector2.new(menuFrame.Size.X.Offset, menuFrame.Size.Y.Offset)
+		end
+
+		local viewportSize = camera.ViewportSize
+		local minX = menuSize.X / 2 + MENU_MARGIN
+		local maxX = viewportSize.X - menuSize.X / 2 - MENU_MARGIN
+		local minY = menuSize.Y + MENU_TOP_MARGIN
+		local maxY = viewportSize.Y - MENU_MARGIN
+		local targetX = screenPosition.X
+		local targetY = screenPosition.Y - 10
+
+		if maxX < minX then
+			minX = viewportSize.X / 2
+			maxX = minX
+		end
+
+		if maxY < minY then
+			minY = viewportSize.Y / 2
+			maxY = minY
+		end
+
+		menuFrame.Position = UDim2.fromOffset(
+			math.clamp(targetX, minX, maxX),
+			math.clamp(targetY, minY, maxY)
+		)
 	else
 		menuFrame.Visible = false
 	end
@@ -1582,22 +1925,35 @@ end
 
 RunService.RenderStepped:Connect(updateMenuPosition)
 RunService.RenderStepped:Connect(updatePlacementPreview)
+RunService.RenderStepped:Connect(maintainActiveGridFacing)
 
 local function openFurnitureMenu(furnitureModel)
 	selectedFurniture = furnitureModel
-	titleLabel.Text = furnitureModel.Name
-	
 	local editing = isEditMode()
 	local occupied = isFurnitureOccupiedLocally(furnitureModel)
-
-	sitButton.Visible = false
-	moveButton.Visible = editing
-	rotateButton.Visible = editing
-	pickUpButton.Visible = editing
+	local defaultAction = getDefaultFurnitureAction(furnitureModel)
+	local showSit = not editing and defaultAction ~= nil
+	local showMove = editing
+	local showRotate = editing
+	local showPickUp = editing
 		and getFurnitureTemplateId(furnitureModel) ~= nil
 
+	if not editing and not defaultAction then
+		selectedFurniture = nil
+		menuFrame.Visible = false
+		clearFurnitureHighlight()
+		return
+	end
+
+	titleLabel.Text = furnitureModel.Name
+	subtitleLabel.Text = editing and "Edit actions" or "Choose an action"
+	occupiedBadge.Visible = occupied == true
+	layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp)
+
 	if editing and occupied then
-		titleLabel.Text = furnitureModel.Name .. " (Occupied)"
+		subtitleLabel.Text = "Edit actions"
+	elseif occupied then
+		subtitleLabel.Text = "Currently occupied"
 	end
 
 	highlightFurniture(furnitureModel)
@@ -1608,8 +1964,8 @@ local function openFurnitureMenu(furnitureModel)
 	local screenPosition, onScreen = camera:WorldToScreenPoint(worldPosition)
 
 	if onScreen then
-		menuFrame.Position = UDim2.fromOffset(screenPosition.X, screenPosition.Y)
 		menuFrame.Visible = true
+		updateMenuPosition()
 	else
 		menuFrame.Visible = false
 	end
@@ -1649,6 +2005,62 @@ local function clickIsOnFurnitureMenu()
 	end
 
 	return false
+end
+
+local function guiObjectConsumesClick(guiObject)
+	if not guiObject.Visible then
+		return false
+	end
+
+	if guiObject:IsA("TextButton")
+		or guiObject:IsA("ImageButton")
+		or guiObject:IsA("TextBox") then
+
+		return true
+	end
+
+	if guiObject.Active then
+		return true
+	end
+
+	if guiObject:IsA("TextLabel") and guiObject.Text ~= "" and guiObject.TextTransparency < 1 then
+		return true
+	end
+
+	if guiObject:IsA("ImageLabel") and guiObject.Image ~= "" and guiObject.ImageTransparency < 1 then
+		return true
+	end
+
+	return guiObject.BackgroundTransparency < 1
+end
+
+local function clickIsOnPlayerGui()
+	local guiObjects = playerGui:GetGuiObjectsAtPosition(mouse.X, mouse.Y)
+
+	for _, guiObject in ipairs(guiObjects) do
+		if guiObject:IsDescendantOf(playerGui) and guiObjectConsumesClick(guiObject) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function clickTargetsWalkableSurface(target, floorRaycastResult)
+	if not floorRaycastResult or not isWalkableSurfacePart(floorRaycastResult.Instance) then
+		return false
+	end
+
+	if not getWalkableSurfaceFloor(floorRaycastResult.Instance) then
+		return false
+	end
+
+	if not target then
+		return true
+	end
+
+	return target == floorRaycastResult.Instance
+		or isWalkableSurfacePart(target)
 end
 
 local function getCurrentlySeatedFurniture()
@@ -1786,24 +2198,15 @@ furnitureMenuRequest.OnClientEvent:Connect(function(furnitureModel)
 end)
 
 mouse.Button1Down:Connect(function()
-	print(
-		"World click:",
-		mouse.Target and mouse.Target:GetFullName(),
-		"CurrentRoomName:",
-		player:GetAttribute("CurrentRoomName"),
-		"RoomMode:",
-		player:GetAttribute("RoomMode"),
-		"ControlMode:",
-		player:GetAttribute("ControlMode"),
-		"OnboardingStep:",
-		player:GetAttribute("OnboardingStep")
-	)
-	
 	if not isHotelMode() then
 		return
 	end
 
 	if clickIsOnFurnitureMenu and clickIsOnFurnitureMenu() then
+		return
+	end
+
+	if clickIsOnPlayerGui() then
 		return
 	end
 	
@@ -1813,6 +2216,7 @@ mouse.Button1Down:Connect(function()
 
 	local target = mouse.Target
 	local floorRaycastResult = getMouseFloorRaycastResult()
+	local walkableSurfaceClicked = clickTargetsWalkableSurface(target, floorRaycastResult)
 
 	-- IMPORTANT:
 	-- If we are moving furniture, handle placement before checking furniture clicks.
@@ -1840,10 +2244,12 @@ mouse.Button1Down:Connect(function()
 	local furnitureModel = getFurnitureModelFromTarget(target)
 
 	if furnitureModel then
-		return
+		if getDefaultFurnitureAction(furnitureModel) or not walkableSurfaceClicked then
+			return
+		end
 	end
 
-	if floorRaycastResult then
+	if walkableSurfaceClicked then
 		standUpIfSeated()
 		closeFurnitureMenu()
 
@@ -1851,19 +2257,14 @@ mouse.Button1Down:Connect(function()
 		return
 	end
 
-	standUpIfSeated()
 	closeFurnitureMenu()
 end)
 
 sitButton.MouseButton1Click:Connect(function()
-	print("Client: Sit button clicked")
-
 	if not selectedFurniture then
 		warn("Client: No furniture selected")
 		return
 	end
-
-	print("Client: Requesting Sit on", selectedFurniture.Name)
 
 	-- If already seated, only stand up when choosing to sit somewhere else.
 	standUpIfSeated()

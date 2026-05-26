@@ -1,14 +1,34 @@
--- Foundation service for future room/furniture permissions.
--- Patch 10B only defines helpers; gameplay scripts are not integrated yet.
+-- Central server-side helpers for room and furniture permissions.
+-- Patch 10F adds furniture-specific permission metadata checks only.
+-- Open/Close gameplay handlers are intentionally added later.
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
+local FurnitureCatalogConfig =
+	require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("FurnitureCatalogConfig"))
 
 local RoomPermissionService = {}
 
 local activeRooms = workspace:WaitForChild("ActiveRooms")
+local SUPPORT_ATTRIBUTE_BY_ACTION = {
+	OpenClose = "SupportsOpenClose",
+	Open = "SupportsOpen",
+	Close = "SupportsClose",
+	ToggleOpen = "SupportsToggleOpen",
+	Rotate = "SupportsRotate",
+	Use = "SupportsUse",
+}
+local SUPPORT_ACTION_ORDER = {
+	"OpenClose",
+	"Open",
+	"Close",
+	"ToggleOpen",
+	"Rotate",
+	"Use",
+}
 
 local function isPlayerInstance(value)
 	return typeof(value) == "Instance" and value:IsA("Player")
@@ -24,6 +44,128 @@ local function isPositiveInteger(value)
 		and value > 0
 		and value < math.huge
 		and value == math.floor(value)
+end
+
+local function normalizeActionName(actionName)
+	if typeof(actionName) ~= "string" then
+		return nil
+	end
+
+	local normalized = actionName:match("^%s*(.-)%s*$")
+
+	if not normalized or normalized == "" then
+		return nil
+	end
+
+	return normalized
+end
+
+local function copyActionList(actionList)
+	local copy = {}
+
+	if typeof(actionList) ~= "table" then
+		return copy
+	end
+
+	for _, actionName in ipairs(actionList) do
+		local normalizedActionName = normalizeActionName(actionName)
+
+		if normalizedActionName then
+			table.insert(copy, normalizedActionName)
+		end
+	end
+
+	return copy
+end
+
+local function addActionIfMissing(actions, seenActions, actionName)
+	local normalizedActionName = normalizeActionName(actionName)
+
+	if not normalizedActionName or seenActions[normalizedActionName] then
+		return
+	end
+
+	seenActions[normalizedActionName] = true
+	table.insert(actions, normalizedActionName)
+end
+
+local function parsePermissionActionsAttribute(value)
+	local actions = {}
+	local seenActions = {}
+
+	if typeof(value) ~= "string" then
+		return nil
+	end
+
+	for actionName in string.gmatch(value, "([^,]+)") do
+		addActionIfMissing(actions, seenActions, actionName)
+	end
+
+	return actions
+end
+
+local function getSupportAttributeActions(furnitureModel)
+	local actions = {}
+	local seenActions = {}
+
+	for _, actionName in ipairs(SUPPORT_ACTION_ORDER) do
+		local attributeName = SUPPORT_ATTRIBUTE_BY_ACTION[actionName]
+
+		if attributeName and furnitureModel:GetAttribute(attributeName) == true then
+			addActionIfMissing(actions, seenActions, actionName)
+		end
+	end
+
+	return actions
+end
+
+local function getFurnitureCatalogItem(furnitureModel)
+	if not isModel(furnitureModel) then
+		return nil
+	end
+
+	local candidateIds = {
+		furnitureModel:GetAttribute("TemplateId"),
+		furnitureModel:GetAttribute("PickupTemplateId"),
+		furnitureModel.Name,
+	}
+
+	for _, candidateId in ipairs(candidateIds) do
+		if typeof(candidateId) == "string"
+			and candidateId ~= ""
+			and candidateId:match("%S") then
+
+			local item = FurnitureCatalogConfig.GetItem(candidateId)
+
+			if typeof(item) == "table" then
+				return item
+			end
+		end
+	end
+
+	return nil
+end
+
+local function getCatalogPermissionActions(furnitureModel)
+	local item = getFurnitureCatalogItem(furnitureModel)
+
+	if typeof(item) ~= "table" then
+		return {}
+	end
+
+	local actions = copyActionList(item.PermissionActions)
+
+	if item.SupportsOpenClose == true then
+		local seenActions = {}
+
+		for _, actionName in ipairs(actions) do
+			seenActions[actionName] = true
+		end
+
+		addActionIfMissing(actions, seenActions, "OpenClose")
+	end
+
+	return actions
 end
 
 function RoomPermissionService.GetRoomOwnerUserId(roomModel)
@@ -147,6 +289,51 @@ function RoomPermissionService.GetFurniturePersistentId(furnitureModel)
 	return persistentId
 end
 
+function RoomPermissionService.GetFurniturePermissionActions(furnitureModel)
+	if not isModel(furnitureModel) then
+		return {}
+	end
+
+	local permissionActionsAttribute = furnitureModel:GetAttribute("PermissionActions")
+
+	if typeof(permissionActionsAttribute) == "string" then
+		return parsePermissionActionsAttribute(permissionActionsAttribute)
+	end
+
+	local attributeActions = getSupportAttributeActions(furnitureModel)
+
+	if #attributeActions > 0 then
+		return attributeActions
+	end
+
+	return getCatalogPermissionActions(furnitureModel)
+end
+
+function RoomPermissionService.FurnitureSupportsPermission(furnitureModel, actionName)
+	local normalizedActionName = normalizeActionName(actionName)
+
+	if not isModel(furnitureModel) or not normalizedActionName then
+		return false
+	end
+
+	for _, supportedActionName in ipairs(RoomPermissionService.GetFurniturePermissionActions(furnitureModel)) do
+		if supportedActionName == normalizedActionName then
+			return true
+		end
+	end
+
+	return false
+end
+
+function RoomPermissionService.GetSupportedFurniturePermissionSummary(furnitureModel)
+	local actions = RoomPermissionService.GetFurniturePermissionActions(furnitureModel)
+
+	return {
+		SupportsOpenClose = RoomPermissionService.FurnitureSupportsPermission(furnitureModel, "OpenClose"),
+		PermissionActions = copyActionList(actions),
+	}
+end
+
 function RoomPermissionService.CanMoveFurniture(actorPlayer, furnitureModel)
 	local roomModel = RoomPermissionService.GetRoomModelFromFurniture(furnitureModel)
 
@@ -188,6 +375,46 @@ function RoomPermissionService.CanPickUpFurniture(actorPlayer, furnitureModel)
 	local roomModel = RoomPermissionService.GetRoomModelFromFurniture(furnitureModel)
 
 	return RoomPermissionService.IsRoomOwner(actorPlayer, roomModel)
+end
+
+function RoomPermissionService.CanOpenCloseFurniture(actorPlayer, furnitureModel)
+	-- Patch 10F foundation only. Patch 10G should call this from the actual
+	-- Open/Close/Toggle action handler for opt-in door/gate furniture.
+	if not isPlayerInstance(actorPlayer) or not isModel(furnitureModel) then
+		return false
+	end
+
+	if not RoomPermissionService.FurnitureSupportsPermission(furnitureModel, "OpenClose") then
+		return false
+	end
+
+	local roomModel = RoomPermissionService.GetRoomModelFromFurniture(furnitureModel)
+
+	if not roomModel then
+		return false
+	end
+
+	if RoomPermissionService.IsRoomOwner(actorPlayer, roomModel) then
+		return true
+	end
+
+	if RoomPermissionService.CanEditRoom(actorPlayer, roomModel) then
+		return true
+	end
+
+	local ownerPlayer = RoomPermissionService.GetRoomOwnerPlayer(roomModel)
+	local persistentId = RoomPermissionService.GetFurniturePersistentId(furnitureModel)
+
+	if not ownerPlayer or not persistentId then
+		return false
+	end
+
+	return RoomPersistence.IsFurnitureActionAllowed(
+		ownerPlayer,
+		persistentId,
+		"OpenClose",
+		actorPlayer.UserId
+	)
 end
 
 function RoomPermissionService.CanUseFurniture(actorPlayer, furnitureModel, actionName)

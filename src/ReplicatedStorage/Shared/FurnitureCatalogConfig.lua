@@ -15,6 +15,7 @@ local ITEMS = {
 		PurchaseCurrency = "Dollars",
 		TradableOnPurchase = false,
 		Sellable = true,
+		PermissionActions = {},
 		Featured = true,
 		IsLimited = false,
 	},
@@ -32,6 +33,7 @@ local ITEMS = {
 		PurchaseCurrency = "Dollars",
 		TradableOnPurchase = false,
 		Sellable = true,
+		PermissionActions = {},
 		Featured = false,
 		IsLimited = false,
 	},
@@ -49,10 +51,30 @@ local ITEMS = {
 		PurchaseCurrency = "Dollars",
 		TradableOnPurchase = false,
 		Sellable = true,
+		PermissionActions = {},
 		Featured = false,
 		IsLimited = false,
 	},
 }
+
+-- Future door/gate items can opt into permissioned actions without changing
+-- normal furniture. Example shape only; do not add entries until templates exist:
+-- {
+-- 	Id = "Door_01",
+-- 	TemplateName = "Door_01",
+-- 	DisplayName = "Door",
+-- 	Category = "Doors",
+-- 	PermissionActions = { "OpenClose" },
+-- 	SupportsOpenClose = true,
+-- }
+-- {
+-- 	Id = "BarGate_01",
+-- 	TemplateName = "BarGate_01",
+-- 	DisplayName = "Bar Counter Gate",
+-- 	Category = "Gates",
+-- 	PermissionActions = { "OpenClose" },
+-- 	SupportsOpenClose = true,
+-- }
 
 local PUBLIC_FIELDS = {
 	"Id",
@@ -68,6 +90,8 @@ local PUBLIC_FIELDS = {
 	"PurchaseCurrency",
 	"TradableOnPurchase",
 	"Sellable",
+	"PermissionActions",
+	"SupportsOpenClose",
 	"Featured",
 	"IsLimited",
 	"LimitedQuantity",
@@ -77,11 +101,25 @@ local PUBLIC_FIELDS = {
 local itemsById = {}
 local itemsByTemplateName = {}
 
+local function copyValue(value)
+	if typeof(value) ~= "table" then
+		return value
+	end
+
+	local copy = {}
+
+	for key, child in pairs(value) do
+		copy[key] = copyValue(child)
+	end
+
+	return copy
+end
+
 local function copyFields(item, fields)
 	local copy = {}
 
 	for _, fieldName in ipairs(fields) do
-		copy[fieldName] = item[fieldName]
+		copy[fieldName] = copyValue(item[fieldName])
 	end
 
 	return copy
@@ -91,7 +129,7 @@ local function copyItem(item)
 	local copy = {}
 
 	for key, value in pairs(item) do
-		copy[key] = value
+		copy[key] = copyValue(value)
 	end
 
 	return copy

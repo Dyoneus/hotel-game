@@ -457,6 +457,33 @@ local function getStandFloor(player)
 	return nil
 end
 
+local function getSafeStandCFrameFromSource(player, humanoid, rootPart, sourceCFrame)
+	if not sourceCFrame then
+		return nil
+	end
+
+	local rotation = sourceCFrame - sourceCFrame.Position
+	local sourcePosition = sourceCFrame.Position
+	local targetY = sourcePosition.Y + 3
+	local floor = getStandFloor(player)
+
+	if floor then
+		local floorTopY = floor.Position.Y + floor.Size.Y / 2
+		local rootHalfY = rootPart.Size.Y / 2
+
+		targetY = math.max(
+			sourcePosition.Y,
+			floorTopY + humanoid.HipHeight + rootHalfY + 0.1
+		)
+	end
+
+	local position = Vector3.new(sourcePosition.X, targetY, sourcePosition.Z)
+
+	return CFrame.new(position) * rotation
+end
+
+-- Forced unseats happen when occupied furniture is moved or picked up. In that case,
+-- use the actual Seat first so the occupant exits from the furniture's current seat.
 local function getFurnitureStandCFrame(player, furnitureModel, humanoid, rootPart, seatPart)
 	local baseCFrame = getOccupiedSeatCFrame(furnitureModel, humanoid, seatPart)
 
@@ -476,24 +503,93 @@ local function getFurnitureStandCFrame(player, furnitureModel, humanoid, rootPar
 		baseCFrame = furnitureModel:GetPivot()
 	end
 
-	local rotation = baseCFrame - baseCFrame.Position
-	local sourcePosition = baseCFrame.Position
-	local targetY = sourcePosition.Y + 3
-	local floor = getStandFloor(player)
+	return getSafeStandCFrameFromSource(player, humanoid, rootPart, baseCFrame)
+end
 
-	if floor then
-		local floorTopY = floor.Position.Y + floor.Size.Y / 2
-		local rootHalfY = rootPart.Size.Y / 2
+local warnedNormalSitPointPlacement = setmetatable({}, {
+	__mode = "k",
+})
 
-		targetY = math.max(
-			sourcePosition.Y,
-			floorTopY + humanoid.HipHeight + rootHalfY + 0.1
-		)
+local standPointIgnoredPartNames = {
+	SitPoint = true,
+	SleepPoint = true,
+	PlayPoint = true,
+	EnterPoint = true,
+	TalkPoint = true,
+}
+
+local function warnIfNormalSitPointMayBeBlocked(player, furnitureModel, standCFrame, character)
+	if warnedNormalSitPointPlacement[furnitureModel] then
+		return
 	end
 
-	local position = Vector3.new(sourcePosition.X, targetY, sourcePosition.Z)
+	local roomFolder = getCurrentRoomFolder(player)
+	local furnitureFolder = getCurrentFurnitureFolder(player)
 
-	return CFrame.new(position) * rotation
+	if not roomFolder or not furnitureFolder then
+		return
+	end
+
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+	overlapParams.FilterDescendantsInstances = character and { character } or {}
+
+	local parts = workspace:GetPartBoundsInBox(
+		standCFrame,
+		Vector3.new(1.5, 4, 1.5),
+		overlapParams
+	)
+
+	for _, part in ipairs(parts) do
+		if part.Name == "WalkableFloor" then
+			continue
+		end
+
+		if standPointIgnoredPartNames[part.Name] then
+			continue
+		end
+
+		if part:IsA("BasePart") and part.CanCollide == false then
+			continue
+		end
+
+		if part:IsDescendantOf(roomFolder) or part:IsDescendantOf(furnitureFolder) then
+			warn("SitPoint may be incorrectly placed")
+			warnedNormalSitPointPlacement[furnitureModel] = true
+			return
+		end
+	end
+end
+
+-- Normal Stand is the player's intentional chair exit. It should use SitPoint first
+-- so click-to-move starts from the walkable tile beside the chair, not the Seat tile.
+local function getNormalStandCFrame(player, furnitureModel, humanoid, rootPart, seatPart, character)
+	local sitPointCFrame = getInteractionWorldCFrame(furnitureModel, "SitPoint")
+
+	if sitPointCFrame then
+		local standCFrame = getSafeStandCFrameFromSource(player, humanoid, rootPart, sitPointCFrame)
+
+		if standCFrame then
+			warnIfNormalSitPointMayBeBlocked(player, furnitureModel, standCFrame, character)
+			return standCFrame
+		end
+	end
+
+	local fallbackCFrame = getOccupiedSeatCFrame(furnitureModel, humanoid, seatPart)
+
+	if not fallbackCFrame then
+		local seatCFrame = findNamedSeatCFrame(furnitureModel)
+
+		if seatCFrame then
+			fallbackCFrame = seatCFrame
+		end
+	end
+
+	if not fallbackCFrame then
+		fallbackCFrame = furnitureModel:GetPivot()
+	end
+
+	return getSafeStandCFrameFromSource(player, humanoid, rootPart, fallbackCFrame)
 end
 
 local function standOccupantFromFurniture(player, furnitureModel, humanoid, seatPart, standCFrame)
@@ -525,6 +621,26 @@ local function standOccupantFromFurniture(player, furnitureModel, humanoid, seat
 	end
 
 	return true
+end
+
+local function alignCharacterToSeatFacing(rootPart, seat)
+	if not rootPart or not rootPart:IsA("BasePart") then
+		return
+	end
+
+	if not seat or not seat:IsA("BasePart") then
+		return
+	end
+
+	local lookVector = seat.CFrame.LookVector
+	local flatLookVector = Vector3.new(lookVector.X, 0, lookVector.Z)
+
+	if flatLookVector.Magnitude < 0.001 then
+		return
+	end
+
+	rootPart.AssemblyAngularVelocity = Vector3.zero
+	rootPart.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + flatLookVector.Unit)
 end
 
 local function snapToGrid(value)
@@ -874,8 +990,6 @@ local function sitPlayerOnChair(player, furnitureModel)
 		return
 	end
 
-	print("Server: Moving to SitPoint using no-diagonal grid movement")
-
 	local reachedSitPoint = moveCharacterToGridPoint(player, character, sitPointPosition, furnitureModel)
 
 	local distanceToSitPoint = (rootPart.Position - sitPointPosition).Magnitude
@@ -903,7 +1017,7 @@ local function sitPlayerOnChair(player, furnitureModel)
 		return
 	end
 
-	print("Server: Sitting player")
+	alignCharacterToSeatFacing(rootPart, seat)
 	seat:Sit(humanoid)
 
 	task.wait(0.1)
@@ -963,22 +1077,32 @@ local function standPlayer(player)
 		local furnitureModel = getFurnitureModelFromDescendant(player, seatPart)
 
 		if furnitureModel then
-			standCFrame = getInteractionWorldCFrame(furnitureModel, "SitPoint")
+			standCFrame = getNormalStandCFrame(player, furnitureModel, humanoid, rootPart, seatPart, character)
 		end
 	end
 
 	-- Unseat the player first.
 	humanoid.Sit = false
+	humanoid.PlatformStand = false
 	humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
 
 	task.wait(0.05)
 
-	-- Move the player exactly to SitPoint.
+	-- Normal chair exits use SitPoint. Occupied Move/PickUp use the Seat-first
+	-- forced unseat helper instead.
 	if standCFrame then
 		rootPart.AssemblyLinearVelocity = Vector3.zero
 		rootPart.AssemblyAngularVelocity = Vector3.zero
 
 		character:PivotTo(standCFrame)
+
+		task.wait(0.03)
+
+		if rootPart.Parent then
+			rootPart.AssemblyLinearVelocity = Vector3.zero
+			rootPart.AssemblyAngularVelocity = Vector3.zero
+			rootPart.CFrame = standCFrame
+		end
 	end
 end
 
