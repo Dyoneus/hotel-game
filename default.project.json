@@ -60,6 +60,9 @@
       "RoomModeServer": {
         "$path": "src/ServerScriptService/RoomModeServer.server.lua"
       },
+      "RoomPermissionService": {
+        "$path": "src/ServerScriptService/RoomPermissionService.lua"
+      },
       "RoomPersistence": {
         "$path": "src/ServerScriptService/RoomPersistence.lua"
       }
