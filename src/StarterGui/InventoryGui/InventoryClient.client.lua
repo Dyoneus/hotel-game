@@ -1,6 +1,7 @@
 -- StarterGui/InventoryGui/InventoryClient.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -10,6 +11,7 @@ local inventoryRequest = remoteEvents:WaitForChild("InventoryRequest")
 local inventoryResult = remoteEvents:WaitForChild("InventoryResult")
 local setRoomModeRequest = remoteEvents:WaitForChild("SetRoomModeRequest")
 local roomModeResult = remoteEvents:WaitForChild("RoomModeResult")
+local activeRooms = workspace:WaitForChild("ActiveRooms")
 
 local furnitureCatalogConfig = nil
 local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
@@ -45,21 +47,34 @@ local queuedRefreshForce = false
 local lastInventoryRequestAt = -math.huge
 local requestSerial = 0
 local hasLoadedInventory = false
+local lastInventoryCacheUpdateAt = -math.huge
 local latestInventory = {}
 local latestInventoryDetails = {}
-local inventoryRequestedEditMode = false
-local inventoryEnteredEditMode = false
-local inventoryExitEditWhenPlacementEnds = false
 local selectedInventoryCategory = "All"
+local selectedInventoryTemplateId = nil
 local dropdownOpen = false
 local currentInventoryCategories = { "All" }
+local selectedSellQuantity = 1
+local pendingPlacementTemplateId = nil
+local pendingPlaceAfterEdit = false
+local inventoryPlacementRequestedEditMode = false
+local inventoryPlacementEnteredEditMode = false
+local inventoryPlacementExitEditRequested = false
+local inventoryHideRequestedForPlacement = false
+local inventoryHiddenForPlacement = false
+local panelDragInput = nil
+local panelDragStartInputPosition = nil
+local panelDragStartPanelPosition = nil
 
-local LOCAL_REQUEST_COOLDOWN_SECONDS = 0.6
+local LOCAL_REQUEST_COOLDOWN_SECONDS = 0.75
+local RESTORE_REFRESH_STALE_SECONDS = 1.25
+local LOCAL_DELTA_REFRESH_SUPPRESS_SECONDS = 0.35
 local REQUEST_TIMEOUT_SECONDS = 6
-local EDIT_MODE_FAILURE_MESSAGE = "Enter your own room to place furniture."
-local EDIT_MODE_REQUIRED_MESSAGE = "Enter Edit Mode to place furniture."
+local EDIT_MODE_FAILURE_MESSAGE = "Go to a room you can edit to place this item."
+local EDIT_MODE_PREPARING_MESSAGE = "Preparing room editing..."
 local INVENTORY_CATEGORY_ALL = "All"
 local INVENTORY_CATEGORY_OTHER = "Other"
+local PANEL_SCREEN_MARGIN = 12
 
 local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -120,6 +135,9 @@ local MENU_NAME = "Inventory"
 local anyMajorMenuOpen = false
 local openMajorMenuName = nil
 local renderInventory = nil
+local setPanelVisible = nil
+local hideInventoryForPlacement = nil
+local restoreInventoryAfterPlacement = nil
 local sellRequestInFlight = false
 
 local openButton = Instance.new("TextButton")
@@ -143,7 +161,7 @@ local panel = Instance.new("Frame")
 panel.Name = "InventoryPanel"
 panel.AnchorPoint = Vector2.new(1, 0.5)
 panel.Position = UDim2.new(1, -24, 0.5, 0)
-panel.Size = UDim2.fromOffset(360, 420)
+panel.Size = UDim2.fromOffset(680, 460)
 panel.BackgroundColor3 = Color3.fromRGB(245, 245, 238)
 panel.BorderSizePixel = 0
 panel.Visible = false
@@ -179,6 +197,15 @@ closeButton.Parent = panel
 
 createCorner(closeButton, 8)
 
+local dragHandle = Instance.new("Frame")
+dragHandle.Name = "InventoryDragHandle"
+dragHandle.Position = UDim2.fromOffset(0, 0)
+dragHandle.Size = UDim2.new(1, -74, 0, 58)
+dragHandle.BackgroundTransparency = 1
+dragHandle.Active = true
+dragHandle.ZIndex = 5
+dragHandle.Parent = panel
+
 local statusLabel = Instance.new("TextLabel")
 statusLabel.Name = "StatusLabel"
 statusLabel.Position = UDim2.fromOffset(18, 56)
@@ -194,7 +221,7 @@ statusLabel.Parent = panel
 local categoryButton = Instance.new("TextButton")
 categoryButton.Name = "CategoryDropdownButton"
 categoryButton.Position = UDim2.fromOffset(18, 92)
-categoryButton.Size = UDim2.new(1, -36, 0, 32)
+categoryButton.Size = UDim2.new(0, 300, 0, 32)
 categoryButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
 categoryButton.BorderSizePixel = 0
 categoryButton.Text = "Category: All"
@@ -211,7 +238,7 @@ createStroke(categoryButton, Color3.fromRGB(210, 215, 220), 1, 0)
 local categoryDropdown = Instance.new("ScrollingFrame")
 categoryDropdown.Name = "CategoryDropdownList"
 categoryDropdown.Position = UDim2.fromOffset(18, 128)
-categoryDropdown.Size = UDim2.new(1, -36, 0, 0)
+categoryDropdown.Size = UDim2.fromOffset(300, 0)
 categoryDropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 categoryDropdown.BorderSizePixel = 0
 categoryDropdown.CanvasSize = UDim2.fromOffset(0, 0)
@@ -231,7 +258,7 @@ categoryDropdownLayout.Parent = categoryDropdown
 local listFrame = Instance.new("ScrollingFrame")
 listFrame.Name = "InventoryList"
 listFrame.Position = UDim2.fromOffset(18, 138)
-listFrame.Size = UDim2.new(1, -36, 1, -158)
+listFrame.Size = UDim2.new(0, 300, 1, -158)
 listFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 listFrame.BorderSizePixel = 0
 listFrame.ScrollBarThickness = 6
@@ -241,10 +268,11 @@ listFrame.Parent = panel
 createCorner(listFrame, 12)
 createStroke(listFrame, Color3.fromRGB(220, 220, 220), 1, 0)
 
-local listLayout = Instance.new("UIListLayout")
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Padding = UDim.new(0, 8)
-listLayout.Parent = listFrame
+local gridLayout = Instance.new("UIGridLayout")
+gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+gridLayout.CellSize = UDim2.fromOffset(86, 86)
+gridLayout.CellPadding = UDim2.fromOffset(8, 8)
+gridLayout.Parent = listFrame
 
 local listPadding = Instance.new("UIPadding")
 listPadding.PaddingTop = UDim.new(0, 10)
@@ -253,6 +281,164 @@ listPadding.PaddingLeft = UDim.new(0, 10)
 listPadding.PaddingRight = UDim.new(0, 10)
 listPadding.Parent = listFrame
 
+local detailsPanel = Instance.new("Frame")
+detailsPanel.Name = "SelectedItemDetails"
+detailsPanel.Position = UDim2.new(0, 334, 0, 92)
+detailsPanel.Size = UDim2.new(1, -352, 1, -112)
+detailsPanel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+detailsPanel.BorderSizePixel = 0
+detailsPanel.Parent = panel
+
+createCorner(detailsPanel, 12)
+createStroke(detailsPanel, Color3.fromRGB(220, 220, 220), 1, 0)
+
+local detailsTitle = Instance.new("TextLabel")
+detailsTitle.Name = "DetailsTitle"
+detailsTitle.Position = UDim2.fromOffset(16, 14)
+detailsTitle.Size = UDim2.new(1, -32, 0, 28)
+detailsTitle.BackgroundTransparency = 1
+detailsTitle.Text = "Select an item"
+detailsTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
+detailsTitle.TextSize = 20
+detailsTitle.TextXAlignment = Enum.TextXAlignment.Left
+detailsTitle.TextTruncate = Enum.TextTruncate.AtEnd
+detailsTitle.Font = Enum.Font.GothamBold
+detailsTitle.Parent = detailsPanel
+
+local detailsSubtitle = Instance.new("TextLabel")
+detailsSubtitle.Name = "DetailsSubtitle"
+detailsSubtitle.Position = UDim2.fromOffset(16, 46)
+detailsSubtitle.Size = UDim2.new(1, -32, 0, 20)
+detailsSubtitle.BackgroundTransparency = 1
+detailsSubtitle.Text = ""
+detailsSubtitle.TextColor3 = Color3.fromRGB(85, 85, 85)
+detailsSubtitle.TextSize = 13
+detailsSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+detailsSubtitle.TextTruncate = Enum.TextTruncate.AtEnd
+detailsSubtitle.Font = Enum.Font.Gotham
+detailsSubtitle.Parent = detailsPanel
+
+local detailsDescription = Instance.new("TextLabel")
+detailsDescription.Name = "DetailsDescription"
+detailsDescription.Position = UDim2.fromOffset(16, 72)
+detailsDescription.Size = UDim2.new(1, -32, 0, 44)
+detailsDescription.BackgroundTransparency = 1
+detailsDescription.Text = "Choose an owned furniture item to see details."
+detailsDescription.TextColor3 = Color3.fromRGB(90, 90, 90)
+detailsDescription.TextSize = 13
+detailsDescription.TextWrapped = true
+detailsDescription.TextXAlignment = Enum.TextXAlignment.Left
+detailsDescription.TextYAlignment = Enum.TextYAlignment.Top
+detailsDescription.Font = Enum.Font.Gotham
+detailsDescription.Parent = detailsPanel
+
+local ownershipLabel = Instance.new("TextLabel")
+ownershipLabel.Name = "OwnershipLabel"
+ownershipLabel.Position = UDim2.fromOffset(16, 126)
+ownershipLabel.Size = UDim2.new(1, -32, 0, 84)
+ownershipLabel.BackgroundTransparency = 1
+ownershipLabel.Text = ""
+ownershipLabel.TextColor3 = Color3.fromRGB(55, 60, 55)
+ownershipLabel.TextSize = 13
+ownershipLabel.TextWrapped = true
+ownershipLabel.TextXAlignment = Enum.TextXAlignment.Left
+ownershipLabel.TextYAlignment = Enum.TextYAlignment.Top
+ownershipLabel.Font = Enum.Font.GothamMedium
+ownershipLabel.Parent = detailsPanel
+
+local placeButton = Instance.new("TextButton")
+placeButton.Name = "PlaceToRoomButton"
+placeButton.Position = UDim2.new(0, 16, 0, 218)
+placeButton.Size = UDim2.new(1, -32, 0, 34)
+placeButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+placeButton.BorderSizePixel = 0
+placeButton.Text = "Place to room"
+placeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+placeButton.TextSize = 15
+placeButton.Font = Enum.Font.GothamBold
+placeButton.Parent = detailsPanel
+
+createCorner(placeButton, 8)
+
+local sellControlsFrame = Instance.new("Frame")
+sellControlsFrame.Name = "SellControls"
+sellControlsFrame.Position = UDim2.new(0, 16, 0, 264)
+sellControlsFrame.Size = UDim2.new(1, -32, 0, 34)
+sellControlsFrame.BackgroundTransparency = 1
+sellControlsFrame.Parent = detailsPanel
+
+local sellDecreaseButton = Instance.new("TextButton")
+sellDecreaseButton.Name = "DecreaseSellQuantityButton"
+sellDecreaseButton.Position = UDim2.fromOffset(0, 0)
+sellDecreaseButton.Size = UDim2.fromOffset(34, 34)
+sellDecreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+sellDecreaseButton.BorderSizePixel = 0
+sellDecreaseButton.Text = "<"
+sellDecreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+sellDecreaseButton.TextSize = 15
+sellDecreaseButton.Font = Enum.Font.GothamBold
+sellDecreaseButton.Parent = sellControlsFrame
+
+createCorner(sellDecreaseButton, 8)
+
+local sellQuantityLabel = Instance.new("TextLabel")
+sellQuantityLabel.Name = "SellQuantityLabel"
+sellQuantityLabel.Position = UDim2.fromOffset(40, 0)
+sellQuantityLabel.Size = UDim2.fromOffset(42, 34)
+sellQuantityLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+sellQuantityLabel.BorderSizePixel = 0
+sellQuantityLabel.Text = "1"
+sellQuantityLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+sellQuantityLabel.TextSize = 14
+sellQuantityLabel.Font = Enum.Font.GothamBold
+sellQuantityLabel.Parent = sellControlsFrame
+
+createCorner(sellQuantityLabel, 8)
+
+local sellIncreaseButton = Instance.new("TextButton")
+sellIncreaseButton.Name = "IncreaseSellQuantityButton"
+sellIncreaseButton.Position = UDim2.fromOffset(88, 0)
+sellIncreaseButton.Size = UDim2.fromOffset(34, 34)
+sellIncreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+sellIncreaseButton.BorderSizePixel = 0
+sellIncreaseButton.Text = ">"
+sellIncreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+sellIncreaseButton.TextSize = 15
+sellIncreaseButton.Font = Enum.Font.GothamBold
+sellIncreaseButton.Parent = sellControlsFrame
+
+createCorner(sellIncreaseButton, 8)
+
+local sellButton = Instance.new("TextButton")
+sellButton.Name = "SellForDollarsButton"
+sellButton.Position = UDim2.new(0, 132, 0, 0)
+sellButton.Size = UDim2.new(1, -132, 0, 34)
+sellButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+sellButton.BorderSizePixel = 0
+sellButton.Text = "Sell for Dollars"
+sellButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+sellButton.TextSize = 14
+sellButton.Font = Enum.Font.GothamBold
+sellButton.Parent = sellControlsFrame
+
+createCorner(sellButton, 8)
+
+local marketplaceButton = Instance.new("TextButton")
+marketplaceButton.Name = "MarketplaceSoonButton"
+marketplaceButton.Position = UDim2.new(0, 16, 0, 310)
+marketplaceButton.Size = UDim2.new(1, -32, 0, 32)
+marketplaceButton.BackgroundColor3 = Color3.fromRGB(165, 170, 175)
+marketplaceButton.BorderSizePixel = 0
+marketplaceButton.Text = "Marketplace Soon"
+marketplaceButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+marketplaceButton.TextSize = 14
+marketplaceButton.Font = Enum.Font.GothamBold
+marketplaceButton.Active = false
+marketplaceButton.AutoButtonColor = false
+marketplaceButton.Parent = detailsPanel
+
+createCorner(marketplaceButton, 8)
+
 local function shouldShowInventoryButton()
 	return player:GetAttribute("OnboardingStep") == "Complete"
 		and (player:GetAttribute("ControlMode") or "Hotel") == "Hotel"
@@ -260,6 +446,8 @@ end
 
 local function updateOpenButton()
 	openButton.Visible = (not panel.Visible)
+		and not inventoryHiddenForPlacement
+		and player:GetAttribute("CatalogPlacementActive") ~= true
 		and not anyMajorMenuOpen
 		and shouldShowInventoryButton()
 end
@@ -412,11 +600,171 @@ local function setDropdownOpen(isOpen)
 
 	if dropdownOpen then
 		local dropdownHeight = math.min(#currentInventoryCategories * 30 + 8, 156)
-		categoryDropdown.Size = UDim2.new(1, -36, 0, dropdownHeight)
+		categoryDropdown.Size = UDim2.fromOffset(300, dropdownHeight)
 	else
-		categoryDropdown.Size = UDim2.new(1, -36, 0, 0)
+		categoryDropdown.Size = UDim2.fromOffset(300, 0)
 	end
 end
+
+local function markInventoryCacheUpdated()
+	lastInventoryCacheUpdateAt = os.clock()
+end
+
+local function clearPendingPlacementState(clearEditModeCause)
+	pendingPlacementTemplateId = nil
+	pendingPlaceAfterEdit = false
+	inventoryHideRequestedForPlacement = false
+
+	if clearEditModeCause == true then
+		inventoryPlacementRequestedEditMode = false
+		inventoryPlacementEnteredEditMode = false
+		inventoryPlacementExitEditRequested = false
+	end
+end
+
+local function requestPlayModeIfInventoryCausedEdit()
+	if inventoryPlacementExitEditRequested
+		or not inventoryPlacementEnteredEditMode
+		or player:GetAttribute("RoomMode") ~= "Edit"
+		or player:GetAttribute("CatalogPlacementActive") == true then
+
+		return
+	end
+
+	inventoryPlacementExitEditRequested = true
+	setRoomModeRequest:FireServer("Play")
+
+	task.delay(0.9, function()
+		if inventoryPlacementEnteredEditMode
+			and player:GetAttribute("RoomMode") == "Edit"
+			and player:GetAttribute("CatalogPlacementActive") ~= true
+			and not panel.Visible then
+
+			setRoomModeRequest:FireServer("Play")
+		end
+
+		inventoryPlacementRequestedEditMode = false
+		inventoryPlacementEnteredEditMode = false
+		inventoryPlacementExitEditRequested = false
+	end)
+end
+
+local function clearPlacementFlowForRoomChange()
+	clearPendingPlacementState(true)
+	inventoryHiddenForPlacement = false
+	updateOpenButton()
+end
+
+local function getScreenSize()
+	local screenSize = gui.AbsoluteSize
+
+	if screenSize.X > 0 and screenSize.Y > 0 then
+		return screenSize
+	end
+
+	local camera = workspace.CurrentCamera
+
+	if camera then
+		return camera.ViewportSize
+	end
+
+	return Vector2.new(1280, 720)
+end
+
+local function getPanelSize()
+	local panelSize = panel.AbsoluteSize
+
+	if panelSize.X > 0 and panelSize.Y > 0 then
+		return panelSize
+	end
+
+	return Vector2.new(panel.Size.X.Offset, panel.Size.Y.Offset)
+end
+
+local function clampPanelPosition(position)
+	local screenSize = getScreenSize()
+	local panelSize = getPanelSize()
+	local rawX = screenSize.X * position.X.Scale + position.X.Offset
+	local rawY = screenSize.Y * position.Y.Scale + position.Y.Offset
+	local minX = panelSize.X + PANEL_SCREEN_MARGIN
+	local maxX = screenSize.X - PANEL_SCREEN_MARGIN
+	local minY = panelSize.Y / 2 + PANEL_SCREEN_MARGIN
+	local maxY = screenSize.Y - panelSize.Y / 2 - PANEL_SCREEN_MARGIN
+
+	if maxX < minX then
+		minX = math.max(PANEL_SCREEN_MARGIN, screenSize.X - PANEL_SCREEN_MARGIN)
+		maxX = minX
+	end
+
+	if maxY < minY then
+		minY = screenSize.Y / 2
+		maxY = minY
+	end
+
+	return UDim2.fromOffset(
+		math.clamp(rawX, minX, maxX),
+		math.clamp(rawY, minY, maxY)
+	)
+end
+
+local function clampPanelToScreen()
+	panel.Position = clampPanelPosition(panel.Position)
+end
+
+local function beginPanelDrag(input)
+	panelDragInput = input
+	panelDragStartInputPosition = input.Position
+	panelDragStartPanelPosition = panel.Position
+
+	input.Changed:Connect(function()
+		if input.UserInputState == Enum.UserInputState.End and panelDragInput == input then
+			panelDragInput = nil
+			panelDragStartInputPosition = nil
+			panelDragStartPanelPosition = nil
+			clampPanelToScreen()
+		end
+	end)
+end
+
+dragHandle.InputBegan:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1
+		and input.UserInputType ~= Enum.UserInputType.Touch then
+
+		return
+	end
+
+	beginPanelDrag(input)
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if not panelDragInput
+		or not panelDragStartInputPosition
+		or not panelDragStartPanelPosition then
+
+		return
+	end
+
+	if input.UserInputType ~= Enum.UserInputType.MouseMovement
+		and input.UserInputType ~= Enum.UserInputType.Touch then
+
+		return
+	end
+
+	local delta = input.Position - panelDragStartInputPosition
+
+	panel.Position = clampPanelPosition(UDim2.new(
+		panelDragStartPanelPosition.X.Scale,
+		panelDragStartPanelPosition.X.Offset + delta.X,
+		panelDragStartPanelPosition.Y.Scale,
+		panelDragStartPanelPosition.Y.Offset + delta.Y
+	))
+end)
+
+gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+	if panel.Visible then
+		clampPanelToScreen()
+	end
+end)
 
 local function updateCategoryDropdown(categories)
 	currentInventoryCategories = categories or { INVENTORY_CATEGORY_ALL }
@@ -468,56 +816,41 @@ local function updateCategoryDropdown(categories)
 	setDropdownOpen(dropdownOpen)
 end
 
-local function shouldRequestEditModeForInventory()
+local function getCurrentRoomModel()
 	local currentRoomName = player:GetAttribute("CurrentRoomName")
 
-	return player:GetAttribute("RoomMode") ~= "Edit"
-		and (player:GetAttribute("ControlMode") or "Hotel") == "Hotel"
-		and typeof(currentRoomName) == "string"
-		and currentRoomName ~= ""
+	if typeof(currentRoomName) ~= "string" or currentRoomName == "" then
+		return nil
+	end
+
+	return activeRooms:FindFirstChild(currentRoomName)
 end
 
-local function requestEditModeForInventory()
-	if player:GetAttribute("RoomMode") == "Edit" then
-		inventoryRequestedEditMode = false
-		return
+local function canPlaceInCurrentRoom()
+	local currentRoomName = player:GetAttribute("CurrentRoomName")
+
+	if (player:GetAttribute("ControlMode") or "Hotel") ~= "Hotel"
+		or typeof(currentRoomName) ~= "string"
+		or currentRoomName == "" then
+
+		return false
 	end
 
-	if inventoryRequestedEditMode or not shouldRequestEditModeForInventory() then
-		return
+	local roomModel = getCurrentRoomModel()
+
+	if not roomModel then
+		return false
 	end
 
-	inventoryRequestedEditMode = true
-	inventoryEnteredEditMode = false
-	setRoomModeRequest:FireServer("Edit")
-end
-
-local function requestPlayModeIfInventoryEnteredEditMode()
-	if not inventoryEnteredEditMode then
-		if inventoryRequestedEditMode then
-			return
-		end
-
-		inventoryExitEditWhenPlacementEnds = false
-		return
+	if roomModel:GetAttribute("OwnerUserId") == player.UserId then
+		return true
 	end
 
-	if player:GetAttribute("RoomMode") ~= "Edit" then
-		inventoryRequestedEditMode = false
-		inventoryEnteredEditMode = false
-		inventoryExitEditWhenPlacementEnds = false
-		return
+	if player:GetAttribute("CanEditCurrentRoom") == true then
+		return true
 	end
 
-	if player:GetAttribute("CatalogPlacementActive") == true then
-		inventoryExitEditWhenPlacementEnds = true
-		return
-	end
-
-	inventoryRequestedEditMode = false
-	inventoryEnteredEditMode = false
-	inventoryExitEditWhenPlacementEnds = false
-	setRoomModeRequest:FireServer("Play")
+	return false
 end
 
 local function isNonNegativeCount(value)
@@ -555,7 +888,18 @@ local function createEmptyState(message)
 	emptyLabel.Parent = listFrame
 end
 
-local function createInventoryRow(templateId, count, details, layoutOrder)
+local function getInventoryCounts(templateId)
+	local count = 0
+	local details = nil
+
+	if typeof(latestInventory) == "table" and isNonNegativeCount(latestInventory[templateId]) then
+		count = math.floor(latestInventory[templateId])
+	end
+
+	if typeof(latestInventoryDetails) == "table" then
+		details = latestInventoryDetails[templateId]
+	end
+
 	local untradableCount = 0
 	local unsellableCount = 0
 	local sellableCount = count
@@ -577,223 +921,28 @@ local function createInventoryRow(templateId, count, details, layoutOrder)
 	untradableCount = math.clamp(math.floor(untradableCount), 0, count)
 	unsellableCount = math.clamp(math.floor(unsellableCount), 0, count)
 	sellableCount = math.clamp(math.floor(sellableCount), 0, count)
+	local tradableCount = math.clamp(count - untradableCount, 0, count)
 
-	local sellPrice = getInventorySellPrice(templateId)
-	local canSell = sellableCount > 0 and typeof(sellPrice) == "number" and sellPrice > 0
-	local maxSellQuantity = math.min(sellableCount, 99)
-	local selectedSellQuantity = 1
-
-	local row = Instance.new("TextButton")
-	row.Name = tostring(templateId)
-	row.LayoutOrder = layoutOrder
-	row.Size = UDim2.new(1, -4, 0, canSell and 96 or 72)
-	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
-	row.BorderSizePixel = 0
-	row.Text = ""
-	row.AutoButtonColor = true
-	row.Parent = listFrame
-
-	createCorner(row, 10)
-	createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
-
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Name = "NameLabel"
-	nameLabel.Position = UDim2.fromOffset(12, 8)
-	nameLabel.Size = UDim2.new(1, -104, 0, 24)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = tostring(templateId)
-	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-	nameLabel.TextSize = 17
-	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.Parent = row
-
-	local countLabel = Instance.new("TextLabel")
-	countLabel.Name = "CountLabel"
-	countLabel.Position = UDim2.new(1, -82, 0, 8)
-	countLabel.Size = UDim2.fromOffset(70, 24)
-	countLabel.BackgroundTransparency = 1
-	countLabel.Text = "x" .. tostring(count)
-	countLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-	countLabel.TextSize = 17
-	countLabel.TextXAlignment = Enum.TextXAlignment.Right
-	countLabel.Font = Enum.Font.GothamBold
-	countLabel.Parent = row
-
-	local noteLabel = Instance.new("TextLabel")
-	noteLabel.Name = "DetailsLabel"
-	noteLabel.Position = UDim2.fromOffset(12, 34)
-	noteLabel.Size = UDim2.new(1, -24, 0, 20)
-	noteLabel.BackgroundTransparency = 1
-	local detailParts = {}
-
-	if untradableCount > 0 then
-		table.insert(detailParts, "Untradable: " .. tostring(untradableCount))
-	end
-
-	if unsellableCount > 0 then
-		table.insert(detailParts, "Unsellable: " .. tostring(unsellableCount))
-	end
-
-	if sellableCount > 0 and sellPrice then
-		table.insert(detailParts, "Sellable: " .. tostring(sellableCount))
-	elseif sellableCount <= 0 and unsellableCount > 0 and #detailParts == 0 then
-		table.insert(detailParts, "Unsellable")
-	end
-
-	noteLabel.Text = table.concat(detailParts, " | ")
-	noteLabel.TextColor3 = Color3.fromRGB(105, 105, 105)
-	noteLabel.TextSize = 13
-	noteLabel.TextXAlignment = Enum.TextXAlignment.Left
-	noteLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	noteLabel.Font = Enum.Font.Gotham
-	noteLabel.Parent = row
-
-	if canSell then
-		local sellInfoLabel = Instance.new("TextLabel")
-		sellInfoLabel.Name = "SellInfoLabel"
-		sellInfoLabel.Position = UDim2.fromOffset(12, 62)
-		sellInfoLabel.Size = UDim2.new(1, -190, 0, 24)
-		sellInfoLabel.BackgroundTransparency = 1
-		sellInfoLabel.Text = "Sell: " .. tostring(sellPrice) .. " Dollars each"
-		sellInfoLabel.TextColor3 = Color3.fromRGB(65, 95, 70)
-		sellInfoLabel.TextSize = 13
-		sellInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
-		sellInfoLabel.TextTruncate = Enum.TextTruncate.AtEnd
-		sellInfoLabel.Font = Enum.Font.GothamBold
-		sellInfoLabel.Parent = row
-
-		local function createSellButton(name, text, position, size)
-			local button = Instance.new("TextButton")
-			button.Name = name
-			button.Position = position
-			button.Size = size
-			button.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
-			button.BorderSizePixel = 0
-			button.Text = text
-			button.TextColor3 = Color3.fromRGB(45, 45, 45)
-			button.TextSize = 14
-			button.Font = Enum.Font.GothamBold
-			button.Parent = row
-
-			createCorner(button, 6)
-
-			return button
-		end
-
-		local controlsY = 60
-		local sellButton = createSellButton(
-			"SellButton",
-			"Sell",
-			UDim2.new(1, -72, 0, controlsY),
-			UDim2.fromOffset(58, 28)
-		)
-		sellButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
-		sellButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-
-		local rightButton = createSellButton(
-			"IncreaseSellQuantityButton",
-			">",
-			UDim2.new(1, -108, 0, controlsY),
-			UDim2.fromOffset(28, 28)
-		)
-
-		local quantityLabel = Instance.new("TextLabel")
-		quantityLabel.Name = "SellQuantityLabel"
-		quantityLabel.Position = UDim2.new(1, -148, 0, controlsY)
-		quantityLabel.Size = UDim2.fromOffset(34, 28)
-		quantityLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
-		quantityLabel.BorderSizePixel = 0
-		quantityLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-		quantityLabel.TextSize = 14
-		quantityLabel.Font = Enum.Font.GothamBold
-		quantityLabel.Parent = row
-
-		createCorner(quantityLabel, 6)
-
-		local leftButton = createSellButton(
-			"DecreaseSellQuantityButton",
-			"<",
-			UDim2.new(1, -184, 0, controlsY),
-			UDim2.fromOffset(28, 28)
-		)
-
-		local function updateSellControls()
-			quantityLabel.Text = tostring(selectedSellQuantity)
-			leftButton.Active = not sellRequestInFlight and selectedSellQuantity > 1
-			leftButton.AutoButtonColor = leftButton.Active
-			rightButton.Active = not sellRequestInFlight and selectedSellQuantity < maxSellQuantity
-			rightButton.AutoButtonColor = rightButton.Active
-			sellButton.Active = not sellRequestInFlight
-			sellButton.AutoButtonColor = not sellRequestInFlight
-			sellButton.Text = sellRequestInFlight and "..." or "Sell"
-		end
-
-		leftButton.MouseButton1Click:Connect(function()
-			if sellRequestInFlight or selectedSellQuantity <= 1 then
-				return
-			end
-
-			selectedSellQuantity -= 1
-			updateSellControls()
-		end)
-
-		rightButton.MouseButton1Click:Connect(function()
-			if sellRequestInFlight or selectedSellQuantity >= maxSellQuantity then
-				return
-			end
-
-			selectedSellQuantity += 1
-			updateSellControls()
-		end)
-
-		sellButton.MouseButton1Click:Connect(function()
-			if sellRequestInFlight then
-				return
-			end
-
-			sellRequestInFlight = true
-			setStatus("", nil)
-			updateSellControls()
-			inventoryRequest:FireServer("SellInventoryItem", {
-				ItemId = templateId,
-				Quantity = selectedSellQuantity,
-			})
-		end)
-
-		updateSellControls()
-	end
-
-	row.MouseButton1Click:Connect(function()
-		if count <= 0 then
-			return
-		end
-
-		local currentRoomName = player:GetAttribute("CurrentRoomName")
-
-		if (player:GetAttribute("ControlMode") or "Hotel") ~= "Hotel"
-			or typeof(currentRoomName) ~= "string"
-			or currentRoomName == ""
-			or player:GetAttribute("RoomMode") ~= "Edit" then
-
-			setStatus(EDIT_MODE_REQUIRED_MESSAGE, false)
-			return
-		end
-
-		startInventoryPlacement:Fire({
-			Id = templateId,
-			TemplateName = templateId,
-			DisplayName = templateId,
-			Source = "Inventory",
-		})
-	end)
+	return {
+		Total = count,
+		Tradable = tradableCount,
+		Untradable = untradableCount,
+		Sellable = sellableCount,
+		Unsellable = unsellableCount,
+	}
 end
 
-renderInventory = function(inventory, inventoryDetails)
-	latestInventory = inventory or {}
-	latestInventoryDetails = inventoryDetails or {}
+local function getInventoryDisplayName(templateId)
+	local item = getCatalogItem(templateId)
 
+	if item and typeof(item.DisplayName) == "string" and item.DisplayName ~= "" then
+		return item.DisplayName
+	end
+
+	return tostring(templateId)
+end
+
+local function buildInventoryEntries()
 	local entries = {}
 
 	if typeof(latestInventory) == "table" then
@@ -804,18 +953,223 @@ renderInventory = function(inventory, inventoryDetails)
 					Count = count,
 					Details = latestInventoryDetails[templateId],
 					Category = getInventoryCategory(templateId),
+					DisplayName = getInventoryDisplayName(templateId),
 				})
 			end
 		end
 	end
 
+	table.sort(entries, function(a, b)
+		return tostring(a.DisplayName) < tostring(b.DisplayName)
+	end)
+
+	return entries
+end
+
+local function getSelectedInventoryEntry()
+	if typeof(selectedInventoryTemplateId) ~= "string" then
+		return nil
+	end
+
+	local count = latestInventory[selectedInventoryTemplateId]
+
+	if not isNonNegativeCount(count) or count <= 0 then
+		return nil
+	end
+
+	return {
+		TemplateId = selectedInventoryTemplateId,
+		Count = math.floor(count),
+		Details = latestInventoryDetails[selectedInventoryTemplateId],
+		Category = getInventoryCategory(selectedInventoryTemplateId),
+		DisplayName = getInventoryDisplayName(selectedInventoryTemplateId),
+	}
+end
+
+local function setButtonEnabled(button, isEnabled, enabledColor)
+	button.Active = isEnabled == true
+	button.AutoButtonColor = isEnabled == true
+	button.BackgroundColor3 = isEnabled == true
+		and enabledColor
+		or Color3.fromRGB(155, 160, 155)
+end
+
+local function updateSelectedItemDetails()
+	local entry = getSelectedInventoryEntry()
+
+	if not entry then
+		detailsTitle.Text = "Select an item"
+		detailsSubtitle.Text = ""
+		detailsDescription.Text = "Choose an owned furniture item to see details."
+		ownershipLabel.Text = ""
+		setButtonEnabled(placeButton, false, Color3.fromRGB(70, 135, 90))
+		sellControlsFrame.Visible = false
+		marketplaceButton.Visible = false
+		pendingPlacementTemplateId = nil
+		return
+	end
+
+	local templateId = entry.TemplateId
+	local item = getCatalogItem(templateId) or {}
+	local counts = getInventoryCounts(templateId)
+	local sellPrice = getInventorySellPrice(templateId)
+	local canSell = counts.Sellable > 0 and typeof(sellPrice) == "number" and sellPrice > 0
+	local maxSellQuantity = math.min(counts.Sellable, 99)
+
+	if maxSellQuantity <= 0 then
+		selectedSellQuantity = 1
+	else
+		selectedSellQuantity = math.clamp(selectedSellQuantity, 1, maxSellQuantity)
+	end
+
+	detailsTitle.Text = entry.DisplayName
+	detailsSubtitle.Text = tostring(templateId) .. "  -  " .. tostring(entry.Category or INVENTORY_CATEGORY_OTHER)
+	detailsDescription.Text = typeof(item.Description) == "string" and item.Description ~= ""
+		and item.Description
+		or "No description available."
+
+	local statusLines = {
+		"Owned: " .. tostring(counts.Total),
+	}
+
+	if counts.Tradable > 0 and counts.Untradable > 0 then
+		table.insert(statusLines, "Tradable: " .. tostring(counts.Tradable))
+		table.insert(statusLines, "Untradable: " .. tostring(counts.Untradable))
+	elseif counts.Tradable > 0 then
+		table.insert(statusLines, "Tradable")
+	else
+		table.insert(statusLines, "Untradable")
+	end
+
+	if counts.Sellable > 0 and counts.Unsellable > 0 then
+		table.insert(statusLines, "Sellable: " .. tostring(counts.Sellable))
+		table.insert(statusLines, "Unsellable: " .. tostring(counts.Unsellable))
+	elseif counts.Sellable > 0 then
+		table.insert(statusLines, "Sellable: " .. tostring(counts.Sellable))
+	elseif counts.Unsellable > 0 then
+		table.insert(statusLines, "Unsellable")
+	end
+
+	if sellPrice then
+		table.insert(statusLines, "Sell price: " .. tostring(sellPrice) .. " Dollars")
+	end
+
+	ownershipLabel.Text = table.concat(statusLines, "\n")
+
+	setButtonEnabled(placeButton, counts.Total > 0, Color3.fromRGB(70, 135, 90))
+	placeButton.Text = pendingPlacementTemplateId == templateId and "Preparing..." or "Place to room"
+
+	sellControlsFrame.Visible = canSell
+	sellQuantityLabel.Text = tostring(selectedSellQuantity)
+	setButtonEnabled(sellDecreaseButton, canSell and not sellRequestInFlight and selectedSellQuantity > 1, Color3.fromRGB(230, 235, 240))
+	setButtonEnabled(sellIncreaseButton, canSell and not sellRequestInFlight and selectedSellQuantity < maxSellQuantity, Color3.fromRGB(230, 235, 240))
+	setButtonEnabled(sellButton, canSell and not sellRequestInFlight, Color3.fromRGB(70, 135, 90))
+	sellButton.Text = sellRequestInFlight and "Selling..." or "Sell for Dollars"
+
+	marketplaceButton.Visible = counts.Tradable > 0
+	marketplaceButton.Text = counts.Tradable > 0 and "Marketplace Soon" or "Untradable"
+end
+
+local function createInventoryCard(entry, layoutOrder)
+	local templateId = entry.TemplateId
+	local count = entry.Count
+	local isSelected = selectedInventoryTemplateId == templateId
+
+	local card = Instance.new("TextButton")
+	card.Name = tostring(templateId)
+	card.LayoutOrder = layoutOrder
+	card.Size = UDim2.fromOffset(86, 86)
+	card.BackgroundColor3 = isSelected
+		and Color3.fromRGB(220, 238, 250)
+		or Color3.fromRGB(250, 250, 250)
+	card.BorderSizePixel = 0
+	card.Text = ""
+	card.AutoButtonColor = true
+	card.Parent = listFrame
+
+	createCorner(card, 9)
+	createStroke(
+		card,
+		isSelected and Color3.fromRGB(70, 150, 210) or Color3.fromRGB(220, 220, 220),
+		isSelected and 2 or 1,
+		0
+	)
+
+	local iconFrame = Instance.new("Frame")
+	iconFrame.Name = "ItemIcon"
+	iconFrame.Position = UDim2.fromOffset(15, 9)
+	iconFrame.Size = UDim2.fromOffset(56, 46)
+	iconFrame.BackgroundColor3 = Color3.fromRGB(232, 236, 232)
+	iconFrame.BorderSizePixel = 0
+	iconFrame.Parent = card
+
+	createCorner(iconFrame, 8)
+
+	local iconText = Instance.new("TextLabel")
+	iconText.Name = "ItemIconText"
+	iconText.Size = UDim2.fromScale(1, 1)
+	iconText.BackgroundTransparency = 1
+	iconText.Text = string.sub(tostring(templateId), 1, 1)
+	iconText.TextColor3 = Color3.fromRGB(70, 80, 70)
+	iconText.TextSize = 22
+	iconText.Font = Enum.Font.GothamBold
+	iconText.Parent = iconFrame
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "NameLabel"
+	nameLabel.Position = UDim2.fromOffset(6, 58)
+	nameLabel.Size = UDim2.new(1, -12, 0, 20)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = entry.DisplayName
+	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+	nameLabel.TextSize = 11
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Center
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = card
+
+	local countBadge = Instance.new("TextLabel")
+	countBadge.Name = "QuantityBadge"
+	countBadge.AnchorPoint = Vector2.new(1, 0)
+	countBadge.Position = UDim2.new(1, -5, 0, 5)
+	countBadge.Size = UDim2.fromOffset(30, 20)
+	countBadge.BackgroundColor3 = Color3.fromRGB(50, 60, 70)
+	countBadge.BorderSizePixel = 0
+	countBadge.Text = "x" .. tostring(count)
+	countBadge.TextColor3 = Color3.fromRGB(255, 255, 255)
+	countBadge.TextSize = 11
+	countBadge.Font = Enum.Font.GothamBold
+	countBadge.Parent = card
+
+	createCorner(countBadge, 10)
+
+	card.MouseButton1Click:Connect(function()
+		selectedInventoryTemplateId = templateId
+		selectedSellQuantity = 1
+		setStatus("", nil)
+
+		if renderInventory then
+			renderInventory(latestInventory, latestInventoryDetails)
+		else
+			updateSelectedItemDetails()
+		end
+	end)
+end
+
+renderInventory = function(inventory, inventoryDetails)
+	latestInventory = inventory or {}
+	latestInventoryDetails = inventoryDetails or {}
+	markInventoryCacheUpdated()
+
+	local entries = buildInventoryEntries()
 	local categories = buildInventoryCategories(entries)
 	updateCategoryDropdown(categories)
 	clearRows()
 
-	table.sort(entries, function(a, b)
-		return a.TemplateId < b.TemplateId
-	end)
+	if selectedInventoryTemplateId and not getSelectedInventoryEntry() then
+		selectedInventoryTemplateId = nil
+		selectedSellQuantity = 1
+	end
 
 	if #entries == 0 then
 		createEmptyState("Inventory is empty.")
@@ -835,14 +1189,16 @@ renderInventory = function(inventory, inventoryDetails)
 		end
 
 		for index, entry in ipairs(visibleEntries) do
-			createInventoryRow(entry.TemplateId, entry.Count, entry.Details, index)
+			createInventoryCard(entry, index)
 		end
 	end
+
+	updateSelectedItemDetails()
 
 	task.defer(function()
 		listFrame.CanvasSize = UDim2.fromOffset(
 			0,
-			listLayout.AbsoluteContentSize.Y + 20
+			gridLayout.AbsoluteContentSize.Y + 20
 		)
 	end)
 end
@@ -952,10 +1308,127 @@ local function applyInventoryLocalDelta(payload)
 	end
 
 	hasLoadedInventory = true
+	markInventoryCacheUpdated()
 
 	if panel.Visible then
 		renderInventory(latestInventory, latestInventoryDetails)
 	end
+end
+
+local function fireInventoryPlacement(templateId)
+	local counts = getInventoryCounts(templateId)
+
+	if counts.Total <= 0 then
+		setStatus("This item is no longer in your inventory.", false)
+		clearPendingPlacementState(false)
+		updateSelectedItemDetails()
+		return
+	end
+
+	pendingPlacementTemplateId = nil
+	pendingPlaceAfterEdit = false
+	setStatus("Choose a floor tile to place this item.", true)
+	inventoryHideRequestedForPlacement = panel.Visible == true
+
+	startInventoryPlacement:Fire({
+		Id = templateId,
+		TemplateName = templateId,
+		DisplayName = getInventoryDisplayName(templateId),
+		Source = "Inventory",
+	})
+
+	if player:GetAttribute("CatalogPlacementActive") == true and hideInventoryForPlacement then
+		hideInventoryForPlacement()
+	end
+
+	task.defer(function()
+		if player:GetAttribute("CatalogPlacementActive") ~= true
+			and inventoryHideRequestedForPlacement
+			and not inventoryHiddenForPlacement then
+
+			inventoryHideRequestedForPlacement = false
+			updateOpenButton()
+		end
+	end)
+
+	updateSelectedItemDetails()
+end
+
+local function requestPlacementForSelectedItem()
+	local entry = getSelectedInventoryEntry()
+
+	if not entry then
+		setStatus("Select an item first.", false)
+		return
+	end
+
+	if not canPlaceInCurrentRoom() then
+		setStatus(EDIT_MODE_FAILURE_MESSAGE, false)
+		return
+	end
+
+	if player:GetAttribute("RoomMode") == "Edit" then
+		inventoryPlacementRequestedEditMode = false
+		inventoryPlacementEnteredEditMode = false
+		inventoryPlacementExitEditRequested = false
+		pendingPlaceAfterEdit = false
+		fireInventoryPlacement(entry.TemplateId)
+		return
+	end
+
+	pendingPlacementTemplateId = entry.TemplateId
+	pendingPlaceAfterEdit = true
+	inventoryPlacementRequestedEditMode = true
+	inventoryPlacementEnteredEditMode = false
+	inventoryPlacementExitEditRequested = false
+	setStatus(EDIT_MODE_PREPARING_MESSAGE, nil)
+	updateSelectedItemDetails()
+	setRoomModeRequest:FireServer("Edit")
+end
+
+local function updateSellQuantity(delta)
+	local entry = getSelectedInventoryEntry()
+
+	if not entry or sellRequestInFlight then
+		return
+	end
+
+	local counts = getInventoryCounts(entry.TemplateId)
+	local maxSellQuantity = math.min(counts.Sellable, 99)
+
+	if maxSellQuantity <= 0 then
+		selectedSellQuantity = 1
+	else
+		selectedSellQuantity = math.clamp(selectedSellQuantity + delta, 1, maxSellQuantity)
+	end
+
+	updateSelectedItemDetails()
+end
+
+local function sellSelectedItem()
+	local entry = getSelectedInventoryEntry()
+
+	if not entry or sellRequestInFlight then
+		return
+	end
+
+	local counts = getInventoryCounts(entry.TemplateId)
+	local sellPrice = getInventorySellPrice(entry.TemplateId)
+	local maxSellQuantity = math.min(counts.Sellable, 99)
+
+	if counts.Sellable <= 0 or not sellPrice or sellPrice <= 0 then
+		setStatus("This item cannot be sold for Dollars.", false)
+		return
+	end
+
+	selectedSellQuantity = math.clamp(selectedSellQuantity, 1, maxSellQuantity)
+	sellRequestInFlight = true
+	setStatus("", nil)
+	updateSelectedItemDetails()
+	inventoryRequest:FireServer("SellInventoryItem", {
+		ItemId = entry.TemplateId,
+		Quantity = selectedSellQuantity,
+	})
 end
 
 local requestInventoryRefresh = nil
@@ -986,14 +1459,14 @@ end
 
 requestInventoryRefresh = function(reason, force)
 	if requestInFlight then
-		queueInventoryRefresh(reason, force == true and 0.05 or LOCAL_REQUEST_COOLDOWN_SECONDS, force)
+		queueInventoryRefresh(reason, LOCAL_REQUEST_COOLDOWN_SECONDS, force)
 		return
 	end
 
 	local now = os.clock()
 	local elapsed = now - lastInventoryRequestAt
 
-	if force ~= true and elapsed < LOCAL_REQUEST_COOLDOWN_SECONDS then
+	if elapsed < LOCAL_REQUEST_COOLDOWN_SECONDS then
 		queueInventoryRefresh(
 			reason,
 			LOCAL_REQUEST_COOLDOWN_SECONDS - elapsed + 0.05,
@@ -1018,12 +1491,16 @@ requestInventoryRefresh = function(reason, force)
 	end)
 end
 
-local function setPanelVisible(isVisible)
+setPanelVisible = function(isVisible, options)
 	local wasVisible = panel.Visible
+	local preserveInventoryView = typeof(options) == "table" and options.PreserveInventoryView == true
+	local skipInventoryRefresh = typeof(options) == "table" and options.SkipInventoryRefresh == true
 
 	if isVisible then
-		if not wasVisible then
+		if not wasVisible and not preserveInventoryView then
 			selectedInventoryCategory = INVENTORY_CATEGORY_ALL
+			setDropdownOpen(false)
+		elseif not wasVisible then
 			setDropdownOpen(false)
 		end
 
@@ -1035,19 +1512,62 @@ local function setPanelVisible(isVisible)
 	updateOpenButton()
 
 	if isVisible then
+		inventoryHideRequestedForPlacement = false
+		inventoryHiddenForPlacement = false
+		clampPanelToScreen()
+
 		if hasLoadedInventory then
 			renderInventory(latestInventory, latestInventoryDetails)
 		end
 
-		requestEditModeForInventory()
-		requestInventoryRefresh("open")
+		if not skipInventoryRefresh then
+			requestInventoryRefresh("open")
+		end
 	elseif wasVisible or openMajorMenuName == MENU_NAME then
+		clearPendingPlacementState(false)
+		inventoryHideRequestedForPlacement = false
+		inventoryHiddenForPlacement = false
 		setDropdownOpen(false)
 		publishMajorMenuState(false)
+		requestPlayModeIfInventoryCausedEdit()
+	end
+end
 
-		if wasVisible then
-			requestPlayModeIfInventoryEnteredEditMode()
-		end
+hideInventoryForPlacement = function()
+	if inventoryHiddenForPlacement
+		or not inventoryHideRequestedForPlacement
+		or not panel.Visible then
+
+		return
+	end
+
+	inventoryHiddenForPlacement = true
+	panel.Visible = false
+	setDropdownOpen(false)
+	publishMajorMenuState(false)
+	updateOpenButton()
+end
+
+restoreInventoryAfterPlacement = function()
+	if not inventoryHiddenForPlacement then
+		inventoryHideRequestedForPlacement = false
+		updateOpenButton()
+		return
+	end
+
+	inventoryHiddenForPlacement = false
+	inventoryHideRequestedForPlacement = false
+	setPanelVisible(true, {
+		PreserveInventoryView = true,
+		SkipInventoryRefresh = true,
+	})
+
+	if renderInventory then
+		renderInventory(latestInventory, latestInventoryDetails)
+	end
+
+	if os.clock() - lastInventoryCacheUpdateAt > RESTORE_REFRESH_STALE_SECONDS then
+		queueInventoryRefresh("placementFinished", LOCAL_REQUEST_COOLDOWN_SECONDS, false)
 	end
 end
 
@@ -1063,6 +1583,18 @@ categoryButton.MouseButton1Click:Connect(function()
 	setDropdownOpen(not dropdownOpen)
 end)
 
+placeButton.MouseButton1Click:Connect(requestPlacementForSelectedItem)
+
+sellDecreaseButton.MouseButton1Click:Connect(function()
+	updateSellQuantity(-1)
+end)
+
+sellIncreaseButton.MouseButton1Click:Connect(function()
+	updateSellQuantity(1)
+end)
+
+sellButton.MouseButton1Click:Connect(sellSelectedItem)
+
 inventoryRefreshRequested.Event:Connect(function(options)
 	local reason = "event"
 	local force = false
@@ -1077,6 +1609,13 @@ inventoryRefreshRequested.Event:Connect(function(options)
 		reason = options
 	end
 
+	if reason == "event"
+		and force == false
+		and os.clock() - lastInventoryCacheUpdateAt < LOCAL_DELTA_REFRESH_SUPPRESS_SECONDS then
+
+		return
+	end
+
 	requestInventoryRefresh(reason, force)
 end)
 
@@ -1085,24 +1624,21 @@ inventoryLocalDelta.Event:Connect(function(payload)
 end)
 
 roomModeResult.OnClientEvent:Connect(function(success, message, roomMode)
-	if not inventoryRequestedEditMode then
+	if not pendingPlacementTemplateId then
 		return
 	end
 
 	if success == true or roomMode == "Edit" then
-		inventoryRequestedEditMode = false
-		inventoryEnteredEditMode = true
-
-		if not panel.Visible then
-			requestPlayModeIfInventoryEnteredEditMode()
+		if inventoryPlacementRequestedEditMode then
+			inventoryPlacementEnteredEditMode = true
 		end
 
+		pendingPlaceAfterEdit = false
+		fireInventoryPlacement(pendingPlacementTemplateId)
 		return
 	end
 
-	inventoryRequestedEditMode = false
-	inventoryEnteredEditMode = false
-	inventoryExitEditWhenPlacementEnds = false
+	clearPendingPlacementState(true)
 
 	message = tostring(message or "")
 
@@ -1113,32 +1649,35 @@ roomModeResult.OnClientEvent:Connect(function(success, message, roomMode)
 
 	if panel.Visible then
 		setStatus(EDIT_MODE_FAILURE_MESSAGE, false)
+		updateSelectedItemDetails()
 	end
 end)
 
 player:GetAttributeChangedSignal("RoomMode"):Connect(function()
-	local roomMode = player:GetAttribute("RoomMode")
-
-	if inventoryRequestedEditMode and roomMode == "Edit" then
-		inventoryRequestedEditMode = false
-		inventoryEnteredEditMode = true
-
-		if not panel.Visible then
-			requestPlayModeIfInventoryEnteredEditMode()
+	if pendingPlacementTemplateId and player:GetAttribute("RoomMode") == "Edit" then
+		if inventoryPlacementRequestedEditMode then
+			inventoryPlacementEnteredEditMode = true
 		end
-	elseif inventoryEnteredEditMode and roomMode ~= "Edit" then
-		inventoryRequestedEditMode = false
-		inventoryEnteredEditMode = false
-		inventoryExitEditWhenPlacementEnds = false
+
+		pendingPlaceAfterEdit = false
+		fireInventoryPlacement(pendingPlacementTemplateId)
+	elseif player:GetAttribute("RoomMode") ~= "Edit" then
+		inventoryPlacementRequestedEditMode = false
+		inventoryPlacementEnteredEditMode = false
+		inventoryPlacementExitEditRequested = false
 	end
 end)
 
 player:GetAttributeChangedSignal("CatalogPlacementActive"):Connect(function()
-	if inventoryExitEditWhenPlacementEnds
-		and player:GetAttribute("CatalogPlacementActive") ~= true then
-
-		requestPlayModeIfInventoryEnteredEditMode()
+	if player:GetAttribute("CatalogPlacementActive") == true then
+		if hideInventoryForPlacement then
+			hideInventoryForPlacement()
+		end
+	elseif restoreInventoryAfterPlacement then
+		restoreInventoryAfterPlacement()
 	end
+
+	updateOpenButton()
 end)
 
 majorMenuOpened.Event:Connect(function(menuName)
@@ -1209,7 +1748,6 @@ inventoryResult.OnClientEvent:Connect(function(response)
 			})
 		else
 			if message:find("Slow down", 1, true) then
-				warn(message)
 				message = "Please wait a moment."
 			end
 
@@ -1228,13 +1766,12 @@ inventoryResult.OnClientEvent:Connect(function(response)
 		renderInventory(response.Inventory, response.InventoryDetails)
 
 		if statusLabel.Text ~= EDIT_MODE_FAILURE_MESSAGE
-			and statusLabel.Text ~= EDIT_MODE_REQUIRED_MESSAGE then
+			and statusLabel.Text ~= EDIT_MODE_PREPARING_MESSAGE then
 
 			setStatus("", nil)
 		end
 	elseif message == "Slow down before requesting inventory." then
-		warn(message)
-		queueInventoryRefresh("serverCooldown", LOCAL_REQUEST_COOLDOWN_SECONDS)
+		queueInventoryRefresh("serverCooldown", LOCAL_REQUEST_COOLDOWN_SECONDS + 0.25, false)
 	else
 		setStatus(message ~= "" and message or "Could not load inventory.", false)
 	end
@@ -1249,8 +1786,24 @@ local function handleVisibilityChanged()
 end
 
 player:GetAttributeChangedSignal("OnboardingStep"):Connect(handleVisibilityChanged)
-player:GetAttributeChangedSignal("ControlMode"):Connect(handleVisibilityChanged)
-player:GetAttributeChangedSignal("CurrentRoomName"):Connect(handleVisibilityChanged)
+player:GetAttributeChangedSignal("ControlMode"):Connect(function()
+	if (player:GetAttribute("ControlMode") or "Hotel") ~= "Hotel" then
+		clearPlacementFlowForRoomChange()
+	end
+
+	handleVisibilityChanged()
+end)
+player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
+	clearPlacementFlowForRoomChange()
+	handleVisibilityChanged()
+end)
+player:GetAttributeChangedSignal("CanEditCurrentRoom"):Connect(function()
+	if not canPlaceInCurrentRoom() then
+		requestPlayModeIfInventoryCausedEdit()
+		clearPendingPlacementState(true)
+		updateSelectedItemDetails()
+	end
+end)
 
 renderInventory({})
 task.defer(updateOpenButton)
