@@ -1510,12 +1510,17 @@ local function snapPositionInsideRoom(player, position)
 end
 
 local helperPartNames = {
+	CollisionBuffer = true,
+	ClickHitbox = true,
 	SitPoint = true,
 	SleepPoint = true,
 	PlayPoint = true,
 	EnterPoint = true,
 	TalkPoint = true,
 }
+
+local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
+local OVERLAP_SHRINK = 0.08
 
 local function isHelperPart(part)
 	return helperPartNames[part.Name] == true
@@ -1539,6 +1544,87 @@ local function shouldUsePartForFurnitureBounds(part)
 	end
 
 	return false
+end
+
+local function getPlacementBoundsParts(model)
+	local parts = {}
+
+	if not model then
+		return parts
+	end
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and descendant.Name == PLACEMENT_BOUNDS_PART_NAME then
+
+			table.insert(parts, descendant)
+		end
+	end
+
+	return parts
+end
+
+local function getPlacementCheckParts(model)
+	local placementBoundsParts = getPlacementBoundsParts(model)
+
+	if #placementBoundsParts > 0 then
+		return placementBoundsParts
+	end
+
+	local fallbackParts = {}
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if shouldUsePartForFurnitureBounds(descendant) then
+			table.insert(fallbackParts, descendant)
+		end
+	end
+
+	return fallbackParts
+end
+
+local function modelHasPlacementBounds(model)
+	return #getPlacementBoundsParts(model) > 0
+end
+
+local function getFurnitureModelFromDescendant(instance, furnitureFolder)
+	local current = instance
+
+	while current and current ~= furnitureFolder do
+		if current:IsA("Model") and current.Parent == furnitureFolder then
+			return current
+		end
+
+		current = current.Parent
+	end
+
+	return nil
+end
+
+local function shouldIgnoreTouchedFurniturePart(touchingPart, furnitureFolder)
+	local touchedFurnitureModel = getFurnitureModelFromDescendant(
+		touchingPart,
+		furnitureFolder
+	)
+
+	if not touchedFurnitureModel then
+		return false
+	end
+
+	if modelHasPlacementBounds(touchedFurnitureModel)
+		and touchingPart.Name ~= PLACEMENT_BOUNDS_PART_NAME then
+
+		return true
+	end
+
+	return false
+end
+
+local function getOverlapCheckSize(size)
+	return Vector3.new(
+		math.max(size.X - OVERLAP_SHRINK, 0.05),
+		math.max(size.Y - OVERLAP_SHRINK, 0.05),
+		math.max(size.Z - OVERLAP_SHRINK, 0.05)
+	)
 end
 
 local function getPartWorldCornersFromCFrame(cframe, size)
@@ -1574,19 +1660,17 @@ local function getModelXZBoundsAtCFrame(furnitureModel, targetCFrame)
 
 	local foundPart = false
 
-	for _, descendant in ipairs(furnitureModel:GetDescendants()) do
-		if shouldUsePartForFurnitureBounds(descendant) then
-			foundPart = true
+	for _, descendant in ipairs(getPlacementCheckParts(furnitureModel)) do
+		foundPart = true
 
-			local relativeCFrame = currentPivot:ToObjectSpace(descendant.CFrame)
-			local predictedCFrame = targetCFrame * relativeCFrame
+		local relativeCFrame = currentPivot:ToObjectSpace(descendant.CFrame)
+		local predictedCFrame = targetCFrame * relativeCFrame
 
-			for _, corner in ipairs(getPartWorldCornersFromCFrame(predictedCFrame, descendant.Size)) do
-				minX = math.min(minX, corner.X)
-				maxX = math.max(maxX, corner.X)
-				minZ = math.min(minZ, corner.Z)
-				maxZ = math.max(maxZ, corner.Z)
-			end
+		for _, corner in ipairs(getPartWorldCornersFromCFrame(predictedCFrame, descendant.Size)) do
+			minX = math.min(minX, corner.X)
+			maxX = math.max(maxX, corner.X)
+			minZ = math.min(minZ, corner.Z)
+			maxZ = math.max(maxZ, corner.Z)
 		end
 	end
 
@@ -1678,38 +1762,47 @@ local function modelBlockedAtCFrame(player, furnitureModel, targetCFrame)
 
 	overlapParams.FilterDescendantsInstances = ignoreList
 
-	for _, descendant in ipairs(furnitureModel:GetDescendants()) do
-		if shouldUsePartForFurnitureBounds(descendant) then
-			local relativeCFrame = currentPivot:ToObjectSpace(descendant.CFrame)
-			local predictedCFrame = targetCFrame * relativeCFrame
+	for _, descendant in ipairs(getPlacementCheckParts(furnitureModel)) do
+		local relativeCFrame = currentPivot:ToObjectSpace(descendant.CFrame)
+		local predictedCFrame = targetCFrame * relativeCFrame
 
-			local parts = workspace:GetPartBoundsInBox(
-				predictedCFrame,
-				descendant.Size,
-				overlapParams
-			)
+		local parts = workspace:GetPartBoundsInBox(
+			predictedCFrame,
+			getOverlapCheckSize(descendant.Size),
+			overlapParams
+		)
 
-			for _, part in ipairs(parts) do
-				if part.Name == "WalkableFloor" then
+		for _, part in ipairs(parts) do
+			if part.Name == "WalkableFloor" then
+				continue
+			end
+
+			if isHelperPart(part) then
+				continue
+			end
+
+			if part:IsDescendantOf(furnitureFolder) then
+				if shouldIgnoreTouchedFurniturePart(part, furnitureFolder) then
 					continue
 				end
 
-				if isHelperPart(part) then
+				if part.Name ~= PLACEMENT_BOUNDS_PART_NAME
+					and part:IsA("BasePart")
+					and part.CanCollide == false then
+
 					continue
 				end
 
-				if part:IsA("BasePart") and part.CanCollide == false then
-					continue
-				end
+				return true
+			end
 
-				if part:IsDescendantOf(furnitureFolder) then
+			if part:IsDescendantOf(roomFolder) then
+				if part.Name:find("Boundary") or part.Name:find("Wall") then
 					return true
 				end
 
-				if part:IsDescendantOf(roomFolder) then
-					if part.Name:find("Boundary") or part.Name:find("Wall") then
-						return true
-					end
+				if part:IsA("BasePart") and part.CanCollide then
+					return true
 				end
 			end
 		end
@@ -1734,20 +1827,18 @@ local function modelWouldOverlapCharacter(editorPlayer, furnitureModel, targetCF
 				overlapParams.FilterType = Enum.RaycastFilterType.Include
 				overlapParams.FilterDescendantsInstances = { character }
 
-				for _, descendant in ipairs(furnitureModel:GetDescendants()) do
-					if shouldUsePartForFurnitureBounds(descendant) then
-						local relativeCFrame = currentPivot:ToObjectSpace(descendant.CFrame)
-						local predictedCFrame = targetCFrame * relativeCFrame
+				for _, descendant in ipairs(getPlacementCheckParts(furnitureModel)) do
+					local relativeCFrame = currentPivot:ToObjectSpace(descendant.CFrame)
+					local predictedCFrame = targetCFrame * relativeCFrame
 
-						local parts = workspace:GetPartBoundsInBox(
-							predictedCFrame,
-							descendant.Size,
-							overlapParams
-						)
+					local parts = workspace:GetPartBoundsInBox(
+						predictedCFrame,
+						getOverlapCheckSize(descendant.Size),
+						overlapParams
+					)
 
-						if #parts > 0 then
-							return true, otherPlayer
-						end
+					if #parts > 0 then
+						return true, otherPlayer
 					end
 				end
 			end
@@ -1923,7 +2014,7 @@ local function openCloseFurniture(player, furnitureModel)
 	end
 end
 
-local function moveFurniture(player, furnitureModel, targetPosition)
+local function moveFurniture(player, furnitureModel, moveRequest)
 	if player:GetAttribute("RoomMode") ~= "Edit"
 		or not RoomPermissionService.CanMoveFurniture(player, furnitureModel) then
 
@@ -1942,6 +2033,24 @@ local function moveFurniture(player, furnitureModel, targetPosition)
 	if not persistencePlayer then
 		warn("Move denied:", persistenceError)
 		return
+	end
+
+	local targetPosition = moveRequest
+	local rotationOffsetY = 0
+
+	if typeof(moveRequest) == "table" then
+		targetPosition = moveRequest.TargetPosition or moveRequest.Position
+
+		local requestedRotationOffsetY = moveRequest.RotationOffsetY or moveRequest.RotationY
+
+		if typeof(requestedRotationOffsetY) == "number"
+			and requestedRotationOffsetY == requestedRotationOffsetY
+			and requestedRotationOffsetY > -math.huge
+			and requestedRotationOffsetY < math.huge then
+
+			rotationOffsetY = math.floor((requestedRotationOffsetY / 90) + 0.5) * 90
+			rotationOffsetY = rotationOffsetY % 360
+		end
 	end
 
 	if typeof(targetPosition) ~= "Vector3" then
@@ -1964,7 +2073,10 @@ local function moveFurniture(player, furnitureModel, targetPosition)
 	)
 
 	local currentRotation = currentPivot - currentPivot.Position
-	local targetCFrame = CFrame.new(finalPosition) * currentRotation
+	local targetCFrame =
+		CFrame.new(finalPosition)
+		* currentRotation
+		* CFrame.Angles(0, math.rad(rotationOffsetY), 0)
 	-- Keep the final pivot on the GridConfig tile center. If the model does not fit
 	-- at that tile, validation below rejects it instead of clamping off-grid.
 

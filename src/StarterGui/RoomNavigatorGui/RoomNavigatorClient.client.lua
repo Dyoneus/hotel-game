@@ -90,7 +90,7 @@ local DETAIL_GAP = 8
 local DETAIL_HEIGHT_EMPTY = 96
 local DETAIL_HEIGHT_SELECTED = 146
 local DETAIL_HEIGHT_SETTINGS = 420
-local ROOM_EDITOR_USER_ID_MAX_LENGTH = 20
+local ROOM_EDITOR_USER_INPUT_MAX_LENGTH = 20
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -911,7 +911,7 @@ ui.editorUserIdBox.Position = UDim2.fromOffset(0, 152)
 ui.editorUserIdBox.Size = UDim2.new(1, -116, 0, 28)
 ui.editorUserIdBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 ui.editorUserIdBox.BorderSizePixel = 0
-ui.editorUserIdBox.PlaceholderText = "UserId"
+ui.editorUserIdBox.PlaceholderText = "Username or UserId"
 ui.editorUserIdBox.Text = ""
 ui.editorUserIdBox.TextColor3 = Color3.fromRGB(42, 48, 42)
 ui.editorUserIdBox.PlaceholderColor3 = Color3.fromRGB(130, 135, 130)
@@ -1698,7 +1698,7 @@ local function renderRoomEditors()
 			local targetUserId = editorEntry.UserId
 
 			if typeof(targetUserId) ~= "number" or targetUserId <= 0 then
-				showSettingsError("Invalid UserId.")
+				showSettingsError("Invalid user.")
 				return
 			end
 
@@ -1772,21 +1772,15 @@ local function setRoomEditors(editors)
 	renderRoomEditors()
 end
 
-local function parseEditorUserIdInput()
+local function parseEditorUserInput()
 	local rawText = ui.editorUserIdBox.Text or ""
 	local trimmed = rawText:match("^%s*(.-)%s*$") or ""
-	local userId = tonumber(trimmed)
 
-	if not userId
-		or userId ~= userId
-		or userId <= 0
-		or userId >= math.huge
-		or userId ~= math.floor(userId) then
-
+	if trimmed == "" then
 		return nil
 	end
 
-	return math.floor(userId)
+	return trimmed
 end
 
 local function updateTopTabButton(button, isSelected)
@@ -2752,14 +2746,14 @@ ui.settingsDescriptionBox:GetPropertyChangedSignal("Text"):Connect(function()
 end)
 
 ui.editorUserIdBox:GetPropertyChangedSignal("Text"):Connect(function()
-	local digitsOnly = (ui.editorUserIdBox.Text or ""):gsub("%D", "")
+	local text = ui.editorUserIdBox.Text or ""
 
-	if #digitsOnly > ROOM_EDITOR_USER_ID_MAX_LENGTH then
-		digitsOnly = string.sub(digitsOnly, 1, ROOM_EDITOR_USER_ID_MAX_LENGTH)
+	if #text > ROOM_EDITOR_USER_INPUT_MAX_LENGTH then
+		text = string.sub(text, 1, ROOM_EDITOR_USER_INPUT_MAX_LENGTH)
 	end
 
-	if ui.editorUserIdBox.Text ~= digitsOnly then
-		ui.editorUserIdBox.Text = digitsOnly
+	if ui.editorUserIdBox.Text ~= text then
+		ui.editorUserIdBox.Text = text
 	end
 end)
 
@@ -2773,14 +2767,14 @@ ui.editorAddButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	local targetUserId = parseEditorUserIdInput()
+	local targetUserInput = parseEditorUserInput()
 
-	if not targetUserId then
-		showSettingsError("Invalid UserId.")
+	if not targetUserInput then
+		showSettingsError("Invalid user.")
 		return
 	end
 
-	if targetUserId == player.UserId then
+	if tonumber(targetUserInput) == player.UserId then
 		showSettingsError("You are already the room owner.")
 		return
 	end
@@ -2800,7 +2794,7 @@ ui.editorAddButton.MouseButton1Click:Connect(function()
 	setStatusMessage("Adding editor...")
 
 	requestRemote:FireServer("AddRoomEditor", {
-		TargetUserId = targetUserId,
+		TargetUserInput = targetUserInput,
 	})
 end)
 
@@ -3069,7 +3063,19 @@ local function handleRoomSettingsResult(response)
 				ui.editorUserIdBox.Text = ""
 			end
 
-			setStatusMessage(response.Message or "Room editors updated.", "success")
+			local message = response.Message or "Room editors updated."
+
+			if response.ResolvedUserId then
+				local resolvedLabel = tostring(response.ResolvedUserId)
+
+				if typeof(response.ResolvedName) == "string" and response.ResolvedName ~= "" then
+					resolvedLabel = response.ResolvedName .. " (" .. resolvedLabel .. ")"
+				end
+
+				message = message .. " " .. resolvedLabel
+			end
+
+			setStatusMessage(message, "success")
 		else
 			setStatusMessage("")
 		end

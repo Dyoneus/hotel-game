@@ -6,6 +6,7 @@ local TextService = game:GetService("TextService")
 
 local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
+local RoomPermissionService = require(ServerScriptService:WaitForChild("RoomPermissionService"))
 local PublicRoomConfig = require(sharedFolder:WaitForChild("PublicRoomConfig"))
 local RoomTextPolicyConfig = require(sharedFolder:WaitForChild("RoomTextPolicyConfig"))
 local GridConfig = require(sharedFolder:WaitForChild("GridConfig"))
@@ -50,6 +51,8 @@ local roomNavigatorRequest = getOrCreateRemoteEvent("RoomNavigatorRequest")
 local roomNavigatorResult = getOrCreateRemoteEvent("RoomNavigatorResult")
 local leaveRoomRequest = getOrCreateRemoteEvent("LeaveRoomRequest")
 local leaveRoomResult = getOrCreateRemoteEvent("LeaveRoomResult")
+local roomPermissionRequest = getOrCreateRemoteEvent("RoomPermissionRequest")
+local roomPermissionResult = getOrCreateRemoteEvent("RoomPermissionResult")
 
 local tutorialFinishedRequest = remoteEvents:WaitForChild("TutorialFinishedRequest")
 
@@ -64,6 +67,7 @@ local VALID_LAYOUTS = {
 local ROOM_DISPLAY_NAME_MAX_LENGTH = 30
 local ROOM_DESCRIPTION_MAX_LENGTH = 100
 local ROOM_SETTINGS_COOLDOWN_SECONDS = 1
+local ROOM_USERNAME_LOOKUP_COOLDOWN_SECONDS = 2
 local BLOCKED_ROOM_TEXT_POLICY = RoomTextPolicyConfig.BlockedTerms or {}
 local ROOM_TEXT_CONTEXT_TERMS = RoomTextPolicyConfig.ContextTerms or {}
 local ROOM_TEXT_COMBINATION_RULES = RoomTextPolicyConfig.CombinationRules or {}
@@ -81,6 +85,7 @@ local playerRoomSlots = {}
 local nextRoomSlot = 0
 local roomSettingsLastRequestAtByUserId = {}
 local roomPermissionLastRequestAtByUserId = {}
+local roomUsernameLookupLastRequestAtByUserId = {}
 
 local function getRoomName(player)
 	return "Room_" .. player.UserId
@@ -350,6 +355,19 @@ local function isRoomPermissionRequestRateLimited(player)
 	return false
 end
 
+local function isUsernameLookupRateLimited(player)
+	local now = os.clock()
+	local lastRequestAt = roomUsernameLookupLastRequestAtByUserId[player.UserId]
+
+	if lastRequestAt and now - lastRequestAt < ROOM_USERNAME_LOOKUP_COOLDOWN_SECONDS then
+		return true
+	end
+
+	roomUsernameLookupLastRequestAtByUserId[player.UserId] = now
+
+	return false
+end
+
 local function normalizeTargetUserId(value)
 	local numericUserId = nil
 
@@ -369,6 +387,95 @@ local function normalizeTargetUserId(value)
 	end
 
 	return math.floor(numericUserId)
+end
+
+local function resolveUserInputToUserId(player, inputText)
+	local targetUserId = normalizeTargetUserId(inputText)
+
+	if targetUserId then
+		return targetUserId, nil, nil
+	end
+
+	if typeof(inputText) ~= "string" then
+		return nil, "Invalid user.", nil
+	end
+
+	local username = trimRoomText(inputText)
+
+	if username == "" or #username < 3 or #username > 20 then
+		return nil, "Invalid user.", nil
+	end
+
+	if isUsernameLookupRateLimited(player) then
+		return nil, "Please wait before searching another user.", nil
+	end
+
+	local success, resolvedUserId = pcall(function()
+		return Players:GetUserIdFromNameAsync(username)
+	end)
+
+	if not success or typeof(resolvedUserId) ~= "number" or resolvedUserId <= 0 then
+		return nil, "User not found.", nil
+	end
+
+	return math.floor(resolvedUserId), nil, username
+end
+
+local function getPermissionTargetInput(payload)
+	if typeof(payload) ~= "table" then
+		return nil
+	end
+
+	if payload.TargetUserInput ~= nil then
+		return payload.TargetUserInput
+	end
+
+	return payload.TargetUserId
+end
+
+local function getResolvedUserName(userId, fallbackName)
+	local targetPlayer = Players:GetPlayerByUserId(userId)
+
+	if targetPlayer then
+		return targetPlayer.Name
+	end
+
+	if typeof(fallbackName) == "string" and fallbackName ~= "" then
+		return fallbackName
+	end
+
+	return nil
+end
+
+local function targetUserIsCurrentPlayer(player, targetUserId, inputText, resolvedInputName)
+	if targetUserId == player.UserId then
+		return true
+	end
+
+	local inputName = resolvedInputName
+
+	if not inputName and typeof(inputText) == "string" and not normalizeTargetUserId(inputText) then
+		inputName = trimRoomText(inputText)
+	end
+
+	if typeof(inputName) == "string"
+		and inputName ~= ""
+		and string.lower(inputName) == string.lower(player.Name) then
+
+		return true
+	end
+
+	if player.UserId <= 0 and targetUserId > 0 and not resolvedInputName then
+		local success, resolvedPlayerUserId = pcall(function()
+			return Players:GetUserIdFromNameAsync(player.Name)
+		end)
+
+		if success and resolvedPlayerUserId == targetUserId then
+			return true
+		end
+	end
+
+	return false
 end
 
 local function getPublicRoomActiveName(publicRoomId)
@@ -585,12 +692,6 @@ local function playerIsNearRoomExit(player, roomModel, maxDistance)
 
 	if positionIsNearPart(rootPart.Position, doorSpawn, maxDistance) then
 		return true
-	end
-
-	for _, exitPart in ipairs(getRoomExitParts(roomModel)) do
-		if positionIsNearPart(rootPart.Position, exitPart, maxDistance) then
-			return true
-		end
 	end
 
 	return false, "Move closer to the room exit first."
@@ -959,14 +1060,240 @@ local function buildRoomEditorsList(ownerPlayer)
 	return editors
 end
 
-local function sendRoomEditorsResult(player, actionName, success, message)
-	roomSettingsResult:FireClient(player, {
+local function sendRoomEditorsResult(player, actionName, success, message, resolvedUserId, resolvedName)
+	local response = {
 		Kind = "RoomSettings",
 		Action = actionName,
 		Success = success == true,
 		Message = message,
 		Editors = buildRoomEditorsList(player),
-	})
+	}
+
+	if resolvedUserId then
+		response.ResolvedUserId = resolvedUserId
+		response.ResolvedName = resolvedName
+	end
+
+	roomSettingsResult:FireClient(player, response)
+end
+
+local function getCurrentPlayerRoomForFurniturePermissions(player)
+	local roomName = player:GetAttribute("CurrentRoomName")
+
+	if typeof(roomName) ~= "string" or roomName == "" then
+		return nil
+	end
+
+	local roomModel = activeRooms:FindFirstChild(roomName)
+
+	if not roomModel or not roomModel:IsA("Model") then
+		return nil
+	end
+
+	if roomModel:GetAttribute("RoomType") == "PublicSpace" then
+		return nil
+	end
+
+	if roomModel:GetAttribute("OwnerUserId") ~= player.UserId then
+		return nil
+	end
+
+	return roomModel
+end
+
+local function getFurnitureFolder(roomModel)
+	if not roomModel then
+		return nil
+	end
+
+	return roomModel:FindFirstChild("Furniture")
+end
+
+local function validateOpenClosePermissionTarget(player, payload)
+	if typeof(payload) ~= "table" then
+		return nil, nil, nil, "Invalid furniture permission request."
+	end
+
+	if payload.ActionName ~= "OpenClose" then
+		return nil, nil, nil, "Unsupported furniture permission action."
+	end
+
+	local roomModel = getCurrentPlayerRoomForFurniturePermissions(player)
+
+	if not roomModel then
+		return nil, nil, nil, "Only the room owner can manage furniture permissions."
+	end
+
+	if not RoomPermissionService.IsPlayerRoom(roomModel) then
+		return nil, nil, nil, "Furniture permissions are only available in player rooms."
+	end
+
+	local furnitureModel = payload.Furniture
+
+	if typeof(furnitureModel) ~= "Instance" or not furnitureModel:IsA("Model") then
+		return nil, nil, nil, "Invalid furniture."
+	end
+
+	local furnitureFolder = getFurnitureFolder(roomModel)
+
+	if not furnitureFolder or not furnitureModel:IsDescendantOf(furnitureFolder) then
+		return nil, nil, nil, "Invalid furniture."
+	end
+
+	if not RoomPermissionService.FurnitureSupportsPermission(furnitureModel, "OpenClose") then
+		return nil, nil, nil, "This furniture does not support Open/Close permissions."
+	end
+
+	local persistentId = RoomPermissionService.GetFurniturePersistentId(furnitureModel)
+
+	if not persistentId then
+		return nil, nil, nil, "This furniture is missing a persistent id."
+	end
+
+	return roomModel, furnitureModel, persistentId, nil
+end
+
+local function validateFurnitureActionAccessTarget(player, payload)
+	if typeof(payload) ~= "table" then
+		return nil, nil, "Invalid furniture action access request."
+	end
+
+	local roomName = player:GetAttribute("CurrentRoomName")
+
+	if typeof(roomName) ~= "string" or roomName == "" then
+		return nil, nil, "You are not in a room."
+	end
+
+	local roomModel = activeRooms:FindFirstChild(roomName)
+
+	if not roomModel or not roomModel:IsA("Model") then
+		return nil, nil, "Current room is unavailable."
+	end
+
+	local furnitureModel = payload.Furniture
+
+	if typeof(furnitureModel) ~= "Instance" or not furnitureModel:IsA("Model") then
+		return nil, nil, "Invalid furniture."
+	end
+
+	local furnitureFolder = getFurnitureFolder(roomModel)
+
+	if not furnitureFolder or not furnitureModel:IsDescendantOf(furnitureFolder) then
+		return nil, nil, "Invalid furniture."
+	end
+
+	return roomModel, furnitureModel, nil
+end
+
+local function sendFurnitureActionAccessResult(player, success, message, furnitureModel, accessSummary)
+	local response = {
+		Kind = "FurnitureActionAccess",
+		Success = success == true,
+		Furniture = furnitureModel,
+		SupportsOpenClose = false,
+		CanOpenClose = false,
+		CanManageOpenClose = false,
+		CanMove = false,
+		CanRotate = false,
+		CanPickUp = false,
+		Message = message,
+	}
+
+	if typeof(accessSummary) == "table" then
+		response.SupportsOpenClose = accessSummary.SupportsOpenClose == true
+		response.CanOpenClose = accessSummary.CanOpenClose == true
+		response.CanManageOpenClose = accessSummary.CanManageOpenClose == true
+		response.CanMove = accessSummary.CanMove == true
+		response.CanRotate = accessSummary.CanRotate == true
+		response.CanPickUp = accessSummary.CanPickUp == true
+	end
+
+	roomPermissionResult:FireClient(player, response)
+end
+
+local function buildFurnitureActionAccessSummary(player, roomModel, furnitureModel)
+	local supportsOpenClose = RoomPermissionService.FurnitureSupportsPermission(furnitureModel, "OpenClose")
+	local persistentId = RoomPermissionService.GetFurniturePersistentId(furnitureModel)
+
+	return {
+		SupportsOpenClose = supportsOpenClose,
+		CanOpenClose = supportsOpenClose and RoomPermissionService.CanOpenCloseFurniture(player, furnitureModel) or false,
+		CanManageOpenClose = RoomPermissionService.IsPlayerRoom(roomModel)
+			and RoomPermissionService.IsRoomOwner(player, roomModel)
+			and supportsOpenClose
+			and persistentId ~= nil,
+		CanMove = RoomPermissionService.CanMoveFurniture(player, furnitureModel),
+		CanRotate = RoomPermissionService.CanRotateFurniture(player, furnitureModel),
+		CanPickUp = RoomPermissionService.CanPickUpFurniture(player, furnitureModel),
+	}
+end
+
+local function buildFurniturePermissionEntries(ownerPlayer, persistentId, actionName)
+	local roomPermissions = RoomPersistence.GetRoomPermissionsSnapshot(ownerPlayer)
+	local entries = {}
+
+	if typeof(roomPermissions) ~= "table"
+		or typeof(roomPermissions.FurniturePermissions) ~= "table" then
+
+		return entries
+	end
+
+	local furniturePermissions = roomPermissions.FurniturePermissions[persistentId]
+
+	if typeof(furniturePermissions) ~= "table" then
+		return entries
+	end
+
+	local actionPermissions = furniturePermissions[actionName]
+
+	if typeof(actionPermissions) ~= "table" then
+		return entries
+	end
+
+	for userIdKey, isAllowed in pairs(actionPermissions) do
+		if isAllowed == true then
+			local userId = tonumber(userIdKey)
+
+			if userId and userId > 0 and userId ~= ownerPlayer.UserId then
+				local targetPlayer = Players:GetPlayerByUserId(userId)
+				local entry = {
+					UserId = userId,
+				}
+
+				if targetPlayer then
+					entry.Name = targetPlayer.Name
+					entry.DisplayName = targetPlayer.DisplayName
+				end
+
+				table.insert(entries, entry)
+			end
+		end
+	end
+
+	table.sort(entries, function(a, b)
+		return a.UserId < b.UserId
+	end)
+
+	return entries
+end
+
+local function sendFurniturePermissionResult(player, requestAction, success, message, persistentId, entries, resolvedUserId, resolvedName)
+	local response = {
+		Kind = "FurniturePermissions",
+		RequestAction = requestAction,
+		Success = success == true,
+		Message = message,
+		FurniturePersistentId = persistentId,
+		ActionName = "OpenClose",
+		Entries = entries or {},
+	}
+
+	if resolvedUserId then
+		response.ResolvedUserId = resolvedUserId
+		response.ResolvedName = resolvedName
+	end
+
+	roomPermissionResult:FireClient(player, response)
 end
 
 local function enterSavedRoomForPlayer(player, profile)
@@ -1324,6 +1651,7 @@ Players.PlayerRemoving:Connect(function(player)
 	roomCreationInFlightByUserId[player.UserId] = nil
 	roomSettingsLastRequestAtByUserId[player.UserId] = nil
 	roomPermissionLastRequestAtByUserId[player.UserId] = nil
+	roomUsernameLookupLastRequestAtByUserId[player.UserId] = nil
 	
 	if RoomPersistence.IsWriteBlocked(player) then
 		RoomPersistence.ReleasePlayer(player)
@@ -1493,6 +1821,112 @@ roomListRequest.OnServerEvent:Connect(function(player)
 	sendRoomListToPlayer(player)
 end)
 
+roomPermissionRequest.OnServerEvent:Connect(function(player, actionName, payload)
+	local safeActionName = typeof(actionName) == "string" and actionName or "Unknown"
+
+	if safeActionName ~= "GetFurniturePermissions"
+		and safeActionName ~= "SetFurniturePermission"
+		and safeActionName ~= "GetFurnitureActionAccess" then
+
+		sendFurniturePermissionResult(player, safeActionName, false, "Unknown permission action.")
+		return
+	end
+
+	if safeActionName ~= "GetFurnitureActionAccess" and isRoomPermissionRequestRateLimited(player) then
+		sendFurniturePermissionResult(
+			player,
+			safeActionName,
+			false,
+			"Please wait a moment before updating furniture permissions."
+		)
+		return
+	end
+
+	if safeActionName == "GetFurnitureActionAccess" then
+		local roomModel, furnitureModel, validationMessage = validateFurnitureActionAccessTarget(player, payload)
+
+		if validationMessage then
+			sendFurnitureActionAccessResult(
+				player,
+				false,
+				validationMessage,
+				typeof(payload) == "table" and payload.Furniture or nil
+			)
+			return
+		end
+
+		sendFurnitureActionAccessResult(
+			player,
+			true,
+			"Furniture action access loaded.",
+			furnitureModel,
+			buildFurnitureActionAccessSummary(player, roomModel, furnitureModel)
+		)
+		return
+	end
+
+	local _, _, persistentId, validationMessage = validateOpenClosePermissionTarget(player, payload)
+
+	if validationMessage then
+		sendFurniturePermissionResult(player, safeActionName, false, validationMessage)
+		return
+	end
+
+	if safeActionName == "GetFurniturePermissions" then
+		sendFurniturePermissionResult(
+			player,
+			safeActionName,
+			true,
+			"Furniture permissions loaded.",
+			persistentId,
+			buildFurniturePermissionEntries(player, persistentId, "OpenClose")
+		)
+		return
+	end
+
+	local targetUserInput = getPermissionTargetInput(payload)
+	local targetUserId, targetUserMessage, resolvedInputName =
+		resolveUserInputToUserId(player, targetUserInput)
+
+	if not targetUserId then
+		sendFurniturePermissionResult(player, safeActionName, false, targetUserMessage or "Invalid user.", persistentId)
+		return
+	end
+
+	if targetUserIsCurrentPlayer(player, targetUserId, targetUserInput, resolvedInputName) then
+		sendFurniturePermissionResult(
+			player,
+			safeActionName,
+			false,
+			"You already have access as the room owner.",
+			persistentId,
+			buildFurniturePermissionEntries(player, persistentId, "OpenClose")
+		)
+		return
+	end
+
+	local success, message = RoomPersistence.SetFurniturePermission(
+		player,
+		persistentId,
+		"OpenClose",
+		targetUserId,
+		payload.IsAllowed == true
+	)
+	local resolvedName = getResolvedUserName(targetUserId, resolvedInputName)
+
+	sendFurniturePermissionResult(
+		player,
+		safeActionName,
+		success == true,
+		success and (payload.IsAllowed == true and "Open/Close access added." or "Open/Close access removed.")
+			or (message or "Could not update furniture permission."),
+		persistentId,
+		buildFurniturePermissionEntries(player, persistentId, "OpenClose"),
+		success and targetUserId or nil,
+		success and resolvedName or nil
+	)
+end)
+
 roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	local safeActionName = typeof(actionName) == "string" and actionName or "Unknown"
 
@@ -1557,24 +1991,26 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 				Kind = "RoomSettings",
 				Action = safeActionName,
 				Success = false,
-				Message = "Invalid UserId.",
+				Message = "Invalid user.",
 			})
 			return
 		end
 
-		local targetUserId = normalizeTargetUserId(payload.TargetUserId)
+		local targetUserInput = getPermissionTargetInput(payload)
+		local targetUserId, targetUserMessage, resolvedInputName =
+			resolveUserInputToUserId(player, targetUserInput)
 
 		if not targetUserId then
 			roomSettingsResult:FireClient(player, {
 				Kind = "RoomSettings",
 				Action = safeActionName,
 				Success = false,
-				Message = "Invalid UserId.",
+				Message = targetUserMessage or "Invalid user.",
 			})
 			return
 		end
 
-		if targetUserId == player.UserId then
+		if targetUserIsCurrentPlayer(player, targetUserId, targetUserInput, resolvedInputName) then
 			roomSettingsResult:FireClient(player, {
 				Kind = "RoomSettings",
 				Action = safeActionName,
@@ -1586,6 +2022,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 
 		local shouldAllow = safeActionName == "AddRoomEditor"
 		local success, message = RoomPersistence.SetRoomEditorPermission(player, targetUserId, shouldAllow)
+		local resolvedName = getResolvedUserName(targetUserId, resolvedInputName)
 
 		if success and not shouldAllow then
 			local removedPlayer = Players:GetPlayerByUserId(targetUserId)
@@ -1604,7 +2041,9 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			safeActionName,
 			success == true,
 			success and (shouldAllow and "Editor added." or "Editor removed.")
-				or (message or "Could not update room editors.")
+				or (message or "Could not update room editors."),
+			success and targetUserId or nil,
+			success and resolvedName or nil
 		)
 		return
 	end

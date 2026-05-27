@@ -14,7 +14,7 @@ local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 
 local leaveRoomRequest = remoteEvents:WaitForChild("LeaveRoomRequest")
 local leaveRoomResult = remoteEvents:WaitForChild("LeaveRoomResult")
-local EXIT_ARRIVAL_DISTANCE = 2.5
+local EXIT_ARRIVAL_DISTANCE = 4
 local LEAVE_WALK_TIMEOUT_SECONDS = 8
 local FADE_OUT_SECONDS = 0.28
 local EXIT_REACHED_DELAY_SECONDS = 0.35
@@ -231,6 +231,16 @@ local function getCurrentRoomModel()
 	return activeRooms:FindFirstChild(roomName)
 end
 
+local function getCurrentDoorSpawn()
+	local roomModel = getCurrentRoomModel()
+
+	if not roomModel then
+		return nil
+	end
+
+	return findRoomMarker(roomModel, "DoorSpawn")
+end
+
 local function getCharacterParts()
 	local character = player.Character
 
@@ -372,26 +382,38 @@ local function clearPathPreview()
 	end
 end
 
-local function positionIsInsidePart(part, position)
-	local localPosition = part.CFrame:PointToObjectSpace(position)
-	local halfSize = part.Size / 2
-
-	return math.abs(localPosition.X) <= halfSize.X
-		and math.abs(localPosition.Y) <= halfSize.Y
-		and math.abs(localPosition.Z) <= halfSize.Z
-end
-
-local function positionIsInsideExitZone(position, roomModel)
-	for _, exitPart in ipairs(getRoomExitParts(roomModel)) do
-		if positionIsInsidePart(exitPart, position) then
-			return true
-		end
+local function positionIsInsideOrNearPart(worldPosition, part, margin)
+	if typeof(worldPosition) ~= "Vector3" or not part or not part:IsA("BasePart") then
+		return false
 	end
 
-	return false
+	local localPosition = part.CFrame:PointToObjectSpace(worldPosition)
+	local halfSize = part.Size / 2
+	local outsideX = math.max(math.abs(localPosition.X) - halfSize.X, 0)
+	local outsideY = math.max(math.abs(localPosition.Y) - halfSize.Y, 0)
+	local outsideZ = math.max(math.abs(localPosition.Z) - halfSize.Z, 0)
+
+	return Vector3.new(outsideX, outsideY, outsideZ).Magnitude <= (margin or 0)
 end
 
-local function waitUntilAtDoorSpawn(position, roomModel, expectedRoomName, maxSeconds)
+local function isCharacterNearPart(part, distance)
+	local _, rootPart = getCharacterParts()
+
+	if not rootPart or not part then
+		return false
+	end
+
+	local markerPosition = getMarkerPosition(part)
+
+	if markerPosition and (rootPart.Position - markerPosition).Magnitude <= distance then
+		return true
+	end
+
+	return part:IsA("BasePart")
+		and positionIsInsideOrNearPart(rootPart.Position, part, distance)
+end
+
+local function waitUntilAtDoorSpawn(doorSpawn, roomModel, expectedRoomName, maxSeconds)
 	local startTime = os.clock()
 
 	while os.clock() - startTime < maxSeconds do
@@ -405,8 +427,7 @@ local function waitUntilAtDoorSpawn(position, roomModel, expectedRoomName, maxSe
 			return false
 		end
 
-		if (rootPart.Position - position).Magnitude <= EXIT_ARRIVAL_DISTANCE
-			or positionIsInsideExitZone(rootPart.Position, roomModel) then
+		if isCharacterNearPart(doorSpawn, EXIT_ARRIVAL_DISTANCE) then
 
 			return true
 		end
@@ -446,7 +467,7 @@ local function startLeaveRoomSequence()
 		return
 	end
 
-	local doorSpawn = findRoomMarker(roomModel, "DoorSpawn")
+	local doorSpawn = getCurrentDoorSpawn()
 	local doorSpawnPosition = getMarkerPosition(doorSpawn)
 
 	if not doorSpawnPosition then
@@ -473,7 +494,12 @@ local function startLeaveRoomSequence()
 			return
 		end
 
-		local movedToExit, moveMessage = requestRoomExitMovement()
+		local movedToExit = isCharacterNearPart(doorSpawn, EXIT_ARRIVAL_DISTANCE)
+		local moveMessage = nil
+
+		if not movedToExit then
+			movedToExit, moveMessage = requestRoomExitMovement()
+		end
 
 		if not leaveInProgress then
 			return
@@ -486,7 +512,7 @@ local function startLeaveRoomSequence()
 		end
 
 		local reachedDoor = waitUntilAtDoorSpawn(
-			doorSpawnPosition,
+			doorSpawn,
 			roomModel,
 			player:GetAttribute("CurrentRoomName"),
 			1

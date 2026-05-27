@@ -321,7 +321,91 @@ styleActionButton(rotateButton, Color3.fromRGB(76, 123, 181))
 styleActionButton(pickUpButton, Color3.fromRGB(190, 102, 68))
 styleActionButton(openCloseButton, Color3.fromRGB(86, 135, 98))
 
-local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, showOpenClose)
+local permissionUi = {
+	rows = {},
+	entries = {},
+	expanded = false,
+	canManage = false,
+}
+
+permissionUi.accessButton = rotateButton:Clone()
+permissionUi.accessButton.Name = "OpenCloseAccessButton"
+permissionUi.accessButton.Text = "Access"
+permissionUi.accessButton.Visible = false
+permissionUi.accessButton.Parent = menuFrame
+styleActionButton(permissionUi.accessButton, Color3.fromRGB(116, 104, 171))
+
+permissionUi.panel = Instance.new("Frame")
+permissionUi.panel.Name = "OpenCloseAccessPanel"
+permissionUi.panel.BackgroundColor3 = Color3.fromRGB(235, 238, 241)
+permissionUi.panel.BackgroundTransparency = 0
+permissionUi.panel.BorderSizePixel = 0
+permissionUi.panel.Visible = false
+permissionUi.panel.Parent = menuFrame
+ensureCorner(permissionUi.panel, 8)
+ensureStroke(permissionUi.panel, Color3.fromRGB(177, 184, 194), 1, 0.25)
+
+permissionUi.title = Instance.new("TextLabel")
+permissionUi.title.Name = "Title"
+permissionUi.title.BackgroundTransparency = 1
+permissionUi.title.Position = UDim2.fromOffset(10, 8)
+permissionUi.title.Size = UDim2.new(1, -20, 0, 18)
+permissionUi.title.Text = "Open/Close Access"
+permissionUi.title.TextColor3 = MENU_TEXT_DARK
+permissionUi.title.TextSize = 12
+permissionUi.title.TextXAlignment = Enum.TextXAlignment.Left
+permissionUi.title.Font = Enum.Font.GothamBold
+permissionUi.title.Parent = permissionUi.panel
+
+permissionUi.input = Instance.new("TextBox")
+permissionUi.input.Name = "UserIdInput"
+permissionUi.input.Position = UDim2.fromOffset(10, 32)
+permissionUi.input.Size = UDim2.new(1, -82, 0, 28)
+permissionUi.input.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+permissionUi.input.BorderSizePixel = 0
+permissionUi.input.PlaceholderText = "Username or UserId"
+permissionUi.input.Text = ""
+permissionUi.input.TextColor3 = MENU_TEXT_DARK
+permissionUi.input.PlaceholderColor3 = MENU_TEXT_MUTED
+permissionUi.input.TextSize = 12
+permissionUi.input.Font = Enum.Font.GothamMedium
+permissionUi.input.ClearTextOnFocus = false
+permissionUi.input.Parent = permissionUi.panel
+ensureCorner(permissionUi.input, 6)
+ensureStroke(permissionUi.input, Color3.fromRGB(183, 190, 198), 1, 0.1)
+
+permissionUi.addButton = Instance.new("TextButton")
+permissionUi.addButton.Name = "AddButton"
+permissionUi.addButton.Position = UDim2.new(1, -64, 0, 32)
+permissionUi.addButton.Size = UDim2.fromOffset(54, 28)
+permissionUi.addButton.Text = "Add"
+permissionUi.addButton.Parent = permissionUi.panel
+styleActionButton(permissionUi.addButton, Color3.fromRGB(72, 143, 91))
+
+permissionUi.list = Instance.new("ScrollingFrame")
+permissionUi.list.Name = "AllowedUsers"
+permissionUi.list.Position = UDim2.fromOffset(10, 68)
+permissionUi.list.Size = UDim2.new(1, -20, 0, 72)
+permissionUi.list.BackgroundTransparency = 1
+permissionUi.list.BorderSizePixel = 0
+permissionUi.list.ScrollBarThickness = 4
+permissionUi.list.CanvasSize = UDim2.fromOffset(0, 0)
+permissionUi.list.Parent = permissionUi.panel
+
+permissionUi.status = Instance.new("TextLabel")
+permissionUi.status.Name = "Status"
+permissionUi.status.BackgroundTransparency = 1
+permissionUi.status.Position = UDim2.fromOffset(10, 142)
+permissionUi.status.Size = UDim2.new(1, -20, 0, 18)
+permissionUi.status.Text = ""
+permissionUi.status.TextColor3 = MENU_TEXT_MUTED
+permissionUi.status.TextSize = 11
+permissionUi.status.TextXAlignment = Enum.TextXAlignment.Left
+permissionUi.status.TextTruncate = Enum.TextTruncate.AtEnd
+permissionUi.status.Font = Enum.Font.GothamMedium
+permissionUi.status.Parent = permissionUi.panel
+
+local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, showOpenClose, showAccess)
 	local contentX = 14
 	local contentWidth = MENU_WIDTH - 28
 	local y = MENU_HEADER_HEIGHT
@@ -332,6 +416,8 @@ local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, sh
 	rotateButton.Visible = showRotate == true
 	pickUpButton.Visible = showPickUp == true
 	openCloseButton.Visible = showOpenClose == true
+	permissionUi.accessButton.Visible = showAccess == true
+	permissionUi.panel.Visible = showAccess == true and permissionUi.expanded == true
 
 	if showSit then
 		sitButton.Position = UDim2.fromOffset(contentX, y)
@@ -353,10 +439,22 @@ local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, sh
 		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
 	end
 
+	if showAccess then
+		permissionUi.accessButton.Position = UDim2.fromOffset(contentX, y)
+		permissionUi.accessButton.Size = UDim2.fromOffset(contentWidth, MENU_BUTTON_HEIGHT)
+		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
+	end
+
 	if showPickUp then
 		pickUpButton.Position = UDim2.fromOffset(contentX, y)
 		pickUpButton.Size = UDim2.fromOffset(contentWidth, MENU_BUTTON_HEIGHT)
 		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
+	end
+
+	if permissionUi.panel.Visible then
+		permissionUi.panel.Position = UDim2.fromOffset(contentX, y)
+		permissionUi.panel.Size = UDim2.fromOffset(contentWidth, 166)
+		y += 166 + MENU_BUTTON_GAP
 	end
 
 	menuFrame.Size = UDim2.fromOffset(MENU_WIDTH, math.max(y + 6, 116))
@@ -465,10 +563,6 @@ end
 
 local function isEditMode()
 	return player:GetAttribute("RoomMode") == "Edit"
-end
-
-local function isPlayMode()
-	return not isEditMode()
 end
 
 local function getDefaultFurnitureAction(furnitureModel)
@@ -658,6 +752,11 @@ local movingFurniture = nil
 local placementPreview = nil
 local placementPreviewHighlight = nil
 local placementIsValid = false
+local movePreviewState = {
+	rotationOffsetY = 0,
+	hintGui = nil,
+	hintLabel = nil,
+}
 
 local hiddenFurnitureParts = {}
 local suppressFurnitureMenuUntil = 0
@@ -684,23 +783,240 @@ local function clearFurnitureHighlight()
 	selectedHighlight.Enabled = false
 end
 
-local function getHumanoid()
-	local character = player.Character or player.CharacterAdded:Wait()
-	return character:WaitForChild("Humanoid")
+function permissionUi.getPersistentId(furnitureModel)
+	if typeof(furnitureModel) ~= "Instance" or not furnitureModel:IsA("Model") then
+		return nil
+	end
+
+	local persistentId = furnitureModel:GetAttribute("PersistentId")
+
+	if typeof(persistentId) ~= "string" or persistentId == "" or not persistentId:match("%S") then
+		return nil
+	end
+
+	return persistentId
+end
+
+function permissionUi.applyLayout()
+	layoutFurnitureMenu(
+		permissionUi.showSit,
+		permissionUi.showMove,
+		permissionUi.showRotate,
+		permissionUi.showPickUp,
+		permissionUi.showOpenClose,
+		permissionUi.canManage
+	)
+end
+
+function permissionUi.setStatus(message, isError)
+	permissionUi.status.Text = tostring(message or "")
+	permissionUi.status.TextColor3 = isError and Color3.fromRGB(178, 72, 58) or MENU_TEXT_MUTED
+end
+
+function permissionUi.clearRows()
+	for _, row in ipairs(permissionUi.rows) do
+		if row and row.Parent then
+			row:Destroy()
+		end
+	end
+
+	permissionUi.rows = {}
+end
+
+function permissionUi.setEntries(entries)
+	permissionUi.entries = typeof(entries) == "table" and entries or {}
+	permissionUi.clearRows()
+
+	if #permissionUi.entries == 0 then
+		local row = Instance.new("TextLabel")
+		row.Name = "Empty"
+		row.BackgroundTransparency = 1
+		row.Position = UDim2.fromOffset(0, 0)
+		row.Size = UDim2.new(1, -4, 0, 24)
+		row.Text = "No users added."
+		row.TextColor3 = MENU_TEXT_MUTED
+		row.TextSize = 11
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.Font = Enum.Font.GothamMedium
+		row.Parent = permissionUi.list
+		table.insert(permissionUi.rows, row)
+		permissionUi.list.CanvasSize = UDim2.fromOffset(0, 28)
+		return
+	end
+
+	for index, entry in ipairs(permissionUi.entries) do
+		local userId = tonumber(entry.UserId)
+		local row = Instance.new("Frame")
+		row.Name = "User_" .. tostring(userId or index)
+		row.Position = UDim2.fromOffset(0, (index - 1) * 30)
+		row.Size = UDim2.new(1, -4, 0, 26)
+		row.BackgroundColor3 = Color3.fromRGB(247, 248, 249)
+		row.BorderSizePixel = 0
+		row.Parent = permissionUi.list
+		ensureCorner(row, 5)
+
+		local label = Instance.new("TextLabel")
+		label.Name = "Label"
+		label.BackgroundTransparency = 1
+		label.Position = UDim2.fromOffset(6, 0)
+		label.Size = UDim2.new(1, -70, 1, 0)
+		label.Text = entry.DisplayName or entry.Name or tostring(userId)
+		label.TextColor3 = MENU_TEXT_DARK
+		label.TextSize = 11
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextTruncate = Enum.TextTruncate.AtEnd
+		label.Font = Enum.Font.GothamMedium
+		label.Parent = row
+
+		local removeButton = Instance.new("TextButton")
+		removeButton.Name = "Remove"
+		removeButton.AnchorPoint = Vector2.new(1, 0.5)
+		removeButton.Position = UDim2.new(1, -4, 0.5, 0)
+		removeButton.Size = UDim2.fromOffset(56, 20)
+		removeButton.Text = "Remove"
+		removeButton.Parent = row
+		styleActionButton(removeButton, Color3.fromRGB(190, 102, 68))
+		removeButton.TextSize = 10
+		removeButton.MouseButton1Click:Connect(function()
+			if not selectedFurniture or not userId then
+				return
+			end
+
+			remoteEvents:WaitForChild("RoomPermissionRequest"):FireServer("SetFurniturePermission", {
+				Furniture = selectedFurniture,
+				ActionName = "OpenClose",
+				TargetUserId = userId,
+				IsAllowed = false,
+			})
+		end)
+
+		table.insert(permissionUi.rows, row)
+	end
+
+	permissionUi.list.CanvasSize = UDim2.fromOffset(0, #permissionUi.entries * 30)
+end
+
+function permissionUi.requestCurrent()
+	if not selectedFurniture then
+		return
+	end
+
+	permissionUi.setStatus("Loading...")
+	remoteEvents:WaitForChild("RoomPermissionRequest"):FireServer("GetFurniturePermissions", {
+		Furniture = selectedFurniture,
+		ActionName = "OpenClose",
+	})
+end
+
+function permissionUi.resetForMenu(furnitureModel, showSit, showMove, showRotate, showPickUp, showOpenClose)
+	permissionUi.showSit = showSit
+	permissionUi.showMove = showMove
+	permissionUi.showRotate = showRotate
+	permissionUi.showPickUp = showPickUp
+	permissionUi.showOpenClose = showOpenClose
+	permissionUi.canManage = false
+	permissionUi.expanded = false
+	permissionUi.input.Text = ""
+	permissionUi.setStatus("")
+	permissionUi.setEntries({})
+end
+
+function permissionUi.requestActionAccess()
+	if not selectedFurniture then
+		return
+	end
+
+	remoteEvents:WaitForChild("RoomPermissionRequest"):FireServer("GetFurnitureActionAccess", {
+		Furniture = selectedFurniture,
+	})
+end
+
+function permissionUi.applyActionAccess(response)
+	if typeof(response) ~= "table" or response.Kind ~= "FurnitureActionAccess" then
+		return false
+	end
+
+	if not selectedFurniture or not menuFrame.Visible or response.Furniture ~= selectedFurniture then
+		return true
+	end
+
+	local editing = isEditMode()
+
+	permissionUi.showOpenClose = response.SupportsOpenClose == true and response.CanOpenClose == true
+	permissionUi.canManage = response.CanManageOpenClose == true
+	permissionUi.showMove = editing and response.CanMove == true
+	permissionUi.showRotate = editing and response.CanRotate == true
+	permissionUi.showPickUp = editing and response.CanPickUp == true and getFurnitureTemplateId(selectedFurniture) ~= nil
+
+	if not permissionUi.canManage then
+		permissionUi.expanded = false
+		permissionUi.setEntries({})
+		permissionUi.setStatus("")
+	end
+
+	if not editing and not permissionUi.showSit and not permissionUi.showOpenClose then
+		selectedFurniture = nil
+		menuFrame.Visible = false
+		permissionUi.expanded = false
+		permissionUi.canManage = false
+		clearFurnitureHighlight()
+		return true
+	end
+
+	updateOpenCloseButtonText(selectedFurniture)
+	permissionUi.applyLayout()
+
+	return true
+end
+
+function permissionUi.handleResult(response)
+	if permissionUi.applyActionAccess(response) then
+		return
+	end
+
+	if typeof(response) ~= "table" or response.Kind ~= "FurniturePermissions" then
+		return
+	end
+
+	if not selectedFurniture or not menuFrame.Visible then
+		return
+	end
+
+	local persistentId = permissionUi.getPersistentId(selectedFurniture)
+
+	if response.FurniturePersistentId ~= persistentId or response.ActionName ~= "OpenClose" then
+		return
+	end
+
+	if response.Success == true then
+		permissionUi.setEntries(response.Entries)
+		local message = response.Message or "Updated."
+
+		if response.ResolvedUserId then
+			local resolvedLabel = tostring(response.ResolvedUserId)
+
+			if typeof(response.ResolvedName) == "string" and response.ResolvedName ~= "" then
+				resolvedLabel = response.ResolvedName .. " (" .. resolvedLabel .. ")"
+			end
+
+			message = message .. " " .. resolvedLabel
+		end
+
+		permissionUi.setStatus(message)
+	else
+		permissionUi.setStatus(response.Message or "Could not update access.", true)
+	end
 end
 
 local currentMoveId = 0
 local lastMoveTime = 0
-local lastDestination = nil
 
 local CLICK_MOVE_COOLDOWN = 0.2
-local MIN_DESTINATION_DISTANCE = 2
-local WAYPOINT_SKIP_DISTANCE = 2
 local SNAP_CHARACTER_FACING_TO_GRID = true
 local HOTEL_GRID_WALK_SPEED = 12
 local DOOR_SPAWN_BRIDGE_DISTANCE = 8
-local ENTRY_BRIDGE_REACHED_DISTANCE = 3
-local EXIT_TARGET_REACHED_DISTANCE = 3
+local ENTRY_BRIDGE_REACHED_DISTANCE = 4
+local EXIT_TARGET_REACHED_DISTANCE = 4
 local EXIT_DIRECT_MOVE_TIMEOUT_SECONDS = 4
 local EXIT_ENTRY_MOVE_TIMEOUT_SECONDS = 8
 local STAND_UP_TIMEOUT_SECONDS = 2
@@ -715,6 +1031,9 @@ local activeGridFacingRootPart = nil
 local activeGridFacingDirection = nil
 local entranceBridgeDiagnosticsLogged = {}
 local lastSeatedStandCompletedAt = 0
+local roomMovementState = {
+	lastEntranceReachWarningAt = 0,
+}
 
 local function getMovementGridContext()
 	local roomModel = getCurrentRoomModel()
@@ -826,6 +1145,85 @@ local function getCurrentEntryWalkTarget()
 	return findCurrentRoomMarker("EntryWalkTarget")
 end
 
+function roomMovementState.positionIsInsideOrNearPart(position, part, margin)
+	if typeof(position) ~= "Vector3" or not part or not part:IsA("BasePart") then
+		return false
+	end
+
+	local localPosition = part.CFrame:PointToObjectSpace(position)
+	local halfSize = part.Size / 2
+	local outsideX = math.max(math.abs(localPosition.X) - halfSize.X, 0)
+	local outsideY = math.max(math.abs(localPosition.Y) - halfSize.Y, 0)
+	local outsideZ = math.max(math.abs(localPosition.Z) - halfSize.Z, 0)
+
+	return Vector3.new(outsideX, outsideY, outsideZ).Magnitude <= (margin or 0)
+end
+
+function roomMovementState.isCharacterNearPart(part, distance)
+	local character = player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+	if not rootPart then
+		return false
+	end
+
+	local markerPosition = getMarkerWorldPosition(part)
+
+	if markerPosition and (rootPart.Position - markerPosition).Magnitude <= distance then
+		return true
+	end
+
+	if part and part:IsA("BasePart") then
+		return roomMovementState.positionIsInsideOrNearPart(rootPart.Position, part, distance)
+	end
+
+	return false
+end
+
+function roomMovementState.characterReachedMarker(marker, distance)
+	if marker and roomMovementState.isCharacterNearPart(marker, distance) then
+		return true
+	end
+
+	return false
+end
+
+function roomMovementState.waitForCurrentRoomReady(options)
+	options = typeof(options) == "table" and options or {}
+
+	local timeoutSeconds = options.TimeoutSeconds or 1.25
+	local requireDoorSpawn = options.RequireDoorSpawn == true
+	local startTime = os.clock()
+
+	while os.clock() - startTime < timeoutSeconds do
+		local roomName = player:GetAttribute("CurrentRoomName")
+		local roomModel = nil
+
+		if typeof(roomName) == "string" and roomName ~= "" then
+			roomModel = activeRooms:FindFirstChild(roomName)
+		end
+
+		local roomFolder = roomModel and roomModel:FindFirstChild("Room")
+		local floor = roomFolder and roomFolder:FindFirstChild("WalkableFloor")
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+		local doorSpawnReady = not requireDoorSpawn
+
+		if requireDoorSpawn and roomModel and roomModel:FindFirstChild("DoorSpawn", true) then
+			doorSpawnReady = true
+		end
+
+		if roomModel and floor and floor:IsA("BasePart") and humanoid and rootPart and doorSpawnReady then
+			return true
+		end
+
+		task.wait(0.05)
+	end
+
+	return false
+end
+
 local function playerIsNearDoorSpawn(rootPosition)
 	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn())
 
@@ -871,7 +1269,7 @@ local function rootPartIsNearPosition(rootPart, position, distance)
 		and (rootPart.Position - position).Magnitude <= distance
 end
 
-local function waitForRootNearPosition(rootPart, position, distance, maxSeconds, moveId)
+local function waitForRootNearPosition(rootPart, position, distance, maxSeconds, moveId, arrivalCheck)
 	local startTime = os.clock()
 
 	while os.clock() - startTime < maxSeconds do
@@ -883,6 +1281,10 @@ local function waitForRootNearPosition(rootPart, position, distance, maxSeconds,
 			return false
 		end
 
+		if arrivalCheck and arrivalCheck() == true then
+			return true
+		end
+
 		if rootPartIsNearPosition(rootPart, position, distance) then
 			return true
 		end
@@ -890,21 +1292,35 @@ local function waitForRootNearPosition(rootPart, position, distance, maxSeconds,
 		task.wait(0.05)
 	end
 
+	if arrivalCheck and arrivalCheck() == true then
+		return true
+	end
+
 	return rootPartIsNearPosition(rootPart, position, distance)
 end
 
-local function moveHumanoidDirectToPosition(humanoid, rootPart, targetPosition, distance, timeoutSeconds, moveId)
+local function moveHumanoidDirectToPosition(humanoid, rootPart, targetPosition, distance, timeoutSeconds, moveId, arrivalCheck)
 	if not humanoid or not rootPart or typeof(targetPosition) ~= "Vector3" then
 		return false
 	end
 
-	if rootPartIsNearPosition(rootPart, targetPosition, distance) then
+	local function hasArrived()
+		if arrivalCheck and arrivalCheck() == true then
+			return true
+		end
+
+		return rootPartIsNearPosition(rootPart, targetPosition, distance)
+	end
+
+	if hasArrived() then
 		return true
 	end
 
 	local finished = false
+	local finishedAt = nil
 	local connection = humanoid.MoveToFinished:Connect(function()
 		finished = true
+		finishedAt = os.clock()
 	end)
 
 	humanoid:MoveTo(targetPosition)
@@ -917,12 +1333,12 @@ local function moveHumanoidDirectToPosition(humanoid, rootPart, targetPosition, 
 			return false
 		end
 
-		if rootPartIsNearPosition(rootPart, targetPosition, distance) then
+		if hasArrived() then
 			connection:Disconnect()
 			return true
 		end
 
-		if finished then
+		if finished and finishedAt and os.clock() - finishedAt >= 0.35 then
 			break
 		end
 
@@ -931,7 +1347,40 @@ local function moveHumanoidDirectToPosition(humanoid, rootPart, targetPosition, 
 
 	connection:Disconnect()
 
-	return rootPartIsNearPosition(rootPart, targetPosition, distance)
+	return hasArrived()
+end
+
+function roomMovementState.moveHumanoidToMarker(marker, options)
+	options = typeof(options) == "table" and options or {}
+
+	local markerPosition = getMarkerWorldPosition(marker)
+
+	if not markerPosition then
+		return false
+	end
+
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	local distance = options.Distance or ENTRY_BRIDGE_REACHED_DISTANCE
+	local timeoutSeconds = options.TimeoutSeconds or 3
+	local moveId = options.MoveId
+
+	if not humanoid or not rootPart then
+		return false
+	end
+
+	return moveHumanoidDirectToPosition(
+		humanoid,
+		rootPart,
+		markerPosition,
+		distance,
+		timeoutSeconds,
+		moveId,
+		function()
+			return roomMovementState.characterReachedMarker(marker, distance)
+		end
+	)
 end
 
 local function signCellDelta(value)
@@ -1561,6 +2010,17 @@ local function logEntranceBridgeBlocked(reason, context, entryWalkTarget, bridge
 	))
 end
 
+function roomMovementState.warnCouldNotReachEntrance()
+	local now = os.clock()
+
+	if now - roomMovementState.lastEntranceReachWarningAt < 2 then
+		return
+	end
+
+	roomMovementState.lastEntranceReachWarningAt = now
+	warn("Could not reach room entrance.")
+end
+
 local function getBridgeStartCellIfNeeded(rootPosition, context)
 	local startCell = worldToCell(rootPosition, context)
 	local rootInsideGrid = worldPositionIsInsideGridBounds(rootPosition, context)
@@ -1589,7 +2049,7 @@ local function getBridgeStartCellIfNeeded(rootPosition, context)
 			return nil, nil, "Room entrance is blocked."
 		end
 
-		return entryCell, cellToWorld(entryCell, context), nil
+		return entryCell, Vector3.new(entryPosition.X, context.moveY, entryPosition.Z), nil
 	end
 
 	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn())
@@ -1722,6 +2182,15 @@ end
 
 local function moveCharacterTo(destination, options)
 	options = typeof(options) == "table" and options or {}
+
+	local requestedRoomName = player:GetAttribute("CurrentRoomName")
+
+	if not roomMovementState.waitForCurrentRoomReady()
+		or player:GetAttribute("CurrentRoomName") ~= requestedRoomName then
+
+		return false
+	end
+
 	local now = os.clock()
 
 	if now - lastMoveTime < CLICK_MOVE_COOLDOWN then
@@ -1732,6 +2201,7 @@ local function moveCharacterTo(destination, options)
 
 	currentMoveId += 1
 	local moveId = currentMoveId
+	local expectedRoomName = player:GetAttribute("CurrentRoomName")
 
 	local character = player.Character or player.CharacterAdded:Wait()
 	local humanoid = character:WaitForChild("Humanoid")
@@ -1808,63 +2278,58 @@ local function moveCharacterTo(destination, options)
 
 	local movementPath = compressGridPath(path)
 
-	beginGridFacingControl(humanoid, moveId)
-
 	if bridgeCell then
-		if moveId ~= currentMoveId then
-			finishGridFacingControl(moveId)
+		if moveId ~= currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
 			return false
 		end
 
-		local bridgeDirection = Vector3.new(
-			bridgeWorldPosition.X - rootPart.Position.X,
-			0,
-			bridgeWorldPosition.Z - rootPart.Position.Z
-		)
+		local entryWalkTarget = getCurrentEntryWalkTarget()
+		local reachedBridge = false
 
-		if bridgeDirection.Magnitude > 0.001 then
-			setActiveGridFacingSegment(moveId, rootPart, bridgeDirection.Unit)
-			snapCharacterToGridFacing(rootPart, rootPart.Position, bridgeDirection.Unit)
+		if entryWalkTarget then
+			reachedBridge = roomMovementState.moveHumanoidToMarker(entryWalkTarget, {
+				Distance = ENTRY_BRIDGE_REACHED_DISTANCE,
+				TimeoutSeconds = EXIT_ENTRY_MOVE_TIMEOUT_SECONDS,
+				MoveId = moveId,
+			})
+		else
+			reachedBridge = moveHumanoidDirectToPosition(
+				humanoid,
+				rootPart,
+				bridgeWorldPosition,
+				ENTRY_BRIDGE_REACHED_DISTANCE,
+				EXIT_ENTRY_MOVE_TIMEOUT_SECONDS,
+				moveId
+			)
 		end
 
-		humanoid:MoveTo(bridgeWorldPosition)
-
-		local reachedBridge = humanoid.MoveToFinished:Wait()
-
-		if moveId ~= currentMoveId then
-			finishGridFacingControl(moveId)
+		if moveId ~= currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
 			return false
 		end
 
-		if not reachedBridge
-			and not rootPartIsNearPosition(rootPart, bridgeWorldPosition, ENTRY_BRIDGE_REACHED_DISTANCE) then
+		if not reachedBridge then
 
 			local blockingNames = getCellBlockingNames(bridgeCell, context)
 
 			if #blockingNames > 0 then
-				logEntranceBridgeBlocked("BridgeMoveFailed", context, getCurrentEntryWalkTarget(), bridgeCell)
+				logEntranceBridgeBlocked("BridgeMoveFailed", context, entryWalkTarget, bridgeCell)
 				warn("Room entrance is blocked.")
 			else
-				warn("Could not reach room entrance.")
+				roomMovementState.warnCouldNotReachEntrance()
 			end
 
-			finishGridFacingControl(moveId)
 			return false
 		end
 
-		if bridgeDirection.Magnitude > 0.001 then
-			local reachedPosition = Vector3.new(bridgeWorldPosition.X, rootPart.Position.Y, bridgeWorldPosition.Z)
-			snapCharacterToGridFacing(rootPart, reachedPosition, bridgeDirection.Unit)
-		end
-
 		if cellsAreSame(bridgeCell, goalCell) then
-			finishGridFacingControl(moveId)
 			return true
 		end
 	end
 
+	beginGridFacingControl(humanoid, moveId)
+
 	for index, cell in ipairs(movementPath) do
-		if moveId ~= currentMoveId then
+		if moveId ~= currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
 			finishGridFacingControl(moveId)
 			return false
 		end
@@ -2070,6 +2535,8 @@ local function getFloorPlacementBounds()
 end
 
 local helperPartNames = {
+	CollisionBuffer = true,
+	ClickHitbox = true,
 	SitPoint = true,
 	SleepPoint = true,
 	PlayPoint = true,
@@ -2077,16 +2544,12 @@ local helperPartNames = {
 	TalkPoint = true,
 }
 
-local function isHelperPart(part)
-	return helperPartNames[part.Name] == true
-end
-
 local function shouldUsePartForPlacementBounds(part)
 	if not part:IsA("BasePart") then
 		return false
 	end
 
-	if isHelperPart(part) then
+	if helperPartNames[part.Name] == true then
 		return false
 	end
 
@@ -2100,6 +2563,83 @@ local function shouldUsePartForPlacementBounds(part)
 	end
 
 	return false
+end
+
+local function getPlacementBoundsParts(model)
+	local parts = {}
+
+	if not model then
+		return parts
+	end
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and descendant.Name == "PlacementBounds" then
+
+			table.insert(parts, descendant)
+		end
+	end
+
+	return parts
+end
+
+local function getPlacementCheckParts(model)
+	local placementBoundsParts = getPlacementBoundsParts(model)
+
+	if #placementBoundsParts > 0 then
+		return placementBoundsParts
+	end
+
+	local fallbackParts = {}
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if shouldUsePartForPlacementBounds(descendant) then
+			table.insert(fallbackParts, descendant)
+		end
+	end
+
+	return fallbackParts
+end
+
+local function getFurnitureModelFromDescendant(instance, furnitureFolder)
+	local current = instance
+
+	while current and current ~= furnitureFolder do
+		if current:IsA("Model") and current.Parent == furnitureFolder then
+			return current
+		end
+
+		current = current.Parent
+	end
+
+	return nil
+end
+
+local function shouldIgnoreTouchedFurniturePart(touchingPart, furnitureFolder)
+	local touchedFurnitureModel = getFurnitureModelFromDescendant(
+		touchingPart,
+		furnitureFolder
+	)
+
+	if not touchedFurnitureModel then
+		return false
+	end
+
+	if #getPlacementBoundsParts(touchedFurnitureModel) > 0
+		and touchingPart.Name ~= "PlacementBounds" then
+
+		return true
+	end
+
+	return false
+end
+
+local function getOverlapCheckSize(size)
+	return Vector3.new(
+		math.max(size.X - 0.08, 0.05),
+		math.max(size.Y - 0.08, 0.05),
+		math.max(size.Z - 0.08, 0.05)
+	)
 end
 
 local function getPartWorldCornersFromCFrame(cframe, size)
@@ -2135,19 +2675,17 @@ local function getModelXZBoundsAtCFrame(model, targetCFrame)
 
 	local foundPart = false
 
-	for _, descendant in ipairs(model:GetDescendants()) do
-		if shouldUsePartForPlacementBounds(descendant) then
-			foundPart = true
+	for _, descendant in ipairs(getPlacementCheckParts(model)) do
+		foundPart = true
 
-			local relativeCFrame = currentPivot:ToObjectSpace(descendant.CFrame)
-			local predictedCFrame = targetCFrame * relativeCFrame
+		local relativeCFrame = currentPivot:ToObjectSpace(descendant.CFrame)
+		local predictedCFrame = targetCFrame * relativeCFrame
 
-			for _, corner in ipairs(getPartWorldCornersFromCFrame(predictedCFrame, descendant.Size)) do
-				minX = math.min(minX, corner.X)
-				maxX = math.max(maxX, corner.X)
-				minZ = math.min(minZ, corner.Z)
-				maxZ = math.max(maxZ, corner.Z)
-			end
+		for _, corner in ipairs(getPartWorldCornersFromCFrame(predictedCFrame, descendant.Size)) do
+			minX = math.min(minX, corner.X)
+			maxX = math.max(maxX, corner.X)
+			minZ = math.min(minZ, corner.Z)
+			maxZ = math.max(maxZ, corner.Z)
 		end
 	end
 
@@ -2255,16 +2793,14 @@ local function getModelXZBounds(model)
 
 	local foundPart = false
 
-	for _, descendant in ipairs(model:GetDescendants()) do
-		if shouldUsePartForPlacementBounds(descendant) then
-			foundPart = true
+	for _, descendant in ipairs(getPlacementCheckParts(model)) do
+		foundPart = true
 
-			for _, corner in ipairs(getPartWorldCorners(descendant)) do
-				minX = math.min(minX, corner.X)
-				maxX = math.max(maxX, corner.X)
-				minZ = math.min(minZ, corner.Z)
-				maxZ = math.max(maxZ, corner.Z)
-			end
+		for _, corner in ipairs(getPartWorldCorners(descendant)) do
+			minX = math.min(minX, corner.X)
+			maxX = math.max(maxX, corner.X)
+			minZ = math.min(minZ, corner.Z)
+			maxZ = math.max(maxZ, corner.Z)
 		end
 	end
 
@@ -2329,35 +2865,44 @@ local function isPreviewBlocked(previewModel)
 
 	overlapParams.FilterDescendantsInstances = ignoreList
 
-	for _, descendant in ipairs(previewModel:GetDescendants()) do
-		if shouldUsePartForPlacementBounds(descendant) then
-			local touchingParts = workspace:GetPartBoundsInBox(
-				descendant.CFrame,
-				descendant.Size,
-				overlapParams
-			)
+	for _, descendant in ipairs(getPlacementCheckParts(previewModel)) do
+		local touchingParts = workspace:GetPartBoundsInBox(
+			descendant.CFrame,
+			getOverlapCheckSize(descendant.Size),
+			overlapParams
+		)
 
-			for _, part in ipairs(touchingParts) do
-				if part.Name == "WalkableFloor" then
+		for _, part in ipairs(touchingParts) do
+			if part.Name == "WalkableFloor" then
+				continue
+			end
+
+			if helperPartNames[part.Name] == true then
+				continue
+			end
+
+			if part:IsDescendantOf(furnitureFolder) then
+				if shouldIgnoreTouchedFurniturePart(part, furnitureFolder) then
 					continue
 				end
 
-				if isHelperPart(part) then
+				if part.Name ~= "PlacementBounds"
+					and part:IsA("BasePart")
+					and part.CanCollide == false then
+
 					continue
 				end
 
-				if part:IsA("BasePart") and part.CanCollide == false then
-					continue
-				end
+				return true
+			end
 
-				if part:IsDescendantOf(furnitureFolder) then
+			if part:IsDescendantOf(roomFolder) then
+				if part.Name:find("Boundary") or part.Name:find("Wall") then
 					return true
 				end
 
-				if part:IsDescendantOf(roomFolder) then
-					if part.Name:find("Boundary") or part.Name:find("Wall") then
-						return true
-					end
+				if part:IsA("BasePart") and part.CanCollide then
+					return true
 				end
 			end
 		end
@@ -2390,17 +2935,15 @@ local function isPreviewBlockedByPlayer(previewModel)
 				overlapParams.FilterType = Enum.RaycastFilterType.Include
 				overlapParams.FilterDescendantsInstances = { character }
 
-				for _, descendant in ipairs(previewModel:GetDescendants()) do
-					if shouldUsePartForPlacementBounds(descendant) then
-						local touchingParts = workspace:GetPartBoundsInBox(
-							descendant.CFrame,
-							descendant.Size,
-							overlapParams
-						)
+				for _, descendant in ipairs(getPlacementCheckParts(previewModel)) do
+					local touchingParts = workspace:GetPartBoundsInBox(
+						descendant.CFrame,
+						getOverlapCheckSize(descendant.Size),
+						overlapParams
+					)
 
-						if #touchingParts > 0 then
-							return true
-						end
+					if #touchingParts > 0 then
+						return true
 					end
 				end
 			end
@@ -2490,6 +3033,57 @@ local function showOriginalFurniture()
 	hiddenFurnitureParts = {}
 end
 
+function movePreviewState.ensureHint()
+	if movePreviewState.hintGui and movePreviewState.hintGui.Parent then
+		return
+	end
+
+	local hintGui = Instance.new("ScreenGui")
+	hintGui.Name = "FurnitureMovePreviewHintGui"
+	hintGui.ResetOnSpawn = false
+	hintGui.IgnoreGuiInset = true
+	hintGui.DisplayOrder = 210
+	hintGui.Enabled = false
+	hintGui.Parent = playerGui
+
+	local hintLabel = Instance.new("TextLabel")
+	hintLabel.Name = "Hint"
+	hintLabel.AnchorPoint = Vector2.new(0.5, 1)
+	hintLabel.Position = UDim2.new(0.5, 0, 1, -92)
+	hintLabel.Size = UDim2.fromOffset(220, 34)
+	hintLabel.BackgroundColor3 = Color3.fromRGB(32, 38, 46)
+	hintLabel.BackgroundTransparency = 0.12
+	hintLabel.BorderSizePixel = 0
+	hintLabel.Text = "R to rotate  C to cancel"
+	hintLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	hintLabel.TextSize = 14
+	hintLabel.Font = Enum.Font.GothamBold
+	hintLabel.Active = false
+	hintLabel.Selectable = false
+	hintLabel.Parent = hintGui
+	ensureCorner(hintLabel, 8)
+	ensureStroke(hintLabel, Color3.fromRGB(255, 255, 255), 1, 0.72)
+
+	movePreviewState.hintGui = hintGui
+	movePreviewState.hintLabel = hintLabel
+end
+
+function movePreviewState.showHint()
+	movePreviewState.ensureHint()
+	movePreviewState.hintGui.Enabled = true
+end
+
+function movePreviewState.hideHint()
+	if movePreviewState.hintGui then
+		movePreviewState.hintGui.Enabled = false
+	end
+end
+
+function movePreviewState.reset()
+	movePreviewState.rotationOffsetY = 0
+	movePreviewState.hideHint()
+end
+
 local function destroyPlacementPreview()
 	if placementPreview then
 		placementPreview:Destroy()
@@ -2502,6 +3096,7 @@ local function destroyPlacementPreview()
 	end
 
 	placementIsValid = false
+	movePreviewState.hideHint()
 
 	showOriginalFurniture()
 	setMovingFurnitureIgnored(false)
@@ -2579,6 +3174,8 @@ local function updatePlacementPreview()
 
 	local currentPivot = movingFurniture:GetPivot()
 	local currentRotation = currentPivot - currentPivot.Position
+	local previewRotation =
+		currentRotation * CFrame.Angles(0, math.rad(movePreviewState.rotationOffsetY), 0)
 
 	local previewPosition = Vector3.new(
 		placementPosition.X,
@@ -2586,7 +3183,7 @@ local function updatePlacementPreview()
 		placementPosition.Z
 	)
 
-	placementPreview:PivotTo(CFrame.new(previewPosition) * currentRotation)
+	placementPreview:PivotTo(CFrame.new(previewPosition) * previewRotation)
 
 	local isValid = checkPlacementPreviewValidity()
 	setPlacementPreviewValidity(isValid)
@@ -2649,14 +3246,14 @@ local function openFurnitureMenu(furnitureModel)
 	local editing = isEditMode()
 	local occupied = isFurnitureOccupiedLocally(furnitureModel)
 	local defaultAction = getDefaultFurnitureAction(furnitureModel)
-	local showOpenClose = furnitureSupportsOpenCloseBestEffort(furnitureModel)
+	local potentialOpenClose = furnitureSupportsOpenCloseBestEffort(furnitureModel)
 	local showSit = not editing and defaultAction ~= nil
-	local showMove = editing
-	local showRotate = editing
-	local showPickUp = editing
-		and getFurnitureTemplateId(furnitureModel) ~= nil
+	local showMove = false
+	local showRotate = false
+	local showPickUp = false
+	local showOpenClose = false
 
-	if not editing and not defaultAction and not showOpenClose then
+	if not editing and not defaultAction and not potentialOpenClose then
 		selectedFurniture = nil
 		menuFrame.Visible = false
 		clearFurnitureHighlight()
@@ -2667,7 +3264,8 @@ local function openFurnitureMenu(furnitureModel)
 	subtitleLabel.Text = editing and "Edit actions" or "Choose an action"
 	occupiedBadge.Visible = occupied == true
 	updateOpenCloseButtonText(furnitureModel)
-	layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, showOpenClose)
+	permissionUi.resetForMenu(furnitureModel, showSit, showMove, showRotate, showPickUp, showOpenClose)
+	permissionUi.applyLayout()
 
 	if editing and occupied then
 		subtitleLabel.Text = "Edit actions"
@@ -2685,6 +3283,7 @@ local function openFurnitureMenu(furnitureModel)
 	if onScreen then
 		menuFrame.Visible = true
 		updateMenuPosition()
+		permissionUi.requestActionAccess()
 	else
 		menuFrame.Visible = false
 	end
@@ -2694,9 +3293,56 @@ local function closeFurnitureMenu()
 	selectedFurniture = nil
 	movingFurniture = nil
 	menuFrame.Visible = false
+	permissionUi.expanded = false
+	permissionUi.canManage = false
 
 	destroyPlacementPreview()
 	clearFurnitureHighlight()
+end
+
+function movePreviewState.cancelActive()
+	if not movingFurniture then
+		return
+	end
+
+	movingFurniture = nil
+	movePreviewState.reset()
+	destroyPlacementPreview()
+	closeFurnitureMenu()
+end
+
+function movePreviewState.rotateActive()
+	if not movingFurniture then
+		return
+	end
+
+	movePreviewState.rotationOffsetY = (movePreviewState.rotationOffsetY + 90) % 360
+	updatePlacementPreview()
+end
+
+function movePreviewState.confirmActive()
+	if not movingFurniture then
+		return
+	end
+
+	local placementPosition = getSnappedPlacementPosition()
+
+	if placementPosition and placementIsValid then
+		local furnitureModel = movingFurniture
+
+		suppressFurnitureMenuUntil = os.clock() + 0.25
+		furnitureActionRequest:FireServer("Move", furnitureModel, {
+			TargetPosition = placementPosition,
+			RotationOffsetY = movePreviewState.rotationOffsetY,
+		})
+
+		movingFurniture = nil
+		movePreviewState.reset()
+		destroyPlacementPreview()
+		closeFurnitureMenu()
+	else
+		warn("Invalid furniture placement")
+	end
 end
 
 
@@ -2972,6 +3618,18 @@ local function getGridPathToPosition(targetPosition)
 		}
 	end
 
+	local requestedRoomName = player:GetAttribute("CurrentRoomName")
+
+	if not roomMovementState.waitForCurrentRoomReady()
+		or player:GetAttribute("CurrentRoomName") ~= requestedRoomName then
+
+		return {
+			Success = false,
+			Path = {},
+			Message = "Character is not ready.",
+		}
+	end
+
 	local character = player.Character
 	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
 
@@ -3051,10 +3709,32 @@ local function moveToRoomExit()
 		}
 	end
 
+	local requestedRoomName = player:GetAttribute("CurrentRoomName")
+
+	if not roomMovementState.waitForCurrentRoomReady({
+		RequireDoorSpawn = true,
+		TimeoutSeconds = 1.5,
+	}) or player:GetAttribute("CurrentRoomName") ~= requestedRoomName then
+		local roomModel = getCurrentRoomModel()
+
+		if roomModel and not roomModel:FindFirstChild("DoorSpawn", true) then
+			return {
+				Success = false,
+				Message = "This room is missing DoorSpawn.",
+			}
+		end
+
+		return {
+			Success = false,
+			Message = "Character is not ready.",
+		}
+	end
+
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn())
+	local doorSpawn = getCurrentDoorSpawn()
+	local doorSpawnPosition = getMarkerWorldPosition(doorSpawn)
 
 	if not humanoid or not rootPart then
 		return {
@@ -3082,6 +3762,8 @@ local function moveToRoomExit()
 	character = player.Character
 	humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	doorSpawn = getCurrentDoorSpawn()
+	doorSpawnPosition = getMarkerWorldPosition(doorSpawn)
 
 	if not humanoid or not rootPart then
 		return {
@@ -3090,7 +3772,14 @@ local function moveToRoomExit()
 		}
 	end
 
-	if rootPartIsNearPosition(rootPart, doorSpawnPosition, EXIT_TARGET_REACHED_DISTANCE) then
+	if not doorSpawnPosition then
+		return {
+			Success = false,
+			Message = "This room is missing DoorSpawn.",
+		}
+	end
+
+	if roomMovementState.characterReachedMarker(doorSpawn, EXIT_TARGET_REACHED_DISTANCE) then
 		return {
 			Success = true,
 			Message = "Reached exit.",
@@ -3100,7 +3789,9 @@ local function moveToRoomExit()
 	local entryWalkTarget = getCurrentEntryWalkTarget()
 	local entryPosition = getMarkerWorldPosition(entryWalkTarget)
 
-	if entryPosition and not rootPartIsNearPosition(rootPart, entryPosition, EXIT_TARGET_REACHED_DISTANCE) then
+	if entryPosition
+		and not roomMovementState.characterReachedMarker(entryWalkTarget, EXIT_TARGET_REACHED_DISTANCE) then
+
 		local pathCheck = getGridPathToPosition(entryPosition)
 
 		if typeof(pathCheck) ~= "table" or pathCheck.Success ~= true then
@@ -3116,12 +3807,16 @@ local function moveToRoomExit()
 			rootPart,
 			entryPosition,
 			EXIT_TARGET_REACHED_DISTANCE,
-			EXIT_ENTRY_MOVE_TIMEOUT_SECONDS
+			EXIT_ENTRY_MOVE_TIMEOUT_SECONDS,
+			nil,
+			function()
+				return roomMovementState.characterReachedMarker(entryWalkTarget, EXIT_TARGET_REACHED_DISTANCE)
+			end
 		) then
 
 			return {
 				Success = false,
-				Message = "The exit is blocked.",
+				Message = "Could not reach the exit.",
 			}
 		end
 	end
@@ -3129,14 +3824,11 @@ local function moveToRoomExit()
 	currentMoveId += 1
 	local exitMoveId = currentMoveId
 
-	local reachedDoorSpawn = moveHumanoidDirectToPosition(
-		humanoid,
-		rootPart,
-		doorSpawnPosition,
-		EXIT_TARGET_REACHED_DISTANCE,
-		EXIT_DIRECT_MOVE_TIMEOUT_SECONDS,
-		exitMoveId
-	)
+	local reachedDoorSpawn = roomMovementState.moveHumanoidToMarker(doorSpawn, {
+		Distance = EXIT_TARGET_REACHED_DISTANCE,
+		TimeoutSeconds = EXIT_DIRECT_MOVE_TIMEOUT_SECONDS,
+		MoveId = exitMoveId,
+	})
 
 	if not reachedDoorSpawn then
 		return {
@@ -3291,20 +3983,7 @@ mouse.Button1Down:Connect(function()
 	-- If we are moving furniture, handle placement before checking furniture clicks.
 	-- This prevents the original furniture from blocking its own placement.
 	if movingFurniture then
-		local placementPosition = getSnappedPlacementPosition()
-
-		if placementPosition and placementIsValid then
-			suppressFurnitureMenuUntil = os.clock() + 0.25
-
-			furnitureActionRequest:FireServer("Move", movingFurniture, placementPosition)
-
-			movingFurniture = nil
-			destroyPlacementPreview()
-			closeFurnitureMenu()
-		else
-			warn("Invalid furniture placement")
-		end
-
+		movePreviewState.confirmActive()
 		return
 	end
 
@@ -3332,6 +4011,108 @@ mouse.Button1Down:Connect(function()
 	closeFurnitureMenu()
 end)
 
+game:GetService("UserInputService").InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed or not movingFurniture then
+		return
+	end
+
+	local userInputService = game:GetService("UserInputService")
+
+	if userInputService:GetFocusedTextBox() then
+		return
+	end
+
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then
+		return
+	end
+
+	if input.KeyCode == Enum.KeyCode.R then
+		movePreviewState.rotateActive()
+	elseif input.KeyCode == Enum.KeyCode.C then
+		movePreviewState.cancelActive()
+	end
+end)
+
+player:GetAttributeChangedSignal("RoomMode"):Connect(function()
+	if movingFurniture and not isEditMode() then
+		movePreviewState.cancelActive()
+	end
+end)
+
+player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
+	if activeGridFacingMoveId then
+		finishGridFacingControl(activeGridFacingMoveId)
+	end
+
+	if activeGridFacingHumanoid then
+		if activeGridFacingPreviousAutoRotate ~= nil then
+			activeGridFacingHumanoid.AutoRotate = activeGridFacingPreviousAutoRotate
+		end
+
+		if activeGridFacingPreviousWalkSpeed ~= nil then
+			activeGridFacingHumanoid.WalkSpeed = activeGridFacingPreviousWalkSpeed
+		end
+	end
+
+	activeGridFacingMoveId = nil
+	activeGridFacingHumanoid = nil
+	activeGridFacingPreviousAutoRotate = nil
+	activeGridFacingPreviousWalkSpeed = nil
+	clearActiveGridFacingSegment()
+
+	currentMoveId += 1
+	lastMoveTime = 0
+	lastSeatedStandCompletedAt = 0
+	entranceBridgeDiagnosticsLogged = {}
+	roomMovementState.lastEntranceReachWarningAt = 0
+	mouse.TargetFilter = nil
+
+	if movingFurniture then
+		movePreviewState.cancelActive()
+	else
+		closeFurnitureMenu()
+	end
+end)
+
+permissionUi.accessButton.MouseButton1Click:Connect(function()
+	if not selectedFurniture or not permissionUi.canManage then
+		return
+	end
+
+	permissionUi.expanded = not permissionUi.expanded
+	permissionUi.applyLayout()
+
+	if permissionUi.expanded then
+		permissionUi.requestCurrent()
+	end
+end)
+
+permissionUi.addButton.MouseButton1Click:Connect(function()
+	if not selectedFurniture or not permissionUi.canManage then
+		return
+	end
+
+	local targetUserInput = (permissionUi.input.Text or ""):match("^%s*(.-)%s*$") or ""
+
+	if targetUserInput == "" then
+		permissionUi.setStatus("Invalid user.", true)
+		return
+	end
+
+	if tonumber(targetUserInput) == player.UserId then
+		permissionUi.setStatus("You already own this furniture.", true)
+		return
+	end
+
+	permissionUi.setStatus("Updating...")
+	remoteEvents:WaitForChild("RoomPermissionRequest"):FireServer("SetFurniturePermission", {
+		Furniture = selectedFurniture,
+		ActionName = "OpenClose",
+		TargetUserInput = targetUserInput,
+		IsAllowed = true,
+	})
+end)
+
 sitButton.MouseButton1Click:Connect(function()
 	if not selectedFurniture then
 		warn("Client: No furniture selected")
@@ -3352,6 +4133,7 @@ moveButton.MouseButton1Click:Connect(function()
 	end
 
 	movingFurniture = selectedFurniture
+	movePreviewState.rotationOffsetY = 0
 
 	-- Create preview first because createPlacementPreview() calls destroyPlacementPreview().
 	createPlacementPreview(movingFurniture)
@@ -3362,6 +4144,7 @@ moveButton.MouseButton1Click:Connect(function()
 
 	menuFrame.Visible = false
 	clearFurnitureHighlight()
+	movePreviewState.showHint()
 end)
 
 rotateButton.MouseButton1Click:Connect(function()
@@ -3411,6 +4194,10 @@ pickUpButton.MouseButton1Click:Connect(function()
 	inventoryLocalDelta:Fire(optimisticPayload)
 	furnitureActionRequest:FireServer("PickUp", selectedFurniture)
 	closeFurnitureMenu()
+end)
+
+remoteEvents:WaitForChild("RoomPermissionResult").OnClientEvent:Connect(function(response)
+	permissionUi.handleResult(response)
 end)
 
 furnitureActionResult.OnClientEvent:Connect(function(response)
