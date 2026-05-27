@@ -38,6 +38,9 @@ local SIT_STAND_COOLDOWN_SECONDS = 0.35
 
 local seatActionInFlightByUserId = {}
 local lastSeatActionAtByUserId = {}
+local openCloseClosedCFrames = setmetatable({}, {
+	__mode = "k",
+})
 
 local function getCurrentRoomModel(player)
 	local roomName = player:GetAttribute("CurrentRoomName")
@@ -105,6 +108,19 @@ local function sendPickUpResult(player, success, message, templateId, newCount, 
 		Tradable = tradable == true,
 		Sellable = sellable == true,
 		InventoryDetails = inventoryDetails,
+	})
+end
+
+local function sendOpenCloseResult(player, success, message, isOpen)
+	if not player or player.Parent ~= Players then
+		return
+	end
+
+	furnitureActionResult:FireClient(player, {
+		Kind = "OpenClose",
+		Success = success == true,
+		Message = tostring(message or ""),
+		IsOpen = isOpen == true,
 	})
 end
 
@@ -1462,6 +1478,138 @@ local function getPersistencePlayerForRoomAction(roomModel)
 	return ownerPlayer
 end
 
+local function isOpenCloseTarget(instance)
+	return typeof(instance) == "Instance"
+		and (
+			instance:IsA("BasePart")
+			or instance:IsA("Model")
+		)
+end
+
+local function findOpenCloseTargetByName(furnitureModel, targetName)
+	if typeof(targetName) ~= "string" or targetName == "" or not targetName:match("%S") then
+		return nil
+	end
+
+	local target = furnitureModel:FindFirstChild(targetName, true)
+
+	if isOpenCloseTarget(target) then
+		return target
+	end
+
+	return nil
+end
+
+local function getOpenCloseTarget(furnitureModel)
+	local configuredTargetName = furnitureModel:GetAttribute("OpenCloseTargetName")
+	local configuredTarget = findOpenCloseTargetByName(furnitureModel, configuredTargetName)
+
+	if configuredTarget then
+		return configuredTarget
+	end
+
+	local fallbackNames = {
+		"OpenClosePart",
+		"DoorPanel",
+		"GatePanel",
+		"Panel",
+	}
+
+	for _, targetName in ipairs(fallbackNames) do
+		local target = findOpenCloseTargetByName(furnitureModel, targetName)
+
+		if target then
+			return target
+		end
+	end
+
+	return nil
+end
+
+local function getOpenCloseTargetCFrame(target)
+	if target:IsA("Model") then
+		return target:GetPivot()
+	end
+
+	return target.CFrame
+end
+
+local function setOpenCloseTargetCFrame(target, targetCFrame)
+	if target:IsA("Model") then
+		target:PivotTo(targetCFrame)
+	else
+		target.CFrame = targetCFrame
+	end
+end
+
+local function getOpenCloseRotation(furnitureModel)
+	local angleDegrees = furnitureModel:GetAttribute("OpenAngleDegrees")
+
+	if typeof(angleDegrees) ~= "number" then
+		angleDegrees = 90
+	end
+
+	local angleRadians = math.rad(angleDegrees)
+	local axis = furnitureModel:GetAttribute("OpenCloseAxis")
+
+	if axis == "X" then
+		return CFrame.Angles(angleRadians, 0, 0)
+	end
+
+	if axis == "Z" then
+		return CFrame.Angles(0, 0, angleRadians)
+	end
+
+	return CFrame.Angles(0, angleRadians, 0)
+end
+
+local function openCloseFurniture(player, furnitureModel)
+	if not isValidFurnitureForPlayer(player, furnitureModel) then
+		sendOpenCloseResult(player, false, "Open/Close denied: invalid furniture.", false)
+		return
+	end
+
+	if not RoomPermissionService.CanOpenCloseFurniture(player, furnitureModel) then
+		sendOpenCloseResult(player, false, "Open/Close denied.", furnitureModel:GetAttribute("IsOpen") == true)
+		return
+	end
+
+	local target = getOpenCloseTarget(furnitureModel)
+
+	if not target then
+		sendOpenCloseResult(
+			player,
+			false,
+			"This furniture has no open/close target.",
+			furnitureModel:GetAttribute("IsOpen") == true
+		)
+		return
+	end
+
+	local closedCFrame = openCloseClosedCFrames[target]
+
+	if not closedCFrame then
+		closedCFrame = getOpenCloseTargetCFrame(target)
+		openCloseClosedCFrames[target] = closedCFrame
+	end
+
+	local currentlyOpen = furnitureModel:GetAttribute("IsOpen") == true
+
+	-- OpenClose state is runtime-only for now and resets when the room reloads.
+	-- Persisting door/gate state can be added later without changing placement CFrames.
+	if currentlyOpen then
+		setOpenCloseTargetCFrame(target, closedCFrame)
+		furnitureModel:SetAttribute("IsOpen", false)
+		sendOpenCloseResult(player, true, "Closed.", false)
+	else
+		local openCFrame = closedCFrame * getOpenCloseRotation(furnitureModel)
+
+		setOpenCloseTargetCFrame(target, openCFrame)
+		furnitureModel:SetAttribute("IsOpen", true)
+		sendOpenCloseResult(player, true, "Opened.", true)
+	end
+end
+
 local function moveFurniture(player, furnitureModel, targetPosition)
 	if player:GetAttribute("RoomMode") ~= "Edit"
 		or not RoomPermissionService.CanMoveFurniture(player, furnitureModel) then
@@ -1739,6 +1887,9 @@ furnitureActionRequest.OnServerEvent:Connect(function(player, actionName, furnit
 
 	elseif actionName == "PickUp" then
 		pickUpFurniture(player, furnitureModel)
+
+	elseif actionName == "OpenClose" then
+		openCloseFurniture(player, furnitureModel)
 	end
 end)
 

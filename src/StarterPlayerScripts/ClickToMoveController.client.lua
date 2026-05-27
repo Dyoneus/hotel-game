@@ -173,6 +173,7 @@ local closeButton = menuFrame:WaitForChild("CloseButton")
 local moveButton = menuFrame:WaitForChild("MoveButton")
 local rotateButton = menuFrame:WaitForChild("RotateButton")
 local pickUpButton = menuFrame:FindFirstChild("PickUpButton")
+local openCloseButton = menuFrame:FindFirstChild("OpenCloseButton")
 
 if not pickUpButton then
 	local verticalStep = rotateButton.Size.Y.Offset
@@ -209,6 +210,15 @@ if not pickUpButton then
 end
 
 pickUpButton.Visible = false
+
+if not openCloseButton then
+	openCloseButton = rotateButton:Clone()
+	openCloseButton.Name = "OpenCloseButton"
+	openCloseButton.Text = "Open"
+	openCloseButton.Parent = menuFrame
+end
+
+openCloseButton.Visible = false
 
 local subtitleLabel = getOrCreateMenuTextLabel("SubtitleLabel")
 local occupiedBadge = getOrCreateMenuTextLabel("OccupiedBadge")
@@ -269,13 +279,15 @@ sitButton.Text = "Sit"
 moveButton.Text = "Move"
 rotateButton.Text = "Rotate"
 pickUpButton.Text = "Pick Up"
+openCloseButton.Text = "Open"
 
 styleActionButton(sitButton, Color3.fromRGB(72, 143, 91))
 styleActionButton(moveButton, Color3.fromRGB(76, 123, 181))
 styleActionButton(rotateButton, Color3.fromRGB(76, 123, 181))
 styleActionButton(pickUpButton, Color3.fromRGB(190, 102, 68))
+styleActionButton(openCloseButton, Color3.fromRGB(86, 135, 98))
 
-local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp)
+local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, showOpenClose)
 	local contentX = 14
 	local contentWidth = MENU_WIDTH - 28
 	local y = MENU_HEADER_HEIGHT
@@ -285,6 +297,7 @@ local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp)
 	moveButton.Visible = showMove == true
 	rotateButton.Visible = showRotate == true
 	pickUpButton.Visible = showPickUp == true
+	openCloseButton.Visible = showOpenClose == true
 
 	if showSit then
 		sitButton.Position = UDim2.fromOffset(contentX, y)
@@ -300,15 +313,17 @@ local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp)
 		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
 	end
 
+	if showOpenClose then
+		openCloseButton.Position = UDim2.fromOffset(contentX, y)
+		openCloseButton.Size = UDim2.fromOffset(contentWidth, MENU_BUTTON_HEIGHT)
+		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
+	end
+
 	if showPickUp then
 		pickUpButton.Position = UDim2.fromOffset(contentX, y)
 		pickUpButton.Size = UDim2.fromOffset(contentWidth, MENU_BUTTON_HEIGHT)
 		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
 	end
-
-	-- Future Open/Close support should add an action button here only after
-	-- a server-side OpenClose action exists and permission checks call
-	-- RoomPermissionService.CanOpenCloseFurniture.
 
 	menuFrame.Size = UDim2.fromOffset(MENU_WIDTH, math.max(y + 6, 116))
 end
@@ -434,6 +449,64 @@ local function getDefaultFurnitureAction(furnitureModel)
 	end
 
 	return defaultAction
+end
+
+local function permissionActionsIncludeOpenClose(permissionActions)
+	if typeof(permissionActions) ~= "string" then
+		return false
+	end
+
+	for actionName in string.gmatch(permissionActions, "([^,]+)") do
+		local normalizedActionName = actionName:match("^%s*(.-)%s*$")
+
+		if normalizedActionName == "OpenClose" then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function furnitureHasOpenCloseTarget(furnitureModel)
+	local configuredTargetName = furnitureModel:GetAttribute("OpenCloseTargetName")
+
+	if typeof(configuredTargetName) == "string"
+		and configuredTargetName ~= ""
+		and furnitureModel:FindFirstChild(configuredTargetName, true) then
+
+		return true
+	end
+
+	return furnitureModel:FindFirstChild("OpenClosePart", true) ~= nil
+		or furnitureModel:FindFirstChild("DoorPanel", true) ~= nil
+		or furnitureModel:FindFirstChild("GatePanel", true) ~= nil
+		or furnitureModel:FindFirstChild("Panel", true) ~= nil
+end
+
+local function furnitureSupportsOpenCloseBestEffort(furnitureModel)
+	if typeof(furnitureModel) ~= "Instance" or not furnitureModel:IsA("Model") then
+		return false
+	end
+
+	if furnitureModel:GetAttribute("SupportsOpenClose") == true then
+		return true
+	end
+
+	if permissionActionsIncludeOpenClose(furnitureModel:GetAttribute("PermissionActions")) then
+		return true
+	end
+
+	return furnitureHasOpenCloseTarget(furnitureModel)
+end
+
+local function updateOpenCloseButtonText(furnitureModel, isOpenOverride)
+	local isOpen = isOpenOverride
+
+	if typeof(isOpen) ~= "boolean" then
+		isOpen = furnitureModel and furnitureModel:GetAttribute("IsOpen") == true
+	end
+
+	openCloseButton.Text = isOpen and "Close" or "Open"
 end
 
 local function resolveFurniturePickupTemplateId(furnitureModel)
@@ -1932,13 +2005,14 @@ local function openFurnitureMenu(furnitureModel)
 	local editing = isEditMode()
 	local occupied = isFurnitureOccupiedLocally(furnitureModel)
 	local defaultAction = getDefaultFurnitureAction(furnitureModel)
+	local showOpenClose = furnitureSupportsOpenCloseBestEffort(furnitureModel)
 	local showSit = not editing and defaultAction ~= nil
 	local showMove = editing
 	local showRotate = editing
 	local showPickUp = editing
 		and getFurnitureTemplateId(furnitureModel) ~= nil
 
-	if not editing and not defaultAction then
+	if not editing and not defaultAction and not showOpenClose then
 		selectedFurniture = nil
 		menuFrame.Visible = false
 		clearFurnitureHighlight()
@@ -1948,7 +2022,8 @@ local function openFurnitureMenu(furnitureModel)
 	titleLabel.Text = furnitureModel.Name
 	subtitleLabel.Text = editing and "Edit actions" or "Choose an action"
 	occupiedBadge.Visible = occupied == true
-	layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp)
+	updateOpenCloseButtonText(furnitureModel)
+	layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, showOpenClose)
 
 	if editing and occupied then
 		subtitleLabel.Text = "Edit actions"
@@ -2123,6 +2198,11 @@ local function standUpIfSeated()
 end
 
 local function handleFurnitureClickInPlayMode(furnitureModel)
+	if furnitureSupportsOpenCloseBestEffort(furnitureModel) then
+		openFurnitureMenu(furnitureModel)
+		return
+	end
+
 	local actionName = getDefaultFurnitureAction(furnitureModel)
 
 	if not actionName then
@@ -2303,6 +2383,14 @@ rotateButton.MouseButton1Click:Connect(function()
 	furnitureActionRequest:FireServer("Rotate", selectedFurniture)
 end)
 
+openCloseButton.MouseButton1Click:Connect(function()
+	if not selectedFurniture then
+		return
+	end
+
+	furnitureActionRequest:FireServer("OpenClose", selectedFurniture)
+end)
+
 pickUpButton.MouseButton1Click:Connect(function()
 	if not selectedFurniture then
 		return
@@ -2338,6 +2426,20 @@ end)
 
 furnitureActionResult.OnClientEvent:Connect(function(response)
 	if typeof(response) ~= "table" then
+		return
+	end
+
+	if response.Kind == "OpenClose" then
+		local message = tostring(response.Message or "")
+
+		if response.Success == true then
+			if selectedFurniture and menuFrame.Visible then
+				updateOpenCloseButtonText(selectedFurniture, response.IsOpen == true)
+			end
+		elseif message ~= "" then
+			warn(message)
+		end
+
 		return
 	end
 
