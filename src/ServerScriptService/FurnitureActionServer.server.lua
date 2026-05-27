@@ -35,6 +35,9 @@ local activeRooms = workspace:WaitForChild("ActiveRooms")
 local GRID_SIZE = 2
 
 local SIT_STAND_COOLDOWN_SECONDS = 0.35
+local ENTRANCE_BRIDGE_DISTANCE = 8
+local ENTRANCE_BRIDGE_REACHED_DISTANCE = 3
+local ENTRANCE_BRIDGE_TIMEOUT_SECONDS = 5
 
 local seatActionInFlightByUserId = {}
 local lastSeatActionAtByUserId = {}
@@ -60,6 +63,46 @@ local function getCurrentRoomFolder(player)
 	end
 
 	return roomModel:FindFirstChild("Room")
+end
+
+local function findCurrentRoomMarker(player, markerName)
+	local roomModel = getCurrentRoomModel(player)
+
+	if not roomModel then
+		return nil
+	end
+
+	local marker = roomModel:FindFirstChild(markerName, true)
+
+	if marker and (marker:IsA("BasePart") or marker:IsA("Attachment")) then
+		return marker
+	end
+
+	return nil
+end
+
+local function getMarkerWorldPosition(marker)
+	if not marker then
+		return nil
+	end
+
+	if marker:IsA("Attachment") then
+		return marker.WorldPosition
+	end
+
+	if marker:IsA("BasePart") then
+		return marker.Position
+	end
+
+	return nil
+end
+
+local function getCurrentDoorSpawn(player)
+	return findCurrentRoomMarker(player, "DoorSpawn")
+end
+
+local function getCurrentEntryWalkTarget(player)
+	return findCurrentRoomMarker(player, "EntryWalkTarget")
 end
 
 local function getMovementRoomBounds(player)
@@ -700,6 +743,146 @@ local function cellKey(cell)
 	return tostring(cell.x) .. "," .. tostring(cell.z)
 end
 
+local function positionIsInsideMovementBounds(player, position)
+	local bounds = getMovementRoomBounds(player)
+
+	if not bounds or typeof(position) ~= "Vector3" then
+		return false
+	end
+
+	local tolerance = 0.05
+
+	return position.X >= bounds.minX - tolerance
+		and position.X <= bounds.maxX + tolerance
+		and position.Z >= bounds.minZ - tolerance
+		and position.Z <= bounds.maxZ + tolerance
+end
+
+local function playerIsNearDoorSpawn(player, rootPosition)
+	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn(player))
+
+	if not doorSpawnPosition or typeof(rootPosition) ~= "Vector3" then
+		return false
+	end
+
+	return (rootPosition - doorSpawnPosition).Magnitude <= ENTRANCE_BRIDGE_DISTANCE
+end
+
+local entranceMarkerPartNames = {
+	DoorSpawn = true,
+	EntryWalkTarget = true,
+	RoomExitZone = true,
+}
+
+local sitPathIgnoredPartNames = {
+	SitPoint = true,
+	SleepPoint = true,
+	PlayPoint = true,
+	EnterPoint = true,
+	TalkPoint = true,
+	ClickHitbox = true,
+	PlacementBounds = true,
+	CollisionBuffer = true,
+	DoorSpawn = true,
+	EntryWalkTarget = true,
+	RoomExitZone = true,
+}
+
+local warnedSitPointInsideFurnitureFootprint = setmetatable({}, {
+	__mode = "k",
+})
+
+local function isEntranceMarkerPart(part)
+	return typeof(part) == "Instance"
+		and part:IsA("BasePart")
+		and (
+			entranceMarkerPartNames[part.Name] == true
+			or part:GetAttribute("IsRoomExit") == true
+			or part:GetAttribute("IsEntranceMarker") == true
+			or part:GetAttribute("IsDoorSpawn") == true
+			or part:GetAttribute("IsEntryWalkTarget") == true
+		)
+end
+
+local function isPartIgnoredForSitPath(part, targetFurnitureModel)
+	if typeof(part) ~= "Instance" or not part:IsA("BasePart") then
+		return false
+	end
+
+	if isEntranceMarkerPart(part) then
+		return true
+	end
+
+	if sitPathIgnoredPartNames[part.Name] == true then
+		return true
+	end
+
+	if part:GetAttribute("IsEntranceMarker") == true
+		or part:GetAttribute("IsDoorSpawn") == true
+		or part:GetAttribute("IsEntryWalkTarget") == true
+		or part:GetAttribute("IsRoomExit") == true then
+
+		return true
+	end
+
+	if targetFurnitureModel and part:IsDescendantOf(targetFurnitureModel) then
+		return sitPathIgnoredPartNames[part.Name] == true
+	end
+
+	return false
+end
+
+local function getFurniturePathFootprintCenterPosition(furnitureModel)
+	if not furnitureModel or not furnitureModel:IsA("Model") then
+		return nil
+	end
+
+	local placementBoundsPositionSum = Vector3.zero
+	local placementBoundsCount = 0
+
+	for _, descendant in ipairs(furnitureModel:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant.Name == "PlacementBounds" then
+			placementBoundsPositionSum += descendant.Position
+			placementBoundsCount += 1
+		end
+	end
+
+	if placementBoundsCount > 0 then
+		return placementBoundsPositionSum / placementBoundsCount
+	end
+
+	return furnitureModel:GetPivot().Position
+end
+
+local function targetFurnitureOccupiesSitPathCell(furnitureModel, cell)
+	local footprintCenter = getFurniturePathFootprintCenterPosition(furnitureModel)
+
+	if not footprintCenter then
+		return false
+	end
+
+	local centerCell = worldToCell(footprintCenter)
+
+	return centerCell.x == cell.x and centerCell.z == cell.z
+end
+
+local function warnIfSitPointInsideFurnitureFootprint(player, furnitureModel, sitPointPosition)
+	if warnedSitPointInsideFurnitureFootprint[furnitureModel] then
+		return
+	end
+
+	if typeof(sitPointPosition) ~= "Vector3" then
+		return
+	end
+
+	local sitPointCell = worldToCell(sitPointPosition)
+
+	if targetFurnitureOccupiesSitPathCell(furnitureModel, sitPointCell) then
+		warn("SitPoint appears to be inside the furniture footprint.")
+		warnedSitPointInsideFurnitureFootprint[furnitureModel] = true
+	end
+end
+
 local function isCellInsideRoom(player, cell)
 	local bounds = getMovementRoomBounds(player)
 
@@ -713,7 +896,7 @@ local function isCellInsideRoom(player, cell)
 		and cell.z <= bounds.maxZ
 end
 
-local function isCellBlocked(player, cell, furnitureToIgnore)
+local function isCellBlocked(player, cell, targetFurnitureModel)
 	local roomFolder = getCurrentRoomFolder(player)
 	local furnitureFolder = getCurrentFurnitureFolder(player)
 
@@ -733,13 +916,7 @@ local function isCellBlocked(player, cell, furnitureToIgnore)
 	local overlapParams = OverlapParams.new()
 	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
-	local ignoreList = {}
-
-	if furnitureToIgnore then
-		table.insert(ignoreList, furnitureToIgnore)
-	end
-
-	overlapParams.FilterDescendantsInstances = ignoreList
+	overlapParams.FilterDescendantsInstances = {}
 
 	local parts = workspace:GetPartBoundsInBox(boxCFrame, boxSize, overlapParams)
 
@@ -748,20 +925,24 @@ local function isCellBlocked(player, cell, furnitureToIgnore)
 			continue
 		end
 
-		if part.Name == "SitPoint"
-			or part.Name == "SleepPoint"
-			or part.Name == "PlayPoint"
-			or part.Name == "EnterPoint"
-			or part.Name == "TalkPoint" then
+		if isPartIgnoredForSitPath(part, targetFurnitureModel) then
 			continue
 		end
 
-		if part:IsA("BasePart") and part.CanCollide == false then
+		if targetFurnitureModel and part:IsDescendantOf(targetFurnitureModel) then
+			if targetFurnitureOccupiesSitPathCell(targetFurnitureModel, cell) then
+				return true
+			end
+
 			continue
 		end
 
 		if part:IsDescendantOf(furnitureFolder) then
 			return true
+		end
+
+		if part:IsA("BasePart") and part.CanCollide == false then
+			continue
 		end
 
 		if part:IsDescendantOf(roomFolder) then
@@ -898,6 +1079,92 @@ local function compressGridPath(path)
 	return compressedPath
 end
 
+local function moveHumanoidDirectToPosition(humanoid, rootPart, targetPosition, distance, timeoutSeconds)
+	if not humanoid or not rootPart or typeof(targetPosition) ~= "Vector3" then
+		return false
+	end
+
+	if (rootPart.Position - targetPosition).Magnitude <= distance then
+		return true
+	end
+
+	local finished = false
+	local connection = humanoid.MoveToFinished:Connect(function()
+		finished = true
+	end)
+
+	humanoid:MoveTo(targetPosition)
+
+	local startTime = os.clock()
+
+	while os.clock() - startTime < timeoutSeconds do
+		if not rootPart.Parent then
+			connection:Disconnect()
+			return false
+		end
+
+		if (rootPart.Position - targetPosition).Magnitude <= distance then
+			connection:Disconnect()
+			return true
+		end
+
+		if finished then
+			break
+		end
+
+		task.wait(0.05)
+	end
+
+	connection:Disconnect()
+
+	return (rootPart.Position - targetPosition).Magnitude <= distance
+end
+
+local function getEntryBridgeCellIfNeeded(player, rootPart)
+	if not rootPart then
+		return nil, nil, nil
+	end
+
+	local rootPosition = rootPart.Position
+	local rootInsideRoom = positionIsInsideMovementBounds(player, rootPosition)
+	local startCell = worldToCell(rootPosition)
+	local startBlocked = isCellInsideRoom(player, startCell)
+		and isCellBlocked(player, startCell, nil)
+
+	if rootInsideRoom and not startBlocked then
+		return nil, nil, nil
+	end
+
+	if not playerIsNearDoorSpawn(player, rootPosition) then
+		return nil, nil, nil
+	end
+
+	local entryWalkTarget = getCurrentEntryWalkTarget(player)
+	local entryPosition = getMarkerWorldPosition(entryWalkTarget)
+
+	if not entryPosition then
+		return nil, nil, nil
+	end
+
+	local entryCell = worldToCell(entryPosition)
+
+	if not isCellInsideRoom(player, entryCell) then
+		return nil, nil, "Cannot enter room grid from current position."
+	end
+
+	if isCellBlocked(player, entryCell, nil) then
+		return nil, nil, "Room entrance is blocked."
+	end
+
+	local entryWorldPosition = cellToWorld(player, entryCell)
+
+	if not entryWorldPosition then
+		return nil, nil, "Cannot enter room grid from current position."
+	end
+
+	return entryCell, entryWorldPosition, nil
+end
+
 local function moveCharacterToGridPoint(player, character, destination, furnitureToIgnore)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	local rootPart = character:FindFirstChild("HumanoidRootPart")
@@ -914,16 +1181,38 @@ local function moveCharacterToGridPoint(player, character, destination, furnitur
 
 	local startCell = worldToCell(rootPart.Position)
 	local goalCell = worldToCell(clampedDestination)
+	local bridgeCell, bridgeWorldPosition, bridgeMessage = getEntryBridgeCellIfNeeded(player, rootPart)
+
+	if bridgeMessage then
+		return false, bridgeMessage
+	end
+
+	if bridgeCell then
+		local reachedBridge = moveHumanoidDirectToPosition(
+			humanoid,
+			rootPart,
+			bridgeWorldPosition,
+			ENTRANCE_BRIDGE_REACHED_DISTANCE,
+			ENTRANCE_BRIDGE_TIMEOUT_SECONDS
+		)
+
+		if not reachedBridge then
+			local message = "Could not reach room entrance."
+			return false, message
+		end
+
+		startCell = bridgeCell
+	end
 
 	if startCell.x == goalCell.x and startCell.z == goalCell.z then
-		return true
+		return true, nil
 	end
 
 	local path, reachedGoal = findGridPath(player, startCell, goalCell, furnitureToIgnore)
 
 	if not path or #path == 0 then
 		warn("No grid path found at all")
-		return false
+		return false, nil
 	end
 
 	local movementPath = compressGridPath(path)
@@ -936,7 +1225,7 @@ local function moveCharacterToGridPoint(player, character, destination, furnitur
 		local worldPosition = cellToWorld(player, cell)
 
 		if not worldPosition then
-			return false
+			return false, nil
 		end
 
 		humanoid:MoveTo(worldPosition)
@@ -946,11 +1235,11 @@ local function moveCharacterToGridPoint(player, character, destination, furnitur
 		if not reached then
 			-- Physical movement got blocked.
 			-- This is fine for Habbo-style movement: stop here.
-			return false
+			return false, nil
 		end
 	end
 
-	return reachedGoal
+	return reachedGoal, nil
 end
 
 
@@ -1006,13 +1295,37 @@ local function sitPlayerOnChair(player, furnitureModel)
 		return
 	end
 
-	local reachedSitPoint = moveCharacterToGridPoint(player, character, sitPointPosition, furnitureModel)
+	warnIfSitPointInsideFurnitureFootprint(player, furnitureModel, sitPointPosition)
 
-	local distanceToSitPoint = (rootPart.Position - sitPointPosition).Magnitude
-	local closeEnoughToSit = distanceToSitPoint <= 5
+	local function getHorizontalDistanceToSitPoint()
+		return (
+			Vector3.new(rootPart.Position.X, 0, rootPart.Position.Z)
+			- Vector3.new(sitPointPosition.X, 0, sitPointPosition.Z)
+		).Magnitude
+	end
+
+	local closeEnoughToSit = getHorizontalDistanceToSitPoint() <= 3
+	local reachedSitPoint = closeEnoughToSit
+	local movementFailureMessage = nil
+
+	if not reachedSitPoint then
+		reachedSitPoint, movementFailureMessage = moveCharacterToGridPoint(
+			player,
+			character,
+			sitPointPosition,
+			furnitureModel
+		)
+	end
+
+	closeEnoughToSit = getHorizontalDistanceToSitPoint() <= 3
 
 	if not reachedSitPoint and not closeEnoughToSit then
-		warn("Server: SitPoint is blocked, stopping at closest reachable tile")
+		if movementFailureMessage then
+			warn(movementFailureMessage)
+		else
+			warn("Cannot reach the seat.")
+		end
+
 		return
 	end
 

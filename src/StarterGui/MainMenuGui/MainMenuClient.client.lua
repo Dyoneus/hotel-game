@@ -61,6 +61,19 @@ local GAMEPLAY_GUI_NAMES_TO_HIDE = {
 
 local suppressedGuiStates = {}
 
+local function disableDecorativeInput(guiObject)
+	if not guiObject:IsA("GuiObject") then
+		return
+	end
+
+	if guiObject:IsA("TextButton") or guiObject:IsA("ImageButton") then
+		return
+	end
+
+	guiObject.Active = false
+	guiObject.Selectable = false
+end
+
 local background = Instance.new("Frame")
 background.Name = "Background"
 background.Size = UDim2.fromScale(1, 1)
@@ -249,6 +262,24 @@ statusText.TextYAlignment = Enum.TextYAlignment.Center
 statusText.Font = Enum.Font.GothamMedium
 statusText.Parent = statusCard
 
+local worldInputBlocker = Instance.new("Frame")
+worldInputBlocker.Name = "WorldInputBlocker"
+worldInputBlocker.Position = UDim2.fromScale(0, 0)
+worldInputBlocker.Size = UDim2.fromScale(1, 1)
+worldInputBlocker.BackgroundTransparency = 1
+worldInputBlocker.BorderSizePixel = 0
+worldInputBlocker.Active = true
+worldInputBlocker.Selectable = false
+worldInputBlocker.Visible = false
+worldInputBlocker.ZIndex = 100
+worldInputBlocker.Parent = gui
+
+disableDecorativeInput(background)
+
+for _, descendant in ipairs(background:GetDescendants()) do
+	disableDecorativeInput(descendant)
+end
+
 local function shouldShowMainMenu()
 	if player:GetAttribute("OnboardingStep") ~= "Complete" then
 		return false
@@ -319,6 +350,7 @@ local function updateMainMenu()
 	local wasVisible = background.Visible
 
 	background.Visible = shouldShow
+	worldInputBlocker.Visible = shouldShow
 	updateGameplayGuiSuppression(shouldShow)
 
 	if shouldShow and not wasVisible then

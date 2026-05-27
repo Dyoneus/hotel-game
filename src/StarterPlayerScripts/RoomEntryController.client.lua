@@ -14,7 +14,6 @@ local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 
 local leaveRoomRequest = remoteEvents:WaitForChild("LeaveRoomRequest")
 local leaveRoomResult = remoteEvents:WaitForChild("LeaveRoomResult")
-
 local EXIT_ARRIVAL_DISTANCE = 2.5
 local LEAVE_WALK_TIMEOUT_SECONDS = 8
 local FADE_OUT_SECONDS = 0.28
@@ -90,6 +89,7 @@ end
 local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
 local roomTransitionRequest = getOrCreateClientEvent("RoomTransitionRequest")
 local requestMoveToRoomExit = getOrCreateClientFunction("RequestMoveToRoomExit")
+local ensureStandBeforeMovement = getOrCreateClientFunction("EnsureStandBeforeMovement")
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "RoomLeavePromptGui"
@@ -246,6 +246,24 @@ local function getCharacterParts()
 	end
 
 	return humanoid, rootPart
+end
+
+local function standUpIfSeatedForExit()
+	local ok, result = pcall(function()
+		return ensureStandBeforeMovement:Invoke()
+	end)
+
+	if ok and result == true then
+		return true
+	end
+
+	local humanoid = getCharacterParts()
+
+	if not humanoid then
+		return false
+	end
+
+	return not humanoid.Sit and humanoid.SeatPart == nil
 end
 
 local function isRoomExitMarker(instance)
@@ -448,6 +466,13 @@ local function startLeaveRoomSequence()
 		end
 
 		clearPathPreview()
+
+		if not standUpIfSeatedForExit() then
+			leaveInProgress = false
+			showPrompt("Could not leave while seated.")
+			return
+		end
+
 		local movedToExit, moveMessage = requestRoomExitMovement()
 
 		if not leaveInProgress then

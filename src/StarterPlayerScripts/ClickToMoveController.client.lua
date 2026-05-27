@@ -82,6 +82,7 @@ local inventoryLocalDelta = getOrCreateClientEvent("InventoryLocalDelta")
 local requestGridMoveToPosition = getOrCreateClientEvent("RequestGridMoveToPosition")
 local canGridMoveToPosition = getOrCreateClientFunction("CanGridMoveToPosition")
 local requestMoveToRoomExit = getOrCreateClientFunction("RequestMoveToRoomExit")
+local ensureStandBeforeMovement = getOrCreateClientFunction("EnsureStandBeforeMovement")
 
 local function fireInventoryLocalDeltaFromPickUpResult(response)
 	local templateId = response.TemplateId
@@ -702,6 +703,8 @@ local ENTRY_BRIDGE_REACHED_DISTANCE = 3
 local EXIT_TARGET_REACHED_DISTANCE = 3
 local EXIT_DIRECT_MOVE_TIMEOUT_SECONDS = 4
 local EXIT_ENTRY_MOVE_TIMEOUT_SECONDS = 8
+local STAND_UP_TIMEOUT_SECONDS = 2
+local STAND_SETTLE_CHECK_SECONDS = 0.05
 
 local warnedTileGridDisabled = false
 local activeGridFacingMoveId = nil
@@ -711,6 +714,7 @@ local activeGridFacingPreviousWalkSpeed = nil
 local activeGridFacingRootPart = nil
 local activeGridFacingDirection = nil
 local entranceBridgeDiagnosticsLogged = {}
+local lastSeatedStandCompletedAt = 0
 
 local function getMovementGridContext()
 	local roomModel = getCurrentRoomModel()
@@ -975,6 +979,13 @@ local function snapCharacterToGridFacing(rootPart, worldPosition, worldDirection
 	end
 
 	if not rootPart or not rootPart:IsA("BasePart") or typeof(worldDirection) ~= "Vector3" then
+		return
+	end
+
+	local character = rootPart.Parent
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+	if humanoid and (humanoid.Sit or humanoid.SeatPart) then
 		return
 	end
 
@@ -1456,6 +1467,53 @@ local function findNearestOpenCellFromPosition(position, context)
 	return nearestCell, cellToWorld(nearestCell, context)
 end
 
+local function getNearestValidStartCellFromPosition(rootPosition, context)
+	if typeof(rootPosition) ~= "Vector3" or not context then
+		return nil
+	end
+
+	local currentCell = worldToCell(rootPosition, context)
+
+	if currentCell
+		and isCellInsideRoom(currentCell, context)
+		and not isCellBlocked(currentCell, context) then
+
+		return currentCell
+	end
+
+	if not currentCell or not isCellInsideRoom(currentCell, context) then
+		return nil
+	end
+
+	local bestCell = nil
+	local bestDistance = math.huge
+	local maxDistance = context.tileSize * 1.5
+
+	for radius = 1, 2 do
+		for x = currentCell.x - radius, currentCell.x + radius do
+			for z = currentCell.z - radius, currentCell.z + radius do
+				local cell = { x = x, z = z }
+
+				if isCellInsideRoom(cell, context) and not isCellBlocked(cell, context) then
+					local worldPosition = cellToWorld(cell, context)
+					local distance = (Vector3.new(worldPosition.X, rootPosition.Y, worldPosition.Z) - rootPosition).Magnitude
+
+					if distance < bestDistance then
+						bestDistance = distance
+						bestCell = cell
+					end
+				end
+			end
+		end
+
+		if bestCell and bestDistance <= maxDistance then
+			return bestCell
+		end
+	end
+
+	return nil
+end
+
 local function formatVector3(position)
 	if typeof(position) ~= "Vector3" then
 		return "nil"
@@ -1662,11 +1720,12 @@ local function compressGridPath(path)
 	return compressedPath
 end
 
-local function moveCharacterTo(destination)
+local function moveCharacterTo(destination, options)
+	options = typeof(options) == "table" and options or {}
 	local now = os.clock()
 
 	if now - lastMoveTime < CLICK_MOVE_COOLDOWN then
-		return
+		return false
 	end
 
 	lastMoveTime = now
@@ -1686,7 +1745,15 @@ local function moveCharacterTo(destination)
 			warnedTileGridDisabled = true
 		end
 
-		return
+		return false
+	end
+
+	character = player.Character or character
+	humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+	if not humanoid or not rootPart then
+		return false
 	end
 
 	local clampedDestination = clampToRoom(destination, context)
@@ -1696,34 +1763,46 @@ local function moveCharacterTo(destination)
 	local bridgeCell, bridgeWorldPosition, bridgeMessage = getBridgeStartCellIfNeeded(rootPart.Position, context)
 
 	if not goalCell then
-		return
+		return false
 	end
 
 	if bridgeMessage then
 		warn(bridgeMessage)
-		return
+		return false
 	end
 
 	if bridgeCell then
 		startCell = bridgeCell
+	elseif startCell
+		and isCellBlocked(startCell, context)
+		and os.clock() - lastSeatedStandCompletedAt <= 2.5 then
+
+		local adjustedStartCell = getNearestValidStartCellFromPosition(rootPart.Position, context)
+
+		if adjustedStartCell then
+			startCell = adjustedStartCell
+		else
+			warn("Could not find a valid movement start tile after standing")
+			return false
+		end
 	end
 
 	if not startCell then
-		return
+		return false
 	end
 
 	if startCell.x == goalCell.x and startCell.z == goalCell.z and not bridgeCell then
-		return
+		return true
 	end
 
 	local path, reachedGoal = findGridPath(startCell, goalCell, context)
 
 	if not path or #path == 0 then
 		warn("No grid path found")
-		return
+		return false
 	end
 
-	if not reachedGoal then
+	if not reachedGoal and options.SuppressBlockedWarning ~= true then
 		warn("Clicked tile is blocked, moving to closest reachable tile")
 	end
 
@@ -1734,7 +1813,7 @@ local function moveCharacterTo(destination)
 	if bridgeCell then
 		if moveId ~= currentMoveId then
 			finishGridFacingControl(moveId)
-			return
+			return false
 		end
 
 		local bridgeDirection = Vector3.new(
@@ -1754,7 +1833,7 @@ local function moveCharacterTo(destination)
 
 		if moveId ~= currentMoveId then
 			finishGridFacingControl(moveId)
-			return
+			return false
 		end
 
 		if not reachedBridge
@@ -1770,7 +1849,7 @@ local function moveCharacterTo(destination)
 			end
 
 			finishGridFacingControl(moveId)
-			return
+			return false
 		end
 
 		if bridgeDirection.Magnitude > 0.001 then
@@ -1780,14 +1859,14 @@ local function moveCharacterTo(destination)
 
 		if cellsAreSame(bridgeCell, goalCell) then
 			finishGridFacingControl(moveId)
-			return
+			return true
 		end
 	end
 
 	for index, cell in ipairs(movementPath) do
 		if moveId ~= currentMoveId then
 			finishGridFacingControl(moveId)
-			return
+			return false
 		end
 
 		-- Skip the starting tile.
@@ -1810,13 +1889,13 @@ local function moveCharacterTo(destination)
 
 		if moveId ~= currentMoveId then
 			finishGridFacingControl(moveId)
-			return
+			return false
 		end
 
 		if not reached then
 			warn("Could not reach movement segment")
 			finishGridFacingControl(moveId)
-			return
+			return false
 		end
 
 		if facingDirection then
@@ -1826,9 +1905,12 @@ local function moveCharacterTo(destination)
 	end
 
 	finishGridFacingControl(moveId)
+	return reachedGoal == true
 end
 
-local function getFurnitureModelFromTarget(target)
+local furnitureInteraction = {}
+
+function furnitureInteraction.getModelFromTarget(target)
 	if not target then
 		return nil
 	end
@@ -1852,12 +1934,42 @@ local function getFurnitureModelFromTarget(target)
 	return nil
 end
 
-local function getFurnitureTopPosition(furnitureModel)
+function furnitureInteraction.getTopPosition(furnitureModel)
 	local modelCFrame, modelSize = furnitureModel:GetBoundingBox()
 
 	local topPosition = modelCFrame.Position + Vector3.new(0, modelSize.Y / 2 + 2, 0)
 
 	return topPosition
+end
+
+function furnitureInteraction.getSitPoint(furnitureModel)
+	if typeof(furnitureModel) ~= "Instance" or not furnitureModel:IsA("Model") then
+		return nil
+	end
+
+	local sitPoint = furnitureModel:FindFirstChild("SitPoint", true)
+
+	if sitPoint and (sitPoint:IsA("Attachment") or sitPoint:IsA("BasePart")) then
+		return sitPoint
+	end
+
+	return nil
+end
+
+function furnitureInteraction.getSitPointWorldPosition(sitPoint)
+	if not sitPoint then
+		return nil
+	end
+
+	if sitPoint:IsA("Attachment") then
+		return sitPoint.WorldPosition
+	end
+
+	if sitPoint:IsA("BasePart") then
+		return sitPoint.Position
+	end
+
+	return nil
 end
 
 local function getCurrentWalkableSurfaceParts()
@@ -2490,7 +2602,7 @@ local function updateMenuPosition()
 	end
 
 	local camera = workspace.CurrentCamera
-	local worldPosition = getFurnitureTopPosition(selectedFurniture)
+	local worldPosition = furnitureInteraction.getTopPosition(selectedFurniture)
 
 	local screenPosition, onScreen = camera:WorldToScreenPoint(worldPosition)
 
@@ -2566,7 +2678,7 @@ local function openFurnitureMenu(furnitureModel)
 	highlightFurniture(furnitureModel)
 
 	local camera = workspace.CurrentCamera
-	local worldPosition = getFurnitureTopPosition(furnitureModel)
+	local worldPosition = furnitureInteraction.getTopPosition(furnitureModel)
 
 	local screenPosition, onScreen = camera:WorldToScreenPoint(worldPosition)
 
@@ -2712,21 +2824,127 @@ local function standUpIfSeated()
 	local character = player.Character
 
 	if not character then
-		return
+		return true
 	end
 
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
 
 	if not humanoid then
-		return
+		return true
 	end
 
 	if humanoid.Sit or humanoid.SeatPart then
+		local originalRootPosition = rootPart and rootPart.Position
 		furnitureActionRequest:FireServer("Stand")
 
-		-- Give the server a moment to unseat and teleport the player to SitPoint.
-		task.wait(0.5)
+		-- Give the server time to unseat and move the player to SitPoint before pathing.
+		local startTime = os.clock()
+		local unseated = false
+
+		while os.clock() - startTime < STAND_UP_TIMEOUT_SECONDS do
+			if not humanoid.Parent then
+				return false
+			end
+
+			if not humanoid.Sit and humanoid.SeatPart == nil then
+				unseated = true
+				break
+			end
+
+			task.wait(0.05)
+		end
+
+		if not unseated then
+			return false
+		end
+
+		RunService.Heartbeat:Wait()
+		task.wait(STAND_SETTLE_CHECK_SECONDS)
+
+		local settledDeadline = os.clock() + 0.75
+		local hasNearbyStartCell = false
+
+		while os.clock() < settledDeadline do
+			character = player.Character
+			humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+			if not humanoid or not rootPart then
+				return false
+			end
+
+			if humanoid.Sit or humanoid.SeatPart then
+				return false
+			end
+
+			local context = getMovementGridContext()
+
+			if not context then
+				lastSeatedStandCompletedAt = os.clock()
+				return true
+			end
+
+			local rootCell = worldToCell(rootPart.Position, context)
+
+			if rootCell and isCellInsideRoom(rootCell, context) and not isCellBlocked(rootCell, context) then
+				lastSeatedStandCompletedAt = os.clock()
+				return true
+			end
+
+			hasNearbyStartCell = getNearestValidStartCellFromPosition(rootPart.Position, context) ~= nil
+
+			if originalRootPosition
+				and (rootPart.Position - originalRootPosition).Magnitude > 0.25
+				and hasNearbyStartCell then
+
+				lastSeatedStandCompletedAt = os.clock()
+				return true
+			end
+
+			task.wait(0.05)
+		end
+
+		if hasNearbyStartCell
+			and originalRootPosition
+			and rootPart
+			and (rootPart.Position - originalRootPosition).Magnitude > 0.25 then
+
+			lastSeatedStandCompletedAt = os.clock()
+			return true
+		end
+
+		return false
 	end
+
+	return true
+end
+
+function furnitureInteraction.requestSitAfterPathingToSitPoint(furnitureModel)
+	if typeof(furnitureModel) ~= "Instance" or not furnitureModel:IsA("Model") then
+		return false
+	end
+
+	local sitPoint = furnitureInteraction.getSitPoint(furnitureModel)
+	local sitPointPosition = furnitureInteraction.getSitPointWorldPosition(sitPoint)
+
+	if not standUpIfSeated() then
+		return false
+	end
+
+	if sitPointPosition then
+		local reachedSitPoint = moveCharacterTo(sitPointPosition, {
+			SuppressBlockedWarning = true,
+		})
+
+		if not reachedSitPoint then
+			warn("Cannot reach the seat.")
+			return false
+		end
+	end
+
+	furnitureActionRequest:FireServer("Sit", furnitureModel)
+	return true
 end
 
 local function getGridPathToPosition(targetPosition)
@@ -2854,6 +3072,24 @@ local function moveToRoomExit()
 
 	closeFurnitureMenu()
 
+	if not standUpIfSeated() then
+		return {
+			Success = false,
+			Message = "Could not leave while seated.",
+		}
+	end
+
+	character = player.Character
+	humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+	if not humanoid or not rootPart then
+		return {
+			Success = false,
+			Message = "Character is not ready.",
+		}
+	end
+
 	if rootPartIsNearPosition(rootPart, doorSpawnPosition, EXIT_TARGET_REACHED_DISTANCE) then
 		return {
 			Success = true,
@@ -2919,6 +3155,10 @@ canGridMoveToPosition.OnInvoke = function(targetPosition)
 	return getGridPathToPosition(targetPosition)
 end
 
+ensureStandBeforeMovement.OnInvoke = function()
+	return standUpIfSeated()
+end
+
 requestMoveToRoomExit.OnInvoke = function()
 	return moveToRoomExit()
 end
@@ -2932,12 +3172,15 @@ requestGridMoveToPosition.Event:Connect(function(targetPosition)
 		return
 	end
 
-	standUpIfSeated()
+	if not standUpIfSeated() then
+		return
+	end
+
 	closeFurnitureMenu()
 	moveCharacterTo(targetPosition)
 end)
 
-local function handleFurnitureClickInPlayMode(furnitureModel)
+function furnitureInteraction.handleClickInPlayMode(furnitureModel)
 	if furnitureSupportsOpenCloseBestEffort(furnitureModel) then
 		openFurnitureMenu(furnitureModel)
 		return
@@ -2950,6 +3193,14 @@ local function handleFurnitureClickInPlayMode(furnitureModel)
 		return
 	end
 
+	local now = os.clock()
+
+	if now - lastPlayFurnitureActionAt < PLAY_FURNITURE_ACTION_COOLDOWN_SECONDS then
+		return
+	end
+
+	lastPlayFurnitureActionAt = now
+
 	-- Important:
 	-- If the player clicks the same chair they are already sitting on,
 	-- do not send Stand and do not send another Sit.
@@ -2960,18 +3211,16 @@ local function handleFurnitureClickInPlayMode(furnitureModel)
 			closeFurnitureMenu()
 			return
 		end
-	end
 
-	local now = os.clock()
-
-	if now - lastPlayFurnitureActionAt < PLAY_FURNITURE_ACTION_COOLDOWN_SECONDS then
+		furnitureInteraction.requestSitAfterPathingToSitPoint(furnitureModel)
+		closeFurnitureMenu()
 		return
 	end
 
-	lastPlayFurnitureActionAt = now
-
 	if actionRequiresStanding(actionName) then
-		standUpIfSeated()
+		if not standUpIfSeated() then
+			return
+		end
 	end
 
 	furnitureActionRequest:FireServer(actionName, furnitureModel)
@@ -3013,7 +3262,7 @@ furnitureMenuRequest.OnClientEvent:Connect(function(furnitureModel)
 	if isEditMode() then
 		openFurnitureMenu(furnitureModel)
 	else
-		handleFurnitureClickInPlayMode(furnitureModel)
+		furnitureInteraction.handleClickInPlayMode(furnitureModel)
 	end
 end)
 
@@ -3061,7 +3310,7 @@ mouse.Button1Down:Connect(function()
 
 	-- Furniture clicks are handled by FurnitureClickServer through ClickDetectors.
 	-- Do not move or close the menu here if the clicked target is furniture.
-	local furnitureModel = getFurnitureModelFromTarget(target)
+	local furnitureModel = furnitureInteraction.getModelFromTarget(target)
 
 	if furnitureModel then
 		if getDefaultFurnitureAction(furnitureModel) or not walkableSurfaceClicked then
@@ -3070,7 +3319,10 @@ mouse.Button1Down:Connect(function()
 	end
 
 	if walkableSurfaceClicked then
-		standUpIfSeated()
+		if not standUpIfSeated() then
+			return
+		end
+
 		closeFurnitureMenu()
 
 		moveCharacterTo(floorRaycastResult.Position)
@@ -3086,10 +3338,7 @@ sitButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	-- If already seated, only stand up when choosing to sit somewhere else.
-	standUpIfSeated()
-
-	furnitureActionRequest:FireServer("Sit", selectedFurniture)
+	furnitureInteraction.requestSitAfterPathingToSitPoint(selectedFurniture)
 	closeFurnitureMenu()
 end)
 
