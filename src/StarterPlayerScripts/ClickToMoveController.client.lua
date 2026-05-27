@@ -1014,9 +1014,8 @@ local lastMoveTime = 0
 local CLICK_MOVE_COOLDOWN = 0.2
 local SNAP_CHARACTER_FACING_TO_GRID = true
 local HOTEL_GRID_WALK_SPEED = 12
-local DOOR_SPAWN_BRIDGE_DISTANCE = 8
-local ENTRY_BRIDGE_REACHED_DISTANCE = 4
-local EXIT_TARGET_REACHED_DISTANCE = 4
+local ENTRY_BRIDGE_REACHED_DISTANCE = 3
+local EXIT_TARGET_REACHED_DISTANCE = 3.5
 local EXIT_DIRECT_MOVE_TIMEOUT_SECONDS = 4
 local EXIT_ENTRY_MOVE_TIMEOUT_SECONDS = 8
 local STAND_UP_TIMEOUT_SECONDS = 2
@@ -1032,6 +1031,7 @@ local activeGridFacingDirection = nil
 local entranceBridgeDiagnosticsLogged = {}
 local lastSeatedStandCompletedAt = 0
 local roomMovementState = {
+	caveTransitionActive = false,
 	lastEntranceReachWarningAt = 0,
 }
 
@@ -1145,6 +1145,10 @@ local function getCurrentEntryWalkTarget()
 	return findCurrentRoomMarker("EntryWalkTarget")
 end
 
+function roomMovementState.setCaveTransitionActive(isActive)
+	roomMovementState.caveTransitionActive = isActive == true
+end
+
 function roomMovementState.positionIsInsideOrNearPart(position, part, margin)
 	if typeof(position) ~= "Vector3" or not part or not part:IsA("BasePart") then
 		return false
@@ -1159,33 +1163,98 @@ function roomMovementState.positionIsInsideOrNearPart(position, part, margin)
 	return Vector3.new(outsideX, outsideY, outsideZ).Magnitude <= (margin or 0)
 end
 
-function roomMovementState.isCharacterNearPart(part, distance)
-	local character = player.Character
-	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+function roomMovementState.isRoomExitInstance(instance)
+	local current = instance
+	local roomModel = getCurrentRoomModel()
 
-	if not rootPart then
-		return false
-	end
+	while current and current ~= workspace do
+		if current.Name == "RoomExitZone" or current:GetAttribute("IsRoomExit") == true then
+			return roomModel == nil or current:IsDescendantOf(roomModel) or current == roomModel
+		end
 
-	local markerPosition = getMarkerWorldPosition(part)
+		if current == roomModel then
+			break
+		end
 
-	if markerPosition and (rootPart.Position - markerPosition).Magnitude <= distance then
-		return true
-	end
-
-	if part and part:IsA("BasePart") then
-		return roomMovementState.positionIsInsideOrNearPart(rootPart.Position, part, distance)
+		current = current.Parent
 	end
 
 	return false
 end
 
-function roomMovementState.characterReachedMarker(marker, distance)
-	if marker and roomMovementState.isCharacterNearPart(marker, distance) then
-		return true
+function roomMovementState.positionIsInsideOrNearRoomExitZone(position, distance)
+	local roomModel = getCurrentRoomModel()
+
+	if typeof(position) ~= "Vector3" or not roomModel then
+		return false
+	end
+
+	for _, descendant in ipairs(roomModel:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and roomMovementState.isRoomExitInstance(descendant)
+			and roomMovementState.positionIsInsideOrNearPart(position, descendant, distance) then
+
+			return true
+		end
 	end
 
 	return false
+end
+
+function roomMovementState.isPlayerAtDoorSpawn(rootPosition)
+	local position = rootPosition
+
+	if typeof(position) ~= "Vector3" then
+		local character = player.Character
+		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+		if not rootPart then
+			return false
+		end
+
+		position = rootPart.Position
+	end
+
+	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn())
+
+	if not doorSpawnPosition then
+		return false
+	end
+
+	if (position - doorSpawnPosition).Magnitude <= EXIT_TARGET_REACHED_DISTANCE then
+		return true
+	end
+
+	local doorSpawn = getCurrentDoorSpawn()
+
+	if doorSpawn
+		and doorSpawn:IsA("BasePart")
+		and roomMovementState.positionIsInsideOrNearPart(position, doorSpawn, 0.5) then
+
+		return true
+	end
+
+	-- RoomExitZone is only a prompt area. It only counts as cave state when the
+	-- character is also physically at DoorSpawn.
+	return roomMovementState.positionIsInsideOrNearRoomExitZone(position, 0.5)
+		and (position - doorSpawnPosition).Magnitude <= EXIT_TARGET_REACHED_DISTANCE
+end
+
+function roomMovementState.isPlayerNearDoorCave(rootPosition)
+	return roomMovementState.isPlayerAtDoorSpawn(rootPosition)
+end
+
+function roomMovementState.characterReachedMarkerPosition(marker, distance)
+	local markerPosition = getMarkerWorldPosition(marker)
+
+	if not markerPosition then
+		return false
+	end
+
+	local character = player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+	return rootPart ~= nil and (rootPart.Position - markerPosition).Magnitude <= distance
 end
 
 function roomMovementState.waitForCurrentRoomReady(options)
@@ -1222,29 +1291,6 @@ function roomMovementState.waitForCurrentRoomReady(options)
 	end
 
 	return false
-end
-
-local function playerIsNearDoorSpawn(rootPosition)
-	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn())
-
-	if not doorSpawnPosition then
-		return false
-	end
-
-	local position = rootPosition
-
-	if typeof(position) ~= "Vector3" then
-		local character = player.Character
-		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-
-		if not rootPart then
-			return false
-		end
-
-		position = rootPart.Position
-	end
-
-	return (position - doorSpawnPosition).Magnitude <= DOOR_SPAWN_BRIDGE_DISTANCE
 end
 
 local function worldPositionIsInsideGridBounds(position, context)
@@ -1316,36 +1362,21 @@ local function moveHumanoidDirectToPosition(humanoid, rootPart, targetPosition, 
 		return true
 	end
 
-	local finished = false
-	local finishedAt = nil
-	local connection = humanoid.MoveToFinished:Connect(function()
-		finished = true
-		finishedAt = os.clock()
-	end)
-
 	humanoid:MoveTo(targetPosition)
 
 	local startTime = os.clock()
 
 	while os.clock() - startTime < timeoutSeconds do
 		if moveId and moveId ~= currentMoveId then
-			connection:Disconnect()
 			return false
 		end
 
 		if hasArrived() then
-			connection:Disconnect()
 			return true
-		end
-
-		if finished and finishedAt and os.clock() - finishedAt >= 0.35 then
-			break
 		end
 
 		task.wait(0.05)
 	end
-
-	connection:Disconnect()
 
 	return hasArrived()
 end
@@ -1378,7 +1409,7 @@ function roomMovementState.moveHumanoidToMarker(marker, options)
 		timeoutSeconds,
 		moveId,
 		function()
-			return roomMovementState.characterReachedMarker(marker, distance)
+			return roomMovementState.characterReachedMarkerPosition(marker, distance)
 		end
 	)
 end
@@ -1568,6 +1599,39 @@ local function isCellInsideRoom(cell, context)
 		and cell.x < context.gridWidth
 		and cell.z >= 0
 		and cell.z < context.gridDepth
+end
+
+function roomMovementState.isPlayerInRoomGrid(rootPosition, context)
+	local position = rootPosition
+
+	if typeof(position) ~= "Vector3" then
+		local character = player.Character
+		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+		if not rootPart then
+			return false
+		end
+
+		position = rootPart.Position
+	end
+
+	if roomMovementState.isPlayerAtDoorSpawn(position) then
+		return false
+	end
+
+	local movementContext = context
+
+	if not movementContext then
+		movementContext = getMovementGridContext()
+	end
+
+	if not movementContext or not worldPositionIsInsideGridBounds(position, movementContext) then
+		return false
+	end
+
+	local cell = worldToCell(position, movementContext)
+
+	return cell ~= nil and isCellInsideRoom(cell, movementContext)
 end
 
 local function cellKey(cell)
@@ -1881,41 +1945,6 @@ local function isCellBlocked(cell, context)
 	return false
 end
 
-local function findNearestOpenCellFromPosition(position, context)
-	local nearestCell = nil
-	local nearestDistance = math.huge
-	local localPosition = GridConfig.WorldToFloorLocal(context.floor, position)
-
-	for x = 0, context.gridWidth - 1 do
-		for z = 0, context.gridDepth - 1 do
-			local cell = { x = x, z = z }
-
-			if not isCellBlocked(cell, context) then
-				local localCellX = cellIndexToLocalAxis(x, context.tileSize, context.halfWidthStuds)
-				local localCellZ = cellIndexToLocalAxis(z, context.tileSize, context.halfDepthStuds)
-				local distance = 0
-
-				if localPosition then
-					distance = (Vector2.new(localPosition.X, localPosition.Z) - Vector2.new(localCellX, localCellZ)).Magnitude
-				else
-					distance = (cellToWorld(cell, context) - position).Magnitude
-				end
-
-				if distance < nearestDistance then
-					nearestDistance = distance
-					nearestCell = cell
-				end
-			end
-		end
-	end
-
-	if not nearestCell then
-		return nil, nil
-	end
-
-	return nearestCell, cellToWorld(nearestCell, context)
-end
-
 local function getNearestValidStartCellFromPosition(rootPosition, context)
 	if typeof(rootPosition) ~= "Vector3" or not context then
 		return nil
@@ -2022,15 +2051,15 @@ function roomMovementState.warnCouldNotReachEntrance()
 end
 
 local function getBridgeStartCellIfNeeded(rootPosition, context)
-	local startCell = worldToCell(rootPosition, context)
 	local rootInsideGrid = worldPositionIsInsideGridBounds(rootPosition, context)
-	local startLooksBlocked = startCell ~= nil and isCellBlocked(startCell, context)
+	local atDoorSpawn = roomMovementState.isPlayerAtDoorSpawn(rootPosition)
+	local inRoomGrid = roomMovementState.isPlayerInRoomGrid(rootPosition, context)
 
-	if rootInsideGrid and not (startLooksBlocked and playerIsNearDoorSpawn(rootPosition)) then
+	if inRoomGrid or (rootInsideGrid and not atDoorSpawn) then
 		return nil, nil, nil
 	end
 
-	if not playerIsNearDoorSpawn(rootPosition) then
+	if not atDoorSpawn then
 		return nil, nil, "Cannot enter room grid from current position."
 	end
 
@@ -2052,20 +2081,7 @@ local function getBridgeStartCellIfNeeded(rootPosition, context)
 		return entryCell, Vector3.new(entryPosition.X, context.moveY, entryPosition.Z), nil
 	end
 
-	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn())
-
-	if not doorSpawnPosition then
-		return nil, nil, "Cannot enter room grid from current position."
-	end
-
-	local nearestCell, nearestWorldPosition = findNearestOpenCellFromPosition(doorSpawnPosition, context)
-
-	if not nearestCell then
-		logEntranceBridgeBlocked("NoOpenEntranceCell", context, getCurrentEntryWalkTarget(), nil)
-		return nil, nil, "Room entrance is blocked."
-	end
-
-	return nearestCell, nearestWorldPosition, nil
+	return nil, nil, "Could not reach room entrance."
 end
 
 local function getNeighbors(cell)
@@ -2183,6 +2199,10 @@ end
 local function moveCharacterTo(destination, options)
 	options = typeof(options) == "table" and options or {}
 
+	if roomMovementState.caveTransitionActive and options.AllowDuringCaveTransition ~= true then
+		return false
+	end
+
 	local requestedRoomName = player:GetAttribute("CurrentRoomName")
 
 	if not roomMovementState.waitForCurrentRoomReady()
@@ -2277,9 +2297,19 @@ local function moveCharacterTo(destination, options)
 	end
 
 	local movementPath = compressGridPath(path)
+	local ownsCaveTransition = false
 
 	if bridgeCell then
+		if not roomMovementState.caveTransitionActive then
+			roomMovementState.setCaveTransitionActive(true)
+			ownsCaveTransition = true
+		end
+
 		if moveId ~= currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
+			if ownsCaveTransition then
+				roomMovementState.setCaveTransitionActive(false)
+			end
+
 			return false
 		end
 
@@ -2304,6 +2334,10 @@ local function moveCharacterTo(destination, options)
 		end
 
 		if moveId ~= currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
+			if ownsCaveTransition then
+				roomMovementState.setCaveTransitionActive(false)
+			end
+
 			return false
 		end
 
@@ -2318,10 +2352,18 @@ local function moveCharacterTo(destination, options)
 				roomMovementState.warnCouldNotReachEntrance()
 			end
 
+			if ownsCaveTransition then
+				roomMovementState.setCaveTransitionActive(false)
+			end
+
 			return false
 		end
 
 		if cellsAreSame(bridgeCell, goalCell) then
+			if ownsCaveTransition then
+				roomMovementState.setCaveTransitionActive(false)
+			end
+
 			return true
 		end
 	end
@@ -2331,6 +2373,10 @@ local function moveCharacterTo(destination, options)
 	for index, cell in ipairs(movementPath) do
 		if moveId ~= currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
 			finishGridFacingControl(moveId)
+			if ownsCaveTransition then
+				roomMovementState.setCaveTransitionActive(false)
+			end
+
 			return false
 		end
 
@@ -2354,12 +2400,20 @@ local function moveCharacterTo(destination, options)
 
 		if moveId ~= currentMoveId then
 			finishGridFacingControl(moveId)
+			if ownsCaveTransition then
+				roomMovementState.setCaveTransitionActive(false)
+			end
+
 			return false
 		end
 
 		if not reached then
 			warn("Could not reach movement segment")
 			finishGridFacingControl(moveId)
+			if ownsCaveTransition then
+				roomMovementState.setCaveTransitionActive(false)
+			end
+
 			return false
 		end
 
@@ -2370,6 +2424,10 @@ local function moveCharacterTo(destination, options)
 	end
 
 	finishGridFacingControl(moveId)
+	if ownsCaveTransition then
+		roomMovementState.setCaveTransitionActive(false)
+	end
+
 	return reachedGoal == true
 end
 
@@ -3709,6 +3767,13 @@ local function moveToRoomExit()
 		}
 	end
 
+	if roomMovementState.caveTransitionActive then
+		return {
+			Success = false,
+			Message = "Please wait.",
+		}
+	end
+
 	local requestedRoomName = player:GetAttribute("CurrentRoomName")
 
 	if not roomMovementState.waitForCurrentRoomReady({
@@ -3779,41 +3844,55 @@ local function moveToRoomExit()
 		}
 	end
 
-	if roomMovementState.characterReachedMarker(doorSpawn, EXIT_TARGET_REACHED_DISTANCE) then
+	if roomMovementState.isPlayerAtDoorSpawn(rootPart.Position) then
 		return {
 			Success = true,
 			Message = "Reached exit.",
 		}
 	end
 
+	roomMovementState.setCaveTransitionActive(true)
+
 	local entryWalkTarget = getCurrentEntryWalkTarget()
 	local entryPosition = getMarkerWorldPosition(entryWalkTarget)
 
-	if entryPosition
-		and not roomMovementState.characterReachedMarker(entryWalkTarget, EXIT_TARGET_REACHED_DISTANCE) then
+	if not entryPosition then
+		roomMovementState.setCaveTransitionActive(false)
+		return {
+			Success = false,
+			Message = "This room is missing EntryWalkTarget.",
+		}
+	end
+
+	if not rootPartIsNearPosition(rootPart, entryPosition, ENTRY_BRIDGE_REACHED_DISTANCE) then
 
 		local pathCheck = getGridPathToPosition(entryPosition)
 
 		if typeof(pathCheck) ~= "table" or pathCheck.Success ~= true then
+			roomMovementState.setCaveTransitionActive(false)
 			return {
 				Success = false,
 				Message = "The exit is blocked.",
 			}
 		end
 
-		moveCharacterTo(entryPosition)
+		moveCharacterTo(entryPosition, {
+			AllowDuringCaveTransition = true,
+			SuppressBlockedWarning = true,
+		})
 
 		if not waitForRootNearPosition(
 			rootPart,
 			entryPosition,
-			EXIT_TARGET_REACHED_DISTANCE,
+			ENTRY_BRIDGE_REACHED_DISTANCE,
 			EXIT_ENTRY_MOVE_TIMEOUT_SECONDS,
 			nil,
 			function()
-				return roomMovementState.characterReachedMarker(entryWalkTarget, EXIT_TARGET_REACHED_DISTANCE)
+				return roomMovementState.characterReachedMarkerPosition(entryWalkTarget, ENTRY_BRIDGE_REACHED_DISTANCE)
 			end
 		) then
 
+			roomMovementState.setCaveTransitionActive(false)
 			return {
 				Success = false,
 				Message = "Could not reach the exit.",
@@ -3831,11 +3910,14 @@ local function moveToRoomExit()
 	})
 
 	if not reachedDoorSpawn then
+		roomMovementState.setCaveTransitionActive(false)
 		return {
 			Success = false,
 			Message = "Could not reach the exit.",
 		}
 	end
+
+	roomMovementState.setCaveTransitionActive(false)
 
 	return {
 		Success = true,
@@ -3864,6 +3946,10 @@ requestGridMoveToPosition.Event:Connect(function(targetPosition)
 		return
 	end
 
+	if roomMovementState.caveTransitionActive then
+		return
+	end
+
 	if not standUpIfSeated() then
 		return
 	end
@@ -3873,6 +3959,10 @@ requestGridMoveToPosition.Event:Connect(function(targetPosition)
 end)
 
 function furnitureInteraction.handleClickInPlayMode(furnitureModel)
+	if roomMovementState.caveTransitionActive then
+		return
+	end
+
 	if furnitureSupportsOpenCloseBestEffort(furnitureModel) then
 		openFurnitureMenu(furnitureModel)
 		return
@@ -3924,6 +4014,10 @@ furnitureMenuRequest.OnClientEvent:Connect(function(furnitureModel)
 		return
 	end
 
+	if roomMovementState.caveTransitionActive then
+		return
+	end
+
 	if os.clock() < suppressFurnitureMenuUntil then
 		return
 	end
@@ -3972,6 +4066,10 @@ mouse.Button1Down:Connect(function()
 	end
 	
 	if player:GetAttribute("CatalogPlacementActive") == true then
+		return
+	end
+
+	if roomMovementState.caveTransitionActive then
 		return
 	end
 
@@ -4064,6 +4162,7 @@ player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
 	lastMoveTime = 0
 	lastSeatedStandCompletedAt = 0
 	entranceBridgeDiagnosticsLogged = {}
+	roomMovementState.setCaveTransitionActive(false)
 	roomMovementState.lastEntranceReachWarningAt = 0
 	mouse.TargetFilter = nil
 

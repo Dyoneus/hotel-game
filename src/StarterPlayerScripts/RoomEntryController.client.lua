@@ -14,7 +14,7 @@ local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 
 local leaveRoomRequest = remoteEvents:WaitForChild("LeaveRoomRequest")
 local leaveRoomResult = remoteEvents:WaitForChild("LeaveRoomResult")
-local EXIT_ARRIVAL_DISTANCE = 4
+local EXIT_ARRIVAL_DISTANCE = 3.5
 local LEAVE_WALK_TIMEOUT_SECONDS = 8
 local FADE_OUT_SECONDS = 0.28
 local EXIT_REACHED_DELAY_SECONDS = 0.35
@@ -396,21 +396,20 @@ local function positionIsInsideOrNearPart(worldPosition, part, margin)
 	return Vector3.new(outsideX, outsideY, outsideZ).Magnitude <= (margin or 0)
 end
 
-local function isCharacterNearPart(part, distance)
+local function isCharacterAtDoorSpawn(doorSpawn)
 	local _, rootPart = getCharacterParts()
+	local doorSpawnPosition = getMarkerPosition(doorSpawn)
 
-	if not rootPart or not part then
+	if not rootPart or not doorSpawnPosition then
 		return false
 	end
 
-	local markerPosition = getMarkerPosition(part)
-
-	if markerPosition and (rootPart.Position - markerPosition).Magnitude <= distance then
+	if (rootPart.Position - doorSpawnPosition).Magnitude <= EXIT_ARRIVAL_DISTANCE then
 		return true
 	end
 
-	return part:IsA("BasePart")
-		and positionIsInsideOrNearPart(rootPart.Position, part, distance)
+	return doorSpawn:IsA("BasePart")
+		and positionIsInsideOrNearPart(rootPart.Position, doorSpawn, 0.5)
 end
 
 local function waitUntilAtDoorSpawn(doorSpawn, roomModel, expectedRoomName, maxSeconds)
@@ -427,7 +426,7 @@ local function waitUntilAtDoorSpawn(doorSpawn, roomModel, expectedRoomName, maxS
 			return false
 		end
 
-		if isCharacterNearPart(doorSpawn, EXIT_ARRIVAL_DISTANCE) then
+		if isCharacterAtDoorSpawn(doorSpawn) then
 
 			return true
 		end
@@ -494,7 +493,7 @@ local function startLeaveRoomSequence()
 			return
 		end
 
-		local movedToExit = isCharacterNearPart(doorSpawn, EXIT_ARRIVAL_DISTANCE)
+		local movedToExit = isCharacterAtDoorSpawn(doorSpawn)
 		local moveMessage = nil
 
 		if not movedToExit then
