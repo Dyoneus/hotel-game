@@ -46,6 +46,16 @@ end
 
 local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
 
+local GAMEPLAY_GUI_NAMES_TO_HIDE = {
+	InventoryGui = true,
+	FurnitureCatalogGui = true,
+	RoomModeGui = true,
+	CurrencyGui = true,
+	FurnitureMenuGui = true,
+}
+
+local suppressedGuiStates = {}
+
 local background = Instance.new("Frame")
 background.Name = "Background"
 background.Size = UDim2.fromScale(1, 1)
@@ -150,6 +160,42 @@ local function shouldShowMainMenu()
 		or player:GetAttribute("CurrentRoomName") == nil
 end
 
+local function suppressGameplayGui(screenGui)
+	if not screenGui or not screenGui:IsA("ScreenGui") then
+		return
+	end
+
+	if not GAMEPLAY_GUI_NAMES_TO_HIDE[screenGui.Name] then
+		return
+	end
+
+	if not suppressedGuiStates[screenGui] then
+		suppressedGuiStates[screenGui] = {
+			Enabled = screenGui.Enabled,
+		}
+	end
+
+	screenGui.Enabled = false
+end
+
+local function updateGameplayGuiSuppression(isMainMenuActive)
+	if isMainMenuActive then
+		for _, child in ipairs(playerGui:GetChildren()) do
+			suppressGameplayGui(child)
+		end
+
+		return
+	end
+
+	for screenGui, state in pairs(suppressedGuiStates) do
+		if screenGui.Parent then
+			screenGui.Enabled = state.Enabled
+		end
+	end
+
+	suppressedGuiStates = {}
+end
+
 local function requestNavigatorOpen()
 	local payload = {
 		Mode = "MainMenuDocked",
@@ -171,11 +217,20 @@ local function updateMainMenu()
 	local wasVisible = background.Visible
 
 	background.Visible = shouldShow
+	updateGameplayGuiSuppression(shouldShow)
 
 	if shouldShow and not wasVisible then
 		requestNavigatorOpen()
+	elseif shouldShow then
+		requestNavigatorOpen()
 	end
 end
+
+playerGui.ChildAdded:Connect(function(child)
+	if background.Visible then
+		suppressGameplayGui(child)
+	end
+end)
 
 player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(updateMainMenu)

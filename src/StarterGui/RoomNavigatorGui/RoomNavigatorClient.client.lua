@@ -1000,7 +1000,36 @@ local function shouldShowRoomsButton()
 		and player:GetAttribute("ControlMode") == "Hotel"
 end
 
+local function isMainMenuActive()
+	if player:GetAttribute("OnboardingStep") ~= "Complete" then
+		return false
+	end
+
+	if typeof(player:GetAttribute("CurrentRoomName")) == "string" then
+		return false
+	end
+
+	return player:GetAttribute("InHotelMainMenu") == true
+		or player:GetAttribute("CurrentRoomName") == nil
+end
+
+local function updateCloseButtonForMode()
+	local locked = isMainMenuActive()
+
+	ui.closeButton.Visible = not locked
+	ui.closeButton.Active = not locked
+	ui.closeButton.AutoButtonColor = not locked
+	ui.titleLabel.Size = locked
+		and UDim2.new(1, -40, 0, 34)
+		or UDim2.new(1, -82, 0, 34)
+end
+
 local function updateOpenButton()
+	if isMainMenuActive() then
+		ui.openButton.Visible = false
+		return
+	end
+
 	ui.openButton.Visible = (not ui.panel.Visible)
 		and not anyMajorMenuOpen
 		and shouldShowRoomsButton()
@@ -1047,7 +1076,14 @@ local function requestFavourites(forceRefresh)
 	requestRemote:FireServer("GetFavourites")
 end
 
-local function setPanelVisible(isVisible)
+local function setPanelVisible(isVisible, options)
+	local forceClose = typeof(options) == "table" and options.ForceClose == true
+
+	if not isVisible and isMainMenuActive() and not forceClose then
+		applyPanelLayout(PANEL_LAYOUT_MAIN_MENU_DOCKED)
+		isVisible = true
+	end
+
 	local wasVisible = ui.panel.Visible
 
 	if isVisible then
@@ -1056,6 +1092,7 @@ local function setPanelVisible(isVisible)
 	end
 
 	ui.panel.Visible = isVisible
+	updateCloseButtonForMode()
 	updateOpenButton()
 
 	if isVisible then
@@ -2807,8 +2844,36 @@ ui.openButton.MouseButton1Click:Connect(function()
 end)
 
 ui.closeButton.MouseButton1Click:Connect(function()
+	if isMainMenuActive() then
+		applyPanelLayout(PANEL_LAYOUT_MAIN_MENU_DOCKED)
+		setPanelVisible(true)
+		return
+	end
+
 	setPanelVisible(false)
 end)
+
+local function syncMainMenuNavigatorState()
+	if isMainMenuActive() then
+		applyPanelLayout(PANEL_LAYOUT_MAIN_MENU_DOCKED)
+
+		if not ui.panel.Visible then
+			setPanelVisible(true)
+		else
+			updateCloseButtonForMode()
+			updateOpenButton()
+		end
+
+		return
+	end
+
+	if currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_DOCKED then
+		applyPanelLayout(PANEL_LAYOUT_NORMAL)
+	end
+
+	updateCloseButtonForMode()
+	updateOpenButton()
+end
 
 openRoomNavigator.Event:Connect(function(payload)
 	local mode = nil
@@ -2823,15 +2888,26 @@ openRoomNavigator.Event:Connect(function(payload)
 		and PANEL_LAYOUT_MAIN_MENU_DOCKED
 		or PANEL_LAYOUT_NORMAL)
 	setPanelVisible(true)
+	syncMainMenuNavigatorState()
 end)
 
 majorMenuOpened.Event:Connect(function(menuName)
+	if isMainMenuActive() then
+		syncMainMenuNavigatorState()
+		return
+	end
+
 	if menuName ~= MENU_NAME and ui.panel.Visible then
 		setPanelVisible(false)
 	end
 end)
 
 closeMajorMenus.Event:Connect(function()
+	if isMainMenuActive() then
+		syncMainMenuNavigatorState()
+		return
+	end
+
 	if ui.panel.Visible then
 		setPanelVisible(false)
 	end
@@ -2869,7 +2945,7 @@ joinRoomResult.OnClientEvent:Connect(function(success, message)
 
 	if success then
 		setStatusMessage(message or "Joined room.", "success")
-		setPanelVisible(false)
+		setPanelVisible(false, { ForceClose = true })
 	else
 		showSettingsError(message or "Could not join room.")
 		updateDetailPanel()
@@ -3043,7 +3119,9 @@ connectOptionalRemoteEvent("RoomSettingsResult", handleRoomSettingsResult)
 connectOptionalRemoteEvent("RoomCreationResult", handleRoomCreationResult)
 
 player:GetAttributeChangedSignal("OnboardingStep"):Connect(function()
-	if ui.panel.Visible and not shouldShowRoomsButton() then
+	syncMainMenuNavigatorState()
+
+	if ui.panel.Visible and not shouldShowRoomsButton() and not isMainMenuActive() then
 		setPanelVisible(false)
 	else
 		updateOpenButton()
@@ -3051,15 +3129,17 @@ player:GetAttributeChangedSignal("OnboardingStep"):Connect(function()
 end)
 
 player:GetAttributeChangedSignal("ControlMode"):Connect(function()
-	if ui.panel.Visible and not shouldShowRoomsButton() then
+	if ui.panel.Visible and not shouldShowRoomsButton() and not isMainMenuActive() then
 		setPanelVisible(false)
 	else
+		syncMainMenuNavigatorState()
 		updateOpenButton()
 	end
 end)
 
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
 	latestCurrentRoomName = player:GetAttribute("CurrentRoomName")
+	syncMainMenuNavigatorState()
 
 	if ui.panel.Visible and renderNavigator then
 		renderNavigator()
@@ -3068,5 +3148,8 @@ player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
 	end
 end)
 
+player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(syncMainMenuNavigatorState)
+
 renderNavigator()
+syncMainMenuNavigatorState()
 updateOpenButton()
