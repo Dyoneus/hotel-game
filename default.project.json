@@ -95,6 +95,9 @@
         },
         "RoomTransitionClient": {
           "$path": "src/StarterPlayerScripts/RoomTransitionClient.client.lua"
+        },
+        "RoomEntryController": {
+          "$path": "src/StarterPlayerScripts/RoomEntryController.client.lua"
         }
       }
     },
@@ -122,6 +125,10 @@
       "InventoryGui": {
         "$className": "ScreenGui",
         "$path": "src/StarterGui/InventoryGui"
+      },
+      "MainMenuGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/MainMenuGui"
       },
       "RoomCreationGui": {
         "$className": "ScreenGui",

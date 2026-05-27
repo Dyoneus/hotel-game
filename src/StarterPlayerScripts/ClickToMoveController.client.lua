@@ -47,8 +47,41 @@ local function getOrCreateClientEvent(name)
 	return bindableEvent
 end
 
+local function getOrCreateClientFunction(name)
+	local clientEvents = playerGui:FindFirstChild("ClientEvents")
+
+	if clientEvents then
+		if not clientEvents:IsA("Folder") then
+			error("PlayerGui.ClientEvents exists but is not a Folder.")
+		end
+	else
+		clientEvents = Instance.new("Folder")
+		clientEvents.Name = "ClientEvents"
+		clientEvents.Parent = playerGui
+	end
+
+	local existing = clientEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("BindableFunction") then
+			error(name .. " exists but is not a BindableFunction.")
+		end
+
+		return existing
+	end
+
+	local bindableFunction = Instance.new("BindableFunction")
+	bindableFunction.Name = name
+	bindableFunction.Parent = clientEvents
+
+	return bindableFunction
+end
+
 local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
 local inventoryLocalDelta = getOrCreateClientEvent("InventoryLocalDelta")
+local requestGridMoveToPosition = getOrCreateClientEvent("RequestGridMoveToPosition")
+local canGridMoveToPosition = getOrCreateClientFunction("CanGridMoveToPosition")
+local requestMoveToRoomExit = getOrCreateClientFunction("RequestMoveToRoomExit")
 
 local function fireInventoryLocalDeltaFromPickUpResult(response)
 	local templateId = response.TemplateId
@@ -664,6 +697,11 @@ local MIN_DESTINATION_DISTANCE = 2
 local WAYPOINT_SKIP_DISTANCE = 2
 local SNAP_CHARACTER_FACING_TO_GRID = true
 local HOTEL_GRID_WALK_SPEED = 12
+local DOOR_SPAWN_BRIDGE_DISTANCE = 8
+local ENTRY_BRIDGE_REACHED_DISTANCE = 3
+local EXIT_TARGET_REACHED_DISTANCE = 3
+local EXIT_DIRECT_MOVE_TIMEOUT_SECONDS = 4
+local EXIT_ENTRY_MOVE_TIMEOUT_SECONDS = 8
 
 local warnedTileGridDisabled = false
 local activeGridFacingMoveId = nil
@@ -672,6 +710,7 @@ local activeGridFacingPreviousAutoRotate = nil
 local activeGridFacingPreviousWalkSpeed = nil
 local activeGridFacingRootPart = nil
 local activeGridFacingDirection = nil
+local entranceBridgeDiagnosticsLogged = {}
 
 local function getMovementGridContext()
 	local roomModel = getCurrentRoomModel()
@@ -741,6 +780,154 @@ local function cellToWorld(cell, context)
 	end
 
 	return Vector3.new(worldPosition.X, context.moveY, worldPosition.Z)
+end
+
+local function findCurrentRoomMarker(markerName)
+	local roomModel = getCurrentRoomModel()
+
+	if not roomModel then
+		return nil
+	end
+
+	local marker = roomModel:FindFirstChild(markerName, true)
+
+	if marker and (marker:IsA("BasePart") or marker:IsA("Attachment")) then
+		return marker
+	end
+
+	return nil
+end
+
+local function getMarkerWorldPosition(marker)
+	if not marker then
+		return nil
+	end
+
+	if marker:IsA("Attachment") then
+		return marker.WorldPosition
+	end
+
+	if marker:IsA("BasePart") then
+		return marker.Position
+	end
+
+	return nil
+end
+
+local function getCurrentDoorSpawn()
+	return findCurrentRoomMarker("DoorSpawn")
+end
+
+local function getCurrentEntryWalkTarget()
+	return findCurrentRoomMarker("EntryWalkTarget")
+end
+
+local function playerIsNearDoorSpawn(rootPosition)
+	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn())
+
+	if not doorSpawnPosition then
+		return false
+	end
+
+	local position = rootPosition
+
+	if typeof(position) ~= "Vector3" then
+		local character = player.Character
+		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+		if not rootPart then
+			return false
+		end
+
+		position = rootPart.Position
+	end
+
+	return (position - doorSpawnPosition).Magnitude <= DOOR_SPAWN_BRIDGE_DISTANCE
+end
+
+local function worldPositionIsInsideGridBounds(position, context)
+	local localPosition = GridConfig.WorldToFloorLocal(context.floor, position)
+
+	if not localPosition then
+		return false
+	end
+
+	local tolerance = 0.05
+
+	return localPosition.X >= -context.halfWidthStuds - tolerance
+		and localPosition.X <= context.halfWidthStuds + tolerance
+		and localPosition.Z >= -context.halfDepthStuds - tolerance
+		and localPosition.Z <= context.halfDepthStuds + tolerance
+end
+
+local function rootPartIsNearPosition(rootPart, position, distance)
+	return rootPart
+		and rootPart:IsA("BasePart")
+		and typeof(position) == "Vector3"
+		and (rootPart.Position - position).Magnitude <= distance
+end
+
+local function waitForRootNearPosition(rootPart, position, distance, maxSeconds, moveId)
+	local startTime = os.clock()
+
+	while os.clock() - startTime < maxSeconds do
+		if moveId and moveId ~= currentMoveId then
+			return false
+		end
+
+		if not rootPart or not rootPart.Parent then
+			return false
+		end
+
+		if rootPartIsNearPosition(rootPart, position, distance) then
+			return true
+		end
+
+		task.wait(0.05)
+	end
+
+	return rootPartIsNearPosition(rootPart, position, distance)
+end
+
+local function moveHumanoidDirectToPosition(humanoid, rootPart, targetPosition, distance, timeoutSeconds, moveId)
+	if not humanoid or not rootPart or typeof(targetPosition) ~= "Vector3" then
+		return false
+	end
+
+	if rootPartIsNearPosition(rootPart, targetPosition, distance) then
+		return true
+	end
+
+	local finished = false
+	local connection = humanoid.MoveToFinished:Connect(function()
+		finished = true
+	end)
+
+	humanoid:MoveTo(targetPosition)
+
+	local startTime = os.clock()
+
+	while os.clock() - startTime < timeoutSeconds do
+		if moveId and moveId ~= currentMoveId then
+			connection:Disconnect()
+			return false
+		end
+
+		if rootPartIsNearPosition(rootPart, targetPosition, distance) then
+			connection:Disconnect()
+			return true
+		end
+
+		if finished then
+			break
+		end
+
+		task.wait(0.05)
+	end
+
+	connection:Disconnect()
+
+	return rootPartIsNearPosition(rootPart, targetPosition, distance)
 end
 
 local function signCellDelta(value)
@@ -938,8 +1125,26 @@ local movementIgnoredFurniturePartNames = {
 	ClickHitbox = true,
 }
 
+local entranceMarkerPartNames = {
+	DoorSpawn = true,
+	EntryWalkTarget = true,
+	RoomExitZone = true,
+}
+
 local function isMovementIgnoredFurniturePart(part)
 	return movementIgnoredFurniturePartNames[part.Name] == true
+end
+
+local function isEntranceMarkerPart(part)
+	return typeof(part) == "Instance"
+		and part:IsA("BasePart")
+		and (
+			entranceMarkerPartNames[part.Name] == true
+			or part:GetAttribute("IsRoomExit") == true
+			or part:GetAttribute("IsEntranceMarker") == true
+			or part:GetAttribute("IsDoorSpawn") == true
+			or part:GetAttribute("IsEntryWalkTarget") == true
+		)
 end
 
 local function getFurnitureFootprintCenter(furnitureModel)
@@ -1007,7 +1212,134 @@ local function isCellBlockedByFurnitureFootprint(cell, context, furnitureFolder)
 	return false
 end
 
-local function worldPositionIsInsideCell(worldPosition, cell, context)
+local worldPositionIsInsideCell
+
+local function addBlockingName(blockingNames, instance)
+	if not instance then
+		return
+	end
+
+	local name = instance.Name
+
+	if not blockingNames[name] then
+		blockingNames[name] = true
+	end
+end
+
+local function getFurnitureFootprintBlockingNames(cell, context, furnitureFolder)
+	local blockingNames = {}
+
+	for _, furnitureModel in ipairs(furnitureFolder:GetChildren()) do
+		if furnitureModel:IsA("Model") and not furnitureModelIsWalkableDecoration(furnitureModel) then
+			local footprintCenter = getFurnitureFootprintCenter(furnitureModel)
+			local centerCell = worldToCell(footprintCenter, context)
+
+			if centerCell then
+				local footprintWidth, footprintDepth = getRotatedFurnitureFootprint(furnitureModel, context)
+
+				if cellIsInsideFurnitureFootprint(cell, centerCell, footprintWidth, footprintDepth) then
+					addBlockingName(blockingNames, furnitureModel)
+				end
+			end
+		end
+	end
+
+	return blockingNames
+end
+
+local function getOverlapBlockingPartNames(cell, context, roomFolder, furnitureFolder)
+	local blockingNames = {}
+	local center = cellToWorld(cell, context)
+	local boxSize = Vector3.new(context.tileSize * 0.4, 5, context.tileSize * 0.4)
+	local boxCFrame = CFrame.new(center) * context.floorRotation
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	local ignoreList = {}
+
+	if player.Character then
+		table.insert(ignoreList, player.Character)
+	end
+
+	overlapParams.FilterDescendantsInstances = ignoreList
+
+	local parts = workspace:GetPartBoundsInBox(boxCFrame, boxSize, overlapParams)
+
+	for _, part in ipairs(parts) do
+		if isEntranceMarkerPart(part) then
+			continue
+		end
+
+		if isWalkableSurfacePart(part) then
+			continue
+		end
+
+		if isMovementIgnoredFurniturePart(part) then
+			continue
+		end
+
+		if part:IsDescendantOf(furnitureFolder) then
+			continue
+		end
+
+		if part:IsA("BasePart") and part.CanCollide == false then
+			continue
+		end
+
+		if part:IsDescendantOf(roomFolder) then
+			if part.Name:find("Boundary") or part.Name:find("Wall") then
+				if worldPositionIsInsideCell(part.Position, cell, context) then
+					addBlockingName(blockingNames, part)
+				end
+
+				continue
+			end
+		end
+	end
+
+	return blockingNames
+end
+
+local function namesDictionaryToList(namesDictionary)
+	local names = {}
+
+	for name in pairs(namesDictionary) do
+		table.insert(names, name)
+	end
+
+	table.sort(names)
+	return names
+end
+
+local function getCellBlockingNames(cell, context)
+	local roomFolder = getCurrentRoomFolder()
+	local furnitureFolder = getCurrentFurnitureFolder()
+	local blockingNames = {}
+
+	if not roomFolder then
+		blockingNames.MissingRoomFolder = true
+	end
+
+	if not furnitureFolder then
+		blockingNames.MissingFurnitureFolder = true
+	end
+
+	if not roomFolder or not furnitureFolder then
+		return namesDictionaryToList(blockingNames)
+	end
+
+	for name in pairs(getFurnitureFootprintBlockingNames(cell, context, furnitureFolder)) do
+		blockingNames[name] = true
+	end
+
+	for name in pairs(getOverlapBlockingPartNames(cell, context, roomFolder, furnitureFolder)) do
+		blockingNames[name] = true
+	end
+
+	return namesDictionaryToList(blockingNames)
+end
+
+function worldPositionIsInsideCell(worldPosition, cell, context)
 	local localPosition = GridConfig.WorldToFloorLocal(context.floor, worldPosition)
 
 	if not localPosition then
@@ -1055,6 +1387,10 @@ local function isCellBlocked(cell, context)
 	local parts = workspace:GetPartBoundsInBox(boxCFrame, boxSize, overlapParams)
 
 	for _, part in ipairs(parts) do
+		if isEntranceMarkerPart(part) then
+			continue
+		end
+
 		if isWalkableSurfacePart(part) then
 			continue
 		end
@@ -1083,6 +1419,135 @@ local function isCellBlocked(cell, context)
 	end
 
 	return false
+end
+
+local function findNearestOpenCellFromPosition(position, context)
+	local nearestCell = nil
+	local nearestDistance = math.huge
+	local localPosition = GridConfig.WorldToFloorLocal(context.floor, position)
+
+	for x = 0, context.gridWidth - 1 do
+		for z = 0, context.gridDepth - 1 do
+			local cell = { x = x, z = z }
+
+			if not isCellBlocked(cell, context) then
+				local localCellX = cellIndexToLocalAxis(x, context.tileSize, context.halfWidthStuds)
+				local localCellZ = cellIndexToLocalAxis(z, context.tileSize, context.halfDepthStuds)
+				local distance = 0
+
+				if localPosition then
+					distance = (Vector2.new(localPosition.X, localPosition.Z) - Vector2.new(localCellX, localCellZ)).Magnitude
+				else
+					distance = (cellToWorld(cell, context) - position).Magnitude
+				end
+
+				if distance < nearestDistance then
+					nearestDistance = distance
+					nearestCell = cell
+				end
+			end
+		end
+	end
+
+	if not nearestCell then
+		return nil, nil
+	end
+
+	return nearestCell, cellToWorld(nearestCell, context)
+end
+
+local function formatVector3(position)
+	if typeof(position) ~= "Vector3" then
+		return "nil"
+	end
+
+	return string.format("%.2f, %.2f, %.2f", position.X, position.Y, position.Z)
+end
+
+local function formatCell(cell)
+	if not cell then
+		return "nil"
+	end
+
+	return tostring(cell.x) .. "," .. tostring(cell.z)
+end
+
+local function logEntranceBridgeBlocked(reason, context, entryWalkTarget, bridgeCell)
+	local roomName = player:GetAttribute("CurrentRoomName") or "UnknownRoom"
+	local key = tostring(roomName) .. ":" .. tostring(reason)
+
+	if entranceBridgeDiagnosticsLogged[key] then
+		return
+	end
+
+	entranceBridgeDiagnosticsLogged[key] = true
+
+	local entryPosition = getMarkerWorldPosition(entryWalkTarget)
+	local blockingNames = {}
+
+	if bridgeCell then
+		blockingNames = getCellBlockingNames(bridgeCell, context)
+	end
+
+	if #blockingNames == 0 then
+		blockingNames = { "none reported" }
+	end
+
+	warn(string.format(
+		"[ClickToMoveController] Room entrance is blocked. Reason=%s EntryWalkTarget=%s EntryWalkTargetPosition=(%s) bridgeCell=%s blockers=%s",
+		tostring(reason),
+		entryWalkTarget and "found" or "missing",
+		formatVector3(entryPosition),
+		formatCell(bridgeCell),
+		table.concat(blockingNames, ", ")
+	))
+end
+
+local function getBridgeStartCellIfNeeded(rootPosition, context)
+	local startCell = worldToCell(rootPosition, context)
+	local rootInsideGrid = worldPositionIsInsideGridBounds(rootPosition, context)
+	local startLooksBlocked = startCell ~= nil and isCellBlocked(startCell, context)
+
+	if rootInsideGrid and not (startLooksBlocked and playerIsNearDoorSpawn(rootPosition)) then
+		return nil, nil, nil
+	end
+
+	if not playerIsNearDoorSpawn(rootPosition) then
+		return nil, nil, "Cannot enter room grid from current position."
+	end
+
+	local entryWalkTarget = getCurrentEntryWalkTarget()
+	local entryPosition = getMarkerWorldPosition(entryWalkTarget)
+
+	if entryPosition then
+		local entryCell = worldToCell(entryPosition, context)
+
+		if not entryCell or not isCellInsideRoom(entryCell, context) then
+			return nil, nil, "Cannot enter room grid from current position."
+		end
+
+		if isCellBlocked(entryCell, context) then
+			logEntranceBridgeBlocked("EntryWalkTargetBlocked", context, entryWalkTarget, entryCell)
+			return nil, nil, "Room entrance is blocked."
+		end
+
+		return entryCell, cellToWorld(entryCell, context), nil
+	end
+
+	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn())
+
+	if not doorSpawnPosition then
+		return nil, nil, "Cannot enter room grid from current position."
+	end
+
+	local nearestCell, nearestWorldPosition = findNearestOpenCellFromPosition(doorSpawnPosition, context)
+
+	if not nearestCell then
+		logEntranceBridgeBlocked("NoOpenEntranceCell", context, getCurrentEntryWalkTarget(), nil)
+		return nil, nil, "Room entrance is blocked."
+	end
+
+	return nearestCell, nearestWorldPosition, nil
 end
 
 local function getNeighbors(cell)
@@ -1228,12 +1693,26 @@ local function moveCharacterTo(destination)
 
 	local startCell = worldToCell(rootPart.Position, context)
 	local goalCell = worldToCell(clampedDestination, context)
+	local bridgeCell, bridgeWorldPosition, bridgeMessage = getBridgeStartCellIfNeeded(rootPart.Position, context)
 
-	if not startCell or not goalCell then
+	if not goalCell then
 		return
 	end
 
-	if startCell.x == goalCell.x and startCell.z == goalCell.z then
+	if bridgeMessage then
+		warn(bridgeMessage)
+		return
+	end
+
+	if bridgeCell then
+		startCell = bridgeCell
+	end
+
+	if not startCell then
+		return
+	end
+
+	if startCell.x == goalCell.x and startCell.z == goalCell.z and not bridgeCell then
 		return
 	end
 
@@ -1251,6 +1730,59 @@ local function moveCharacterTo(destination)
 	local movementPath = compressGridPath(path)
 
 	beginGridFacingControl(humanoid, moveId)
+
+	if bridgeCell then
+		if moveId ~= currentMoveId then
+			finishGridFacingControl(moveId)
+			return
+		end
+
+		local bridgeDirection = Vector3.new(
+			bridgeWorldPosition.X - rootPart.Position.X,
+			0,
+			bridgeWorldPosition.Z - rootPart.Position.Z
+		)
+
+		if bridgeDirection.Magnitude > 0.001 then
+			setActiveGridFacingSegment(moveId, rootPart, bridgeDirection.Unit)
+			snapCharacterToGridFacing(rootPart, rootPart.Position, bridgeDirection.Unit)
+		end
+
+		humanoid:MoveTo(bridgeWorldPosition)
+
+		local reachedBridge = humanoid.MoveToFinished:Wait()
+
+		if moveId ~= currentMoveId then
+			finishGridFacingControl(moveId)
+			return
+		end
+
+		if not reachedBridge
+			and not rootPartIsNearPosition(rootPart, bridgeWorldPosition, ENTRY_BRIDGE_REACHED_DISTANCE) then
+
+			local blockingNames = getCellBlockingNames(bridgeCell, context)
+
+			if #blockingNames > 0 then
+				logEntranceBridgeBlocked("BridgeMoveFailed", context, getCurrentEntryWalkTarget(), bridgeCell)
+				warn("Room entrance is blocked.")
+			else
+				warn("Could not reach room entrance.")
+			end
+
+			finishGridFacingControl(moveId)
+			return
+		end
+
+		if bridgeDirection.Magnitude > 0.001 then
+			local reachedPosition = Vector3.new(bridgeWorldPosition.X, rootPart.Position.Y, bridgeWorldPosition.Z)
+			snapCharacterToGridFacing(rootPart, reachedPosition, bridgeDirection.Unit)
+		end
+
+		if cellsAreSame(bridgeCell, goalCell) then
+			finishGridFacingControl(moveId)
+			return
+		end
+	end
 
 	for index, cell in ipairs(movementPath) do
 		if moveId ~= currentMoveId then
@@ -2196,6 +2728,214 @@ local function standUpIfSeated()
 		task.wait(0.5)
 	end
 end
+
+local function getGridPathToPosition(targetPosition)
+	if typeof(targetPosition) ~= "Vector3" then
+		return {
+			Success = false,
+			Path = {},
+			Message = "Invalid target position.",
+		}
+	end
+
+	if not isHotelMode() then
+		return {
+			Success = false,
+			Path = {},
+			Message = "Grid movement is unavailable.",
+		}
+	end
+
+	if player:GetAttribute("CatalogPlacementActive") == true then
+		return {
+			Success = false,
+			Path = {},
+			Message = "Grid movement is unavailable during placement.",
+		}
+	end
+
+	local character = player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+
+	if not rootPart then
+		return {
+			Success = false,
+			Path = {},
+			Message = "Character is not ready.",
+		}
+	end
+
+	local context, contextMessage = getMovementGridContext()
+
+	if not context then
+		return {
+			Success = false,
+			Path = {},
+			Message = contextMessage or "Grid movement is unavailable.",
+		}
+	end
+
+	local clampedDestination = clampToRoom(targetPosition, context)
+	local startCell = worldToCell(rootPart.Position, context)
+	local goalCell = worldToCell(clampedDestination, context)
+
+	if not startCell or not goalCell then
+		return {
+			Success = false,
+			Path = {},
+			Message = "No grid path found.",
+		}
+	end
+
+	if cellsAreSame(startCell, goalCell) then
+		return {
+			Success = true,
+			Path = { cellToWorld(startCell, context) },
+			Message = "Already at target.",
+		}
+	end
+
+	local path, reachedGoal = findGridPath(startCell, goalCell, context)
+
+	if not path or #path == 0 or not reachedGoal then
+		return {
+			Success = false,
+			Path = {},
+			Message = "The exit is blocked.",
+		}
+	end
+
+	local worldPath = {}
+
+	for _, cell in ipairs(path) do
+		table.insert(worldPath, cellToWorld(cell, context))
+	end
+
+	return {
+		Success = true,
+		Path = worldPath,
+		Message = "Path available.",
+	}
+end
+
+local function moveToRoomExit()
+	if not isHotelMode() then
+		return {
+			Success = false,
+			Message = "Grid movement is unavailable.",
+		}
+	end
+
+	if player:GetAttribute("CatalogPlacementActive") == true then
+		return {
+			Success = false,
+			Message = "Grid movement is unavailable during placement.",
+		}
+	end
+
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	local doorSpawnPosition = getMarkerWorldPosition(getCurrentDoorSpawn())
+
+	if not humanoid or not rootPart then
+		return {
+			Success = false,
+			Message = "Character is not ready.",
+		}
+	end
+
+	if not doorSpawnPosition then
+		return {
+			Success = false,
+			Message = "This room is missing DoorSpawn.",
+		}
+	end
+
+	closeFurnitureMenu()
+
+	if rootPartIsNearPosition(rootPart, doorSpawnPosition, EXIT_TARGET_REACHED_DISTANCE) then
+		return {
+			Success = true,
+			Message = "Reached exit.",
+		}
+	end
+
+	local entryWalkTarget = getCurrentEntryWalkTarget()
+	local entryPosition = getMarkerWorldPosition(entryWalkTarget)
+
+	if entryPosition and not rootPartIsNearPosition(rootPart, entryPosition, EXIT_TARGET_REACHED_DISTANCE) then
+		local pathCheck = getGridPathToPosition(entryPosition)
+
+		if typeof(pathCheck) ~= "table" or pathCheck.Success ~= true then
+			return {
+				Success = false,
+				Message = "The exit is blocked.",
+			}
+		end
+
+		moveCharacterTo(entryPosition)
+
+		if not waitForRootNearPosition(
+			rootPart,
+			entryPosition,
+			EXIT_TARGET_REACHED_DISTANCE,
+			EXIT_ENTRY_MOVE_TIMEOUT_SECONDS
+		) then
+
+			return {
+				Success = false,
+				Message = "The exit is blocked.",
+			}
+		end
+	end
+
+	currentMoveId += 1
+	local exitMoveId = currentMoveId
+
+	local reachedDoorSpawn = moveHumanoidDirectToPosition(
+		humanoid,
+		rootPart,
+		doorSpawnPosition,
+		EXIT_TARGET_REACHED_DISTANCE,
+		EXIT_DIRECT_MOVE_TIMEOUT_SECONDS,
+		exitMoveId
+	)
+
+	if not reachedDoorSpawn then
+		return {
+			Success = false,
+			Message = "Could not reach the exit.",
+		}
+	end
+
+	return {
+		Success = true,
+		Message = "Reached exit.",
+	}
+end
+
+canGridMoveToPosition.OnInvoke = function(targetPosition)
+	return getGridPathToPosition(targetPosition)
+end
+
+requestMoveToRoomExit.OnInvoke = function()
+	return moveToRoomExit()
+end
+
+requestGridMoveToPosition.Event:Connect(function(targetPosition)
+	if typeof(targetPosition) ~= "Vector3" then
+		return
+	end
+
+	if not isHotelMode() or player:GetAttribute("CatalogPlacementActive") == true then
+		return
+	end
+
+	standUpIfSeated()
+	closeFurnitureMenu()
+	moveCharacterTo(targetPosition)
+end)
 
 local function handleFurnitureClickInPlayMode(furnitureModel)
 	if furnitureSupportsOpenCloseBestEffort(furnitureModel) then

@@ -48,6 +48,8 @@ local roomSettingsRequest = getOrCreateRemoteEvent("RoomSettingsRequest")
 local roomSettingsResult = getOrCreateRemoteEvent("RoomSettingsResult")
 local roomNavigatorRequest = getOrCreateRemoteEvent("RoomNavigatorRequest")
 local roomNavigatorResult = getOrCreateRemoteEvent("RoomNavigatorResult")
+local leaveRoomRequest = getOrCreateRemoteEvent("LeaveRoomRequest")
+local leaveRoomResult = getOrCreateRemoteEvent("LeaveRoomResult")
 
 local tutorialFinishedRequest = remoteEvents:WaitForChild("TutorialFinishedRequest")
 
@@ -449,6 +451,14 @@ local function warnRoomGridValidation(roomModel, context)
 	end
 end
 
+local function removeEditorHelpers(roomModel)
+	local editorHelpers = roomModel:FindFirstChild("EditorHelpers")
+
+	if editorHelpers then
+		editorHelpers:Destroy()
+	end
+end
+
 local function cloneRoomForPlayer(player, layoutId)
 	if not VALID_LAYOUTS[layoutId] then
 		warn("Invalid layout requested:", layoutId)
@@ -473,6 +483,8 @@ local function cloneRoomForPlayer(player, layoutId)
 		roomClone:Destroy()
 		return nil
 	end
+
+	removeEditorHelpers(roomClone)
 
 	local roomOffset = getRoomPositionForPlayer(player)
 	print("Room anchor position for", player.Name, "=", roomOffset)
@@ -504,6 +516,88 @@ local function movePlayerToRoom(player, roomModel)
 	end
 
 	character:PivotTo(doorSpawn.CFrame)
+end
+
+local function getPlayerRootPart(player)
+	local character = player.Character
+
+	if not character then
+		return nil
+	end
+
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+
+	if rootPart and rootPart:IsA("BasePart") then
+		return rootPart
+	end
+
+	return nil
+end
+
+local function isRoomExitInstance(instance)
+	local current = instance
+
+	while current do
+		if current.Name == "RoomExitZone" or current:GetAttribute("IsRoomExit") == true then
+			return true
+		end
+
+		current = current.Parent
+	end
+
+	return false
+end
+
+local function getRoomExitParts(roomModel)
+	local exitParts = {}
+
+	for _, descendant in ipairs(roomModel:GetDescendants()) do
+		if descendant:IsA("BasePart") and isRoomExitInstance(descendant) then
+			table.insert(exitParts, descendant)
+		end
+	end
+
+	return exitParts
+end
+
+local function positionIsNearPart(position, part, maxDistance)
+	local localPosition = part.CFrame:PointToObjectSpace(position)
+	local halfSize = part.Size / 2
+	local outsideX = math.max(math.abs(localPosition.X) - halfSize.X, 0)
+	local outsideY = math.max(math.abs(localPosition.Y) - halfSize.Y, 0)
+	local outsideZ = math.max(math.abs(localPosition.Z) - halfSize.Z, 0)
+
+	return Vector3.new(outsideX, outsideY, outsideZ).Magnitude <= maxDistance
+end
+
+local function playerIsNearRoomExit(player, roomModel, maxDistance)
+	local rootPart = getPlayerRootPart(player)
+
+	if not rootPart then
+		return false, "Character is not ready."
+	end
+
+	local doorSpawn = roomModel:FindFirstChild("DoorSpawn", true)
+
+	if not doorSpawn or not doorSpawn:IsA("BasePart") then
+		return false, "Room is missing DoorSpawn."
+	end
+
+	if positionIsNearPart(rootPart.Position, doorSpawn, maxDistance) then
+		return true
+	end
+
+	for _, exitPart in ipairs(getRoomExitParts(roomModel)) do
+		if positionIsNearPart(rootPart.Position, exitPart, maxDistance) then
+			return true
+		end
+	end
+
+	return false, "Move closer to the room exit first."
+end
+
+local function setPlayerInHotelMainMenu(player, isInMainMenu)
+	player:SetAttribute("InHotelMainMenu", isInMainMenu == true)
 end
 
 local function getRoomOwnerPlayer(roomModel)
@@ -913,6 +1007,7 @@ local function enterSavedRoomForPlayer(player, profile)
 	player:SetAttribute("CharacterCreatedThisSession", profile.CharacterCreated == true)
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	setPlayerInHotelMainMenu(player, false)
 
 	local onboardingStep = profile.OnboardingStep
 
@@ -997,6 +1092,8 @@ local function getOrCreatePublicRoom(publicRoomId, config)
 		return nil, "Public room template must be a Model."
 	end
 
+	removeEditorHelpers(roomClone)
+
 	roomClone.Name = activeRoomName
 	roomClone.Parent = activeRooms
 
@@ -1055,6 +1152,7 @@ local function joinPublicRoom(player, publicRoomId)
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	setPlayerInHotelMainMenu(player, false)
 
 	joinRoomResult:FireClient(player, true, "Joined public space.", roomModel.Name)
 
@@ -1101,6 +1199,8 @@ local function joinRoom(player, roomName)
 
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("RoomMode", "Play")
+	player:SetAttribute("ControlMode", "Hotel")
+	setPlayerInHotelMainMenu(player, false)
 
 	local success, errorMessage = pcall(function()
 		movePlayerToRoom(player, roomModel)
@@ -1114,6 +1214,51 @@ local function joinRoom(player, roomName)
 
 	joinRoomResult:FireClient(player, true, "Joined room.", roomModel.Name)
 
+	sendRoomListToAll()
+end
+
+local function leaveCurrentRoom(player)
+	local currentRoomName = player:GetAttribute("CurrentRoomName")
+
+	if typeof(currentRoomName) ~= "string" or currentRoomName == "" then
+		leaveRoomResult:FireClient(player, false, "You are not in a room.")
+		return
+	end
+
+	local roomModel = activeRooms:FindFirstChild(currentRoomName)
+
+	if not roomModel or not roomModel:IsA("Model") then
+		leaveRoomResult:FireClient(player, false, "Room not found.")
+		return
+	end
+
+	local nearExit, nearExitMessage = playerIsNearRoomExit(player, roomModel, 8)
+
+	if not nearExit then
+		leaveRoomResult:FireClient(player, false, nearExitMessage or "Move closer to the room exit first.")
+		return
+	end
+
+	local ownerUserId = roomModel:GetAttribute("OwnerUserId")
+
+	if typeof(ownerUserId) == "number"
+		and ownerUserId == player.UserId
+		and roomModel:GetAttribute("RoomType") ~= "PublicSpace" then
+
+		RoomPersistence.CaptureRoomState(player, roomModel)
+		RoomPersistence.QueueSave(player)
+	end
+
+	player:SetAttribute("RoomMode", "Play")
+	player:SetAttribute("CurrentRoomName", nil)
+
+	if player:GetAttribute("CanEditCurrentRoom") ~= nil then
+		player:SetAttribute("CanEditCurrentRoom", false)
+	end
+
+	setPlayerInHotelMainMenu(player, true)
+
+	leaveRoomResult:FireClient(player, true, "Left room.")
 	sendRoomListToAll()
 end
 
@@ -1135,6 +1280,7 @@ Players.PlayerAdded:Connect(function(player)
 
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	setPlayerInHotelMainMenu(player, false)
 
 	local profile, loaded = RoomPersistence.LoadProfile(player)
 
@@ -1679,6 +1825,10 @@ joinRoomRequest.OnServerEvent:Connect(function(player, payload)
 	end
 
 	joinRoom(player, payload)
+end)
+
+leaveRoomRequest.OnServerEvent:Connect(function(player)
+	leaveCurrentRoom(player)
 end)
 
 tutorialFinishedRequest.OnServerEvent:Connect(function(player)

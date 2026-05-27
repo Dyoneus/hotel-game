@@ -95,6 +95,7 @@ local ROOM_EDITOR_USER_ID_MAX_LENGTH = 20
 local gui = script.Parent
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
+gui.DisplayOrder = 180
 
 for _, child in ipairs(gui:GetChildren()) do
 	if child ~= script then
@@ -340,6 +341,7 @@ local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
 local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
 local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
 local roomTransitionRequest = getOrCreateClientEvent("RoomTransitionRequest")
+local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
 
 local MENU_NAME = "Rooms"
 local anyMajorMenuOpen = false
@@ -380,6 +382,30 @@ ui.panelSize.Parent = ui.panel
 
 createCorner(ui.panel, 10)
 createStroke(ui.panel, Color3.fromRGB(180, 188, 176), 1, 0)
+
+local PANEL_LAYOUT_NORMAL = "Normal"
+local PANEL_LAYOUT_MAIN_MENU_DOCKED = "MainMenuDocked"
+local currentPanelLayout = PANEL_LAYOUT_NORMAL
+
+local function applyPanelLayout(layoutMode)
+	currentPanelLayout = layoutMode == PANEL_LAYOUT_MAIN_MENU_DOCKED
+		and PANEL_LAYOUT_MAIN_MENU_DOCKED
+		or PANEL_LAYOUT_NORMAL
+
+	if currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_DOCKED then
+		ui.panel.AnchorPoint = Vector2.new(1, 0.5)
+		ui.panel.Position = UDim2.new(1, -24, 0.5, 0)
+		ui.panel.Size = UDim2.new(0.48, 0, 0.82, 0)
+		ui.panelSize.MaxSize = Vector2.new(620, 680)
+		ui.panelSize.MinSize = Vector2.new(360, 360)
+	else
+		ui.panel.AnchorPoint = Vector2.new(0.5, 0.5)
+		ui.panel.Position = UDim2.fromScale(0.5, 0.5)
+		ui.panel.Size = UDim2.new(0.88, 0, 0.82, 0)
+		ui.panelSize.MaxSize = Vector2.new(920, 680)
+		ui.panelSize.MinSize = Vector2.new(360, 360)
+	end
+end
 
 ui.titleBar = Instance.new("Frame")
 ui.titleBar.Name = "TitleBar"
@@ -2776,11 +2802,27 @@ ui.settingsSaveButton.MouseButton1Click:Connect(function()
 end)
 
 ui.openButton.MouseButton1Click:Connect(function()
+	applyPanelLayout(PANEL_LAYOUT_NORMAL)
 	setPanelVisible(true)
 end)
 
 ui.closeButton.MouseButton1Click:Connect(function()
 	setPanelVisible(false)
+end)
+
+openRoomNavigator.Event:Connect(function(payload)
+	local mode = nil
+
+	if typeof(payload) == "table" then
+		mode = payload.Mode
+	elseif typeof(payload) == "string" then
+		mode = payload
+	end
+
+	applyPanelLayout(mode == PANEL_LAYOUT_MAIN_MENU_DOCKED
+		and PANEL_LAYOUT_MAIN_MENU_DOCKED
+		or PANEL_LAYOUT_NORMAL)
+	setPanelVisible(true)
 end)
 
 majorMenuOpened.Event:Connect(function(menuName)
