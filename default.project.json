@@ -51,6 +51,9 @@
       "InventoryServer": {
         "$path": "src/ServerScriptService/InventoryServer.server.lua"
       },
+      "MarketplaceService": {
+        "$path": "src/ServerScriptService/MarketplaceService.lua"
+      },
       "PlayerRoomServer": {
         "$path": "src/ServerScriptService/PlayerRoomServer.server.lua"
       },
