@@ -1,6 +1,7 @@
 -- Server-only remote wrapper for marketplace listing management.
--- Patch 1C exposes own-listing create/cancel/list actions only. Purchase flow,
--- public browsing, Coins movement, and client UI are intentionally not included.
+-- Patch 1E exposes own-listing create/cancel/list actions and read-only public
+-- browsing. Purchase flow, Coins movement, and buyer inventory transfer are
+-- intentionally not included.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -129,6 +130,18 @@ local function handleGetMyListings(player)
 	})
 end
 
+local function handleGetPublicListings(player, payload)
+	local success, message, listings = MarketplaceService.GetPublicListings(player, payload)
+
+	sendResult(player, {
+		Kind = "PublicListings",
+		Success = success,
+		Message = message,
+		Listings = listings or {},
+		RequestId = typeof(payload) == "table" and payload.RequestId or nil,
+	})
+end
+
 marketplaceRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	if not checkCooldown(player) then
 		sendResult(player, {
@@ -152,6 +165,21 @@ marketplaceRequest.OnServerEvent:Connect(function(player, actionName, payload)
 
 	if actionName == "GetMyListings" then
 		handleGetMyListings(player)
+		return
+	end
+
+	if actionName == "GetPublicListings" then
+		handleGetPublicListings(player, payload)
+		return
+	end
+
+	if actionName == "PurchaseListing" then
+		sendResult(player, {
+			Kind = "PurchaseListing",
+			Success = false,
+			Message = "Marketplace purchases are not enabled yet.",
+			RequestId = typeof(payload) == "table" and payload.RequestId or nil,
+		})
 		return
 	end
 

@@ -1,7 +1,8 @@
 -- Server-side Marketplace foundation.
--- Patch 1C supports seller-owned create/cancel/listing escrow only. Public
--- browsing, purchases, Coins movement, and global marketplace DataStores are
--- still intentionally deferred. Future purchase patches must use idempotent
+-- Patch 1E supports seller-owned listing escrow plus read-only public browsing
+-- from currently loaded player profiles. Purchases, Coins movement, buyer
+-- inventory transfer, seller proceeds, and global marketplace DataStores are
+-- intentionally deferred. Future purchase patches must use idempotent
 -- transaction records because buying touches listing state, buyer inventory,
 -- buyer Coins, and seller proceeds.
 
@@ -27,7 +28,7 @@ MarketplaceService.STATUS_SOLD = "Sold"
 MarketplaceService.STATUS_CANCELLED = "Cancelled"
 MarketplaceService.STATUS_EXPIRED = "Expired"
 
-local LISTINGS_DISABLED_MESSAGE = "Marketplace listings are not enabled yet."
+local PURCHASES_DISABLED_MESSAGE = "Marketplace purchases are not enabled yet."
 local marketplaceMutationLocksByUserId = {}
 
 local function trimString(value)
@@ -634,12 +635,140 @@ function MarketplaceService.GetMyListings(player)
 	return true, "Marketplace listings loaded.", snapshots
 end
 
+local function getPublicListingFilterValue(filters, key)
+	if typeof(filters) ~= "table" then
+		return nil
+	end
+
+	local value = trimString(filters[key])
+
+	if not value or value == "" then
+		return nil
+	end
+
+	return value
+end
+
+local function getPublicListingMaxResults(filters)
+	local maxResults = 50
+
+	if typeof(filters) == "table" and typeof(filters.MaxResults) == "number" then
+		if filters.MaxResults == filters.MaxResults and filters.MaxResults > 0 then
+			maxResults = math.floor(filters.MaxResults)
+		end
+	end
+
+	return math.clamp(maxResults, 1, 100)
+end
+
+local function publicListingMatchesSearch(snapshot, searchText)
+	if not searchText then
+		return true
+	end
+
+	local needle = string.lower(searchText)
+	local values = {
+		snapshot.TemplateId,
+		snapshot.DisplayName,
+		snapshot.Category,
+		snapshot.SellerName,
+		snapshot.SellerDisplayName,
+	}
+
+	for _, value in ipairs(values) do
+		if typeof(value) == "string" and string.find(string.lower(value), needle, 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function getPublicListingSnapshot(requestingPlayer, sellerPlayer, listing)
+	if typeof(listing) ~= "table" or listing.Status ~= MarketplaceService.STATUS_ACTIVE then
+		return nil
+	end
+
+	local item = getCatalogItem(listing.TemplateId)
+	local displayName = listing.TemplateId
+	local category = nil
+
+	if item then
+		if typeof(item.DisplayName) == "string" and item.DisplayName ~= "" then
+			displayName = item.DisplayName
+		end
+
+		if typeof(item.Category) == "string" and item.Category ~= "" then
+			category = item.Category
+		end
+	end
+
+	return {
+		ListingId = listing.ListingId,
+		SellerUserId = listing.SellerUserId,
+		SellerName = sellerPlayer and sellerPlayer.Name or nil,
+		SellerDisplayName = sellerPlayer and sellerPlayer.DisplayName or nil,
+		TemplateId = listing.TemplateId,
+		DisplayName = displayName,
+		Category = category,
+		Quantity = listing.Quantity,
+		UnitPriceCoins = listing.UnitPriceCoins,
+		CurrencyKey = listing.CurrencyKey or MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+		Status = listing.Status,
+		CreatedAt = listing.CreatedAt,
+		IsOwnListing = requestingPlayer and listing.SellerUserId == requestingPlayer.UserId or false,
+	}
+end
+
 function MarketplaceService.GetPublicListings(player, filters)
-	return false, LISTINGS_DISABLED_MESSAGE, {}
+	if not playerIsValid(player) then
+		return false, "Invalid player.", {}
+	end
+
+	if not getLoadedProfile(player) then
+		return false, "Profile is not loaded.", {}
+	end
+
+	local templateIdFilter = getPublicListingFilterValue(filters, "TemplateId")
+	local categoryFilter = getPublicListingFilterValue(filters, "Category")
+	local searchText = getPublicListingFilterValue(filters, "SearchText")
+	local maxResults = getPublicListingMaxResults(filters)
+	local categoryFilterLower = categoryFilter and string.lower(categoryFilter) or nil
+	local listings = {}
+
+	-- Patch 1E reads active listings from currently loaded profiles only.
+	-- A true global/cross-server marketplace index belongs in a later patch.
+	for _, sellerPlayer in ipairs(Players:GetPlayers()) do
+		if getLoadedProfile(sellerPlayer) then
+			local sellerListings = RoomPersistence.GetMarketplaceListingsSnapshot(sellerPlayer)
+
+			for _, listing in pairs(sellerListings) do
+				local snapshot = getPublicListingSnapshot(player, sellerPlayer, listing)
+
+				if snapshot
+					and (not templateIdFilter or snapshot.TemplateId == templateIdFilter)
+					and (not categoryFilterLower or string.lower(tostring(snapshot.Category or "")) == categoryFilterLower)
+					and publicListingMatchesSearch(snapshot, searchText) then
+
+					table.insert(listings, snapshot)
+				end
+			end
+		end
+	end
+
+	table.sort(listings, function(a, b)
+		return (a.CreatedAt or 0) > (b.CreatedAt or 0)
+	end)
+
+	while #listings > maxResults do
+		table.remove(listings)
+	end
+
+	return true, "Marketplace listings loaded.", listings
 end
 
 function MarketplaceService.PurchaseListing(player, listingId)
-	return false, "Marketplace purchases are not enabled yet."
+	return false, PURCHASES_DISABLED_MESSAGE
 end
 
 Players.PlayerRemoving:Connect(function(player)

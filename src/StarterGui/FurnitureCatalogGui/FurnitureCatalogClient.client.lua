@@ -11,6 +11,8 @@ local playerGui = player:WaitForChild("PlayerGui")
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local furnitureCatalogRequest = remoteEvents:WaitForChild("FurnitureCatalogRequest")
 local furnitureCatalogResult = remoteEvents:WaitForChild("FurnitureCatalogResult")
+local marketplaceRequest = remoteEvents:WaitForChild("MarketplaceRequest")
+local marketplaceResult = remoteEvents:WaitForChild("MarketplaceResult")
 local GridConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GridConfig"))
 
 local activeRooms = workspace:WaitForChild("ActiveRooms")
@@ -32,7 +34,21 @@ local requestInFlight = false
 local activePurchaseButton = nil
 local activePurchaseButtonText = nil
 local selectedCategory = "All"
+local catalogViewMode = "Shop"
+local marketplaceViewMode = "Offers"
 local categoryButtons = {}
+local latestPublicMarketplaceListings = {}
+local latestMySalesListings = {}
+local marketplacePublicListingsInFlight = false
+local marketplaceMySalesInFlight = false
+local marketplaceCancelInFlightByListingId = {}
+local marketplaceLastRequestAt = -math.huge
+local publicMarketplaceLastRequestAt = -math.huge
+local mySalesLastRequestAt = -math.huge
+local publicMarketplaceQueuedRefresh = false
+local mySalesQueuedRefresh = false
+local publicMarketplaceQueuedRefreshScheduled = false
+local mySalesQueuedRefreshScheduled = false
 
 local CATEGORY_ORDER = {
 	"All",
@@ -42,9 +58,20 @@ local CATEGORY_ORDER = {
 	"Beds",
 }
 
+local CATALOG_VIEW_SHOP = "Shop"
+local CATALOG_VIEW_MARKETPLACE = "Marketplace"
+local MARKETPLACE_VIEW_OFFERS = "Offers"
+local MARKETPLACE_VIEW_MY_SALES = "MySales"
+local MARKETPLACE_REQUEST_COOLDOWN_SECONDS = 0.7
+local REQUEST_TIMEOUT_SECONDS = 6
+
 local updateOpenButton = nil
 local destroyCatalogPlacementPreview = nil
 local renderCatalog = nil
+local renderMarketplace = nil
+local requestMarketplaceOffers = nil
+local requestMarketplaceMySales = nil
+local cancelMarketplaceSale = nil
 
 local placingItemData = nil
 local placementPreview = nil
@@ -426,9 +453,46 @@ statusLabel.TextScaled = true
 statusLabel.Font = Enum.Font.Gotham
 statusLabel.Parent = panel
 
+local sectionFrame = Instance.new("Frame")
+sectionFrame.Name = "ShopSectionTabs"
+sectionFrame.Position = UDim2.fromOffset(18, 104)
+sectionFrame.Size = UDim2.new(1, -36, 0, 30)
+sectionFrame.BackgroundTransparency = 1
+sectionFrame.Parent = panel
+
+local sectionLayout = Instance.new("UIListLayout")
+sectionLayout.FillDirection = Enum.FillDirection.Horizontal
+sectionLayout.SortOrder = Enum.SortOrder.LayoutOrder
+sectionLayout.Padding = UDim.new(0, 6)
+sectionLayout.Parent = sectionFrame
+
+local shopSectionButton = Instance.new("TextButton")
+shopSectionButton.Name = "ShopSectionButton"
+shopSectionButton.LayoutOrder = 1
+shopSectionButton.Size = UDim2.fromOffset(86, 28)
+shopSectionButton.BorderSizePixel = 0
+shopSectionButton.Text = "Shop"
+shopSectionButton.TextSize = 13
+shopSectionButton.Font = Enum.Font.GothamBold
+shopSectionButton.Parent = sectionFrame
+
+createCorner(shopSectionButton, 7)
+
+local marketplaceSectionButton = Instance.new("TextButton")
+marketplaceSectionButton.Name = "MarketplaceSectionButton"
+marketplaceSectionButton.LayoutOrder = 2
+marketplaceSectionButton.Size = UDim2.fromOffset(116, 28)
+marketplaceSectionButton.BorderSizePixel = 0
+marketplaceSectionButton.Text = "Marketplace"
+marketplaceSectionButton.TextSize = 13
+marketplaceSectionButton.Font = Enum.Font.GothamBold
+marketplaceSectionButton.Parent = sectionFrame
+
+createCorner(marketplaceSectionButton, 7)
+
 local categoryFrame = Instance.new("Frame")
 categoryFrame.Name = "CategoryTabs"
-categoryFrame.Position = UDim2.fromOffset(18, 104)
+categoryFrame.Position = UDim2.fromOffset(18, 140)
 categoryFrame.Size = UDim2.new(1, -36, 0, 32)
 categoryFrame.BackgroundTransparency = 1
 categoryFrame.Parent = panel
@@ -438,6 +502,78 @@ categoryLayout.FillDirection = Enum.FillDirection.Horizontal
 categoryLayout.SortOrder = Enum.SortOrder.LayoutOrder
 categoryLayout.Padding = UDim.new(0, 6)
 categoryLayout.Parent = categoryFrame
+
+local marketplaceTabsFrame = Instance.new("Frame")
+marketplaceTabsFrame.Name = "MarketplaceTabs"
+marketplaceTabsFrame.Position = UDim2.fromOffset(18, 140)
+marketplaceTabsFrame.Size = UDim2.new(1, -36, 0, 32)
+marketplaceTabsFrame.BackgroundTransparency = 1
+marketplaceTabsFrame.Visible = false
+marketplaceTabsFrame.Parent = panel
+
+local marketplaceTabsLayout = Instance.new("UIListLayout")
+marketplaceTabsLayout.FillDirection = Enum.FillDirection.Horizontal
+marketplaceTabsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+marketplaceTabsLayout.Padding = UDim.new(0, 6)
+marketplaceTabsLayout.Parent = marketplaceTabsFrame
+
+local marketplaceOffersButton = Instance.new("TextButton")
+marketplaceOffersButton.Name = "MarketplaceOffersButton"
+marketplaceOffersButton.LayoutOrder = 1
+marketplaceOffersButton.Size = UDim2.fromOffset(78, 30)
+marketplaceOffersButton.BorderSizePixel = 0
+marketplaceOffersButton.Text = "Offers"
+marketplaceOffersButton.TextSize = 13
+marketplaceOffersButton.Font = Enum.Font.GothamBold
+marketplaceOffersButton.Parent = marketplaceTabsFrame
+
+createCorner(marketplaceOffersButton, 8)
+
+local marketplaceMySalesButton = Instance.new("TextButton")
+marketplaceMySalesButton.Name = "MarketplaceMySalesButton"
+marketplaceMySalesButton.LayoutOrder = 2
+marketplaceMySalesButton.Size = UDim2.fromOffset(86, 30)
+marketplaceMySalesButton.BorderSizePixel = 0
+marketplaceMySalesButton.Text = "My Sales"
+marketplaceMySalesButton.TextSize = 13
+marketplaceMySalesButton.Font = Enum.Font.GothamBold
+marketplaceMySalesButton.Parent = marketplaceTabsFrame
+
+createCorner(marketplaceMySalesButton, 8)
+
+local marketplaceRefreshButton = Instance.new("TextButton")
+marketplaceRefreshButton.Name = "MarketplaceRefreshButton"
+marketplaceRefreshButton.LayoutOrder = 3
+marketplaceRefreshButton.Size = UDim2.fromOffset(72, 30)
+marketplaceRefreshButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+marketplaceRefreshButton.BorderSizePixel = 0
+marketplaceRefreshButton.Text = "Refresh"
+marketplaceRefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+marketplaceRefreshButton.TextSize = 12
+marketplaceRefreshButton.Font = Enum.Font.GothamBold
+marketplaceRefreshButton.Parent = marketplaceTabsFrame
+
+createCorner(marketplaceRefreshButton, 8)
+
+local marketplaceSearchBox = Instance.new("TextBox")
+marketplaceSearchBox.Name = "MarketplaceSearchBox"
+marketplaceSearchBox.Position = UDim2.fromOffset(18, 178)
+marketplaceSearchBox.Size = UDim2.new(1, -36, 0, 30)
+marketplaceSearchBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+marketplaceSearchBox.BorderSizePixel = 0
+marketplaceSearchBox.ClearTextOnFocus = false
+marketplaceSearchBox.PlaceholderText = "Search marketplace"
+marketplaceSearchBox.Text = ""
+marketplaceSearchBox.TextColor3 = Color3.fromRGB(40, 40, 40)
+marketplaceSearchBox.PlaceholderColor3 = Color3.fromRGB(135, 135, 135)
+marketplaceSearchBox.TextSize = 13
+marketplaceSearchBox.TextXAlignment = Enum.TextXAlignment.Left
+marketplaceSearchBox.Font = Enum.Font.Gotham
+marketplaceSearchBox.Visible = false
+marketplaceSearchBox.Parent = panel
+
+createCorner(marketplaceSearchBox, 8)
+createStroke(marketplaceSearchBox, Color3.fromRGB(220, 220, 220), 1, 0)
 
 local placementHintLabel = Instance.new("TextLabel")
 placementHintLabel.Name = "PlacementHintLabel"
@@ -460,8 +596,8 @@ createStroke(placementHintLabel, Color3.fromRGB(255, 255, 255), 1, 0.35)
 
 local itemList = Instance.new("ScrollingFrame")
 itemList.Name = "ItemList"
-itemList.Position = UDim2.fromOffset(18, 148)
-itemList.Size = UDim2.new(1, -36, 1, -168)
+itemList.Position = UDim2.fromOffset(18, 184)
+itemList.Size = UDim2.new(1, -36, 1, -204)
 itemList.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 itemList.BorderSizePixel = 0
 itemList.ScrollBarThickness = 6
@@ -508,6 +644,49 @@ end
 
 local function setStatus(text)
 	statusLabel.Text = tostring(text or "")
+end
+
+local function styleToggleButton(button, isSelected)
+	if isSelected then
+		button.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
+		button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	else
+		button.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+		button.TextColor3 = Color3.fromRGB(55, 55, 55)
+	end
+end
+
+local function updateCatalogChrome()
+	local showingMarketplace = catalogViewMode == CATALOG_VIEW_MARKETPLACE
+	local showingOffers = marketplaceViewMode == MARKETPLACE_VIEW_OFFERS
+	local marketplaceBusy = showingOffers
+		and marketplacePublicListingsInFlight
+		or marketplaceMySalesInFlight
+
+	titleLabel.Text = showingMarketplace and "Marketplace" or "Furniture Shop"
+	categoryFrame.Visible = not showingMarketplace
+	marketplaceTabsFrame.Visible = showingMarketplace
+	marketplaceSearchBox.Visible = showingMarketplace and showingOffers
+
+	if showingMarketplace and showingOffers then
+		itemList.Position = UDim2.fromOffset(18, 218)
+		itemList.Size = UDim2.new(1, -36, 1, -238)
+	else
+		itemList.Position = UDim2.fromOffset(18, 184)
+		itemList.Size = UDim2.new(1, -36, 1, -204)
+	end
+
+	styleToggleButton(shopSectionButton, not showingMarketplace)
+	styleToggleButton(marketplaceSectionButton, showingMarketplace)
+	styleToggleButton(marketplaceOffersButton, showingMarketplace and showingOffers)
+	styleToggleButton(marketplaceMySalesButton, showingMarketplace and marketplaceViewMode == MARKETPLACE_VIEW_MY_SALES)
+
+	marketplaceRefreshButton.Active = not marketplaceBusy
+	marketplaceRefreshButton.AutoButtonColor = not marketplaceBusy
+	marketplaceRefreshButton.Text = marketplaceBusy and "Loading..." or "Refresh"
+	marketplaceRefreshButton.BackgroundColor3 = marketplaceBusy
+		and Color3.fromRGB(155, 160, 155)
+		or Color3.fromRGB(70, 135, 90)
 end
 
 local function setPlacementHint(text)
@@ -1337,6 +1516,87 @@ local function createEmptyCatalogState(message)
 	emptyLabel.Parent = itemList
 end
 
+local function getMarketplaceWaitMessage(message)
+	local normalizedMessage = tostring(message or "")
+
+	if normalizedMessage:find("Slow down", 1, true)
+		or normalizedMessage:find("busy", 1, true)
+		or normalizedMessage:find("try again", 1, true) then
+
+		return "Please wait a moment."
+	end
+
+	return normalizedMessage
+end
+
+local function formatListingCreatedAt(createdAt)
+	if typeof(createdAt) ~= "number" or createdAt <= 0 then
+		return ""
+	end
+
+	local ok, formatted = pcall(os.date, "%m/%d %H:%M", math.floor(createdAt))
+
+	if ok and typeof(formatted) == "string" then
+		return formatted
+	end
+
+	return ""
+end
+
+local function getMarketplaceListingDisplayName(listing)
+	if typeof(listing) == "table"
+		and typeof(listing.DisplayName) == "string"
+		and listing.DisplayName ~= "" then
+
+		return listing.DisplayName
+	end
+
+	local templateId = listing and listing.TemplateId
+
+	if typeof(templateId) == "string" then
+		for _, itemData in ipairs(latestCatalogItems) do
+			if typeof(itemData) == "table"
+				and (itemData.TemplateName == templateId or itemData.Id == templateId)
+				and typeof(itemData.DisplayName) == "string"
+				and itemData.DisplayName ~= "" then
+
+				return itemData.DisplayName
+			end
+		end
+	end
+
+	return tostring(templateId or "Marketplace item")
+end
+
+local function getMarketplaceSellerText(listing)
+	local sellerName = listing and (listing.SellerDisplayName or listing.SellerName)
+
+	if typeof(sellerName) ~= "string" or sellerName == "" then
+		sellerName = "Unknown seller"
+	end
+
+	if listing and listing.IsOwnListing == true then
+		return sellerName .. " (You)"
+	end
+
+	return sellerName
+end
+
+local function fireInventoryLocalDeltaFromMarketplaceDetails(templateId, details)
+	if typeof(templateId) ~= "string" or templateId == "" or typeof(details) ~= "table" then
+		return
+	end
+
+	inventoryLocalDelta:Fire({
+		TemplateId = templateId,
+		Total = details.Total,
+		Tradable = details.Tradable,
+		Untradable = details.Untradable,
+		Sellable = details.Sellable,
+		Unsellable = details.Unsellable,
+	})
+end
+
 local function createItemRow(itemData, layoutOrder)
 	local price = 0
 
@@ -1549,8 +1809,245 @@ local function createItemRow(itemData, layoutOrder)
 	updateQuantityDisplay()
 end
 
+local function createMarketplaceOfferRow(listing, layoutOrder)
+	local quantity = listing.Quantity or 0
+	local unitPriceCoins = listing.UnitPriceCoins or 0
+	local status = tostring(listing.Status or "Unknown")
+	local createdText = formatListingCreatedAt(listing.CreatedAt)
+
+	local row = Instance.new("Frame")
+	row.Name = "MarketplaceOfferRow"
+	row.LayoutOrder = layoutOrder
+	row.Size = UDim2.new(1, -4, 0, 106)
+	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
+	row.BorderSizePixel = 0
+	row.Parent = itemList
+
+	createCorner(row, 10)
+	createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "OfferName"
+	nameLabel.Position = UDim2.fromOffset(12, 8)
+	nameLabel.Size = UDim2.new(1, -120, 0, 22)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = getMarketplaceListingDisplayName(listing)
+	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+	nameLabel.TextSize = 14
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = row
+
+	local priceLabel = Instance.new("TextLabel")
+	priceLabel.Name = "OfferPrice"
+	priceLabel.Position = UDim2.fromOffset(12, 32)
+	priceLabel.Size = UDim2.new(1, -120, 0, 18)
+	priceLabel.BackgroundTransparency = 1
+	priceLabel.Text = "x" .. tostring(quantity) .. " @ " .. tostring(unitPriceCoins) .. " Coins"
+	priceLabel.TextColor3 = Color3.fromRGB(70, 70, 70)
+	priceLabel.TextSize = 12
+	priceLabel.TextXAlignment = Enum.TextXAlignment.Left
+	priceLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	priceLabel.Font = Enum.Font.Gotham
+	priceLabel.Parent = row
+
+	local sellerLabel = Instance.new("TextLabel")
+	sellerLabel.Name = "OfferSeller"
+	sellerLabel.Position = UDim2.fromOffset(12, 52)
+	sellerLabel.Size = UDim2.new(1, -120, 0, 18)
+	sellerLabel.BackgroundTransparency = 1
+	sellerLabel.Text = "Seller: " .. getMarketplaceSellerText(listing)
+	sellerLabel.TextColor3 = listing.IsOwnListing == true
+		and Color3.fromRGB(45, 110, 65)
+		or Color3.fromRGB(85, 85, 85)
+	sellerLabel.TextSize = 12
+	sellerLabel.TextXAlignment = Enum.TextXAlignment.Left
+	sellerLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	sellerLabel.Font = Enum.Font.Gotham
+	sellerLabel.Parent = row
+
+	local listingStatusLabel = Instance.new("TextLabel")
+	listingStatusLabel.Name = "OfferStatus"
+	listingStatusLabel.Position = UDim2.fromOffset(12, 72)
+	listingStatusLabel.Size = UDim2.new(1, -120, 0, 18)
+	listingStatusLabel.BackgroundTransparency = 1
+	listingStatusLabel.Text = createdText ~= "" and (status .. " | " .. createdText) or status
+	listingStatusLabel.TextColor3 = Color3.fromRGB(105, 105, 105)
+	listingStatusLabel.TextSize = 11
+	listingStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+	listingStatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	listingStatusLabel.Font = Enum.Font.GothamMedium
+	listingStatusLabel.Parent = row
+
+	local buyingSoonButton = Instance.new("TextButton")
+	buyingSoonButton.Name = "BuyingSoonButton"
+	buyingSoonButton.AnchorPoint = Vector2.new(1, 0.5)
+	buyingSoonButton.Position = UDim2.new(1, -12, 0.5, 0)
+	buyingSoonButton.Size = UDim2.fromOffset(92, 30)
+	buyingSoonButton.BackgroundColor3 = Color3.fromRGB(155, 160, 155)
+	buyingSoonButton.BorderSizePixel = 0
+	buyingSoonButton.Text = "Buying Soon"
+	buyingSoonButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	buyingSoonButton.TextSize = 11
+	buyingSoonButton.Font = Enum.Font.GothamBold
+	buyingSoonButton.Active = false
+	buyingSoonButton.AutoButtonColor = false
+	buyingSoonButton.Parent = row
+
+	createCorner(buyingSoonButton, 7)
+end
+
+local function createMarketplaceSaleRow(listing, layoutOrder)
+	local listingId = listing.ListingId
+	local quantity = listing.Quantity or 0
+	local unitPriceCoins = listing.UnitPriceCoins or 0
+	local status = tostring(listing.Status or "Unknown")
+	local isActive = status == "Active"
+	local isCancelInFlight = marketplaceCancelInFlightByListingId[listingId] == true
+	local createdText = formatListingCreatedAt(listing.CreatedAt)
+
+	local row = Instance.new("Frame")
+	row.Name = "MarketplaceSaleRow"
+	row.LayoutOrder = layoutOrder
+	row.Size = UDim2.new(1, -4, 0, 94)
+	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
+	row.BorderSizePixel = 0
+	row.Parent = itemList
+
+	createCorner(row, 10)
+	createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "SaleName"
+	nameLabel.Position = UDim2.fromOffset(12, 8)
+	nameLabel.Size = UDim2.new(1, isActive and -120 or -24, 0, 22)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = getMarketplaceListingDisplayName(listing)
+	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+	nameLabel.TextSize = 14
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = row
+
+	local priceLabel = Instance.new("TextLabel")
+	priceLabel.Name = "SalePrice"
+	priceLabel.Position = UDim2.fromOffset(12, 32)
+	priceLabel.Size = UDim2.new(1, isActive and -120 or -24, 0, 18)
+	priceLabel.BackgroundTransparency = 1
+	priceLabel.Text = "x" .. tostring(quantity) .. " @ " .. tostring(unitPriceCoins) .. " Coins"
+	priceLabel.TextColor3 = Color3.fromRGB(70, 70, 70)
+	priceLabel.TextSize = 12
+	priceLabel.TextXAlignment = Enum.TextXAlignment.Left
+	priceLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	priceLabel.Font = Enum.Font.Gotham
+	priceLabel.Parent = row
+
+	local listingStatusLabel = Instance.new("TextLabel")
+	listingStatusLabel.Name = "SaleStatus"
+	listingStatusLabel.Position = UDim2.fromOffset(12, 54)
+	listingStatusLabel.Size = UDim2.new(1, isActive and -120 or -24, 0, 18)
+	listingStatusLabel.BackgroundTransparency = 1
+	listingStatusLabel.Text = createdText ~= "" and (status .. " | " .. createdText) or status
+	listingStatusLabel.TextColor3 = isActive and Color3.fromRGB(45, 110, 65) or Color3.fromRGB(105, 105, 105)
+	listingStatusLabel.TextSize = 12
+	listingStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+	listingStatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	listingStatusLabel.Font = Enum.Font.GothamMedium
+	listingStatusLabel.Parent = row
+
+	if isActive then
+		local cancelButton = Instance.new("TextButton")
+		cancelButton.Name = "CancelMarketplaceSaleButton"
+		cancelButton.AnchorPoint = Vector2.new(1, 0.5)
+		cancelButton.Position = UDim2.new(1, -12, 0.5, 0)
+		cancelButton.Size = UDim2.fromOffset(92, 30)
+		cancelButton.BackgroundColor3 = Color3.fromRGB(160, 70, 70)
+		cancelButton.BorderSizePixel = 0
+		cancelButton.Text = isCancelInFlight and "Cancelling..." or "Cancel"
+		cancelButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		cancelButton.TextSize = 12
+		cancelButton.Font = Enum.Font.GothamBold
+		cancelButton.Active = not isCancelInFlight
+		cancelButton.AutoButtonColor = not isCancelInFlight
+		cancelButton.Parent = row
+
+		createCorner(cancelButton, 7)
+
+		cancelButton.MouseButton1Click:Connect(function()
+			if cancelMarketplaceSale then
+				cancelMarketplaceSale(listingId)
+			end
+		end)
+	end
+end
+
+local function upsertMySaleListing(listing)
+	if typeof(listing) ~= "table"
+		or typeof(listing.ListingId) ~= "string"
+		or listing.ListingId == "" then
+
+		return
+	end
+
+	for index, existingListing in ipairs(latestMySalesListings) do
+		if typeof(existingListing) == "table" and existingListing.ListingId == listing.ListingId then
+			latestMySalesListings[index] = listing
+			return
+		end
+	end
+
+	table.insert(latestMySalesListings, listing)
+end
+
+renderMarketplace = function()
+	updateCatalogChrome()
+	clearItemRows()
+
+	if marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+		if marketplacePublicListingsInFlight then
+			setStatus("Loading marketplace offers...")
+		elseif #latestPublicMarketplaceListings == 0 then
+			setStatus("No active marketplace offers.")
+			createEmptyCatalogState("No active marketplace offers.")
+		else
+			setStatus("Browse marketplace offers. Buying is coming later.")
+		end
+
+		for index, listing in ipairs(latestPublicMarketplaceListings) do
+			createMarketplaceOfferRow(listing, index)
+		end
+	else
+		if marketplaceMySalesInFlight then
+			setStatus("Loading marketplace sales...")
+		elseif #latestMySalesListings == 0 then
+			setStatus("No marketplace sales yet.")
+			createEmptyCatalogState("No marketplace sales yet.")
+		else
+			setStatus("Manage your marketplace sales.")
+		end
+
+		for index, listing in ipairs(latestMySalesListings) do
+			createMarketplaceSaleRow(listing, index)
+		end
+	end
+
+	task.defer(function()
+		itemList.CanvasSize = UDim2.fromOffset(
+			0,
+			listLayout.AbsoluteContentSize.Y + 20
+		)
+	end)
+end
+
 renderCatalog = function(items)
 	latestCatalogItems = items or {}
+	if catalogViewMode ~= CATALOG_VIEW_SHOP then
+		return
+	end
+
+	updateCatalogChrome()
 	clearItemRows()
 	updateCategoryTabs(latestCatalogItems)
 
@@ -1584,6 +2081,172 @@ renderCatalog = function(items)
 	end)
 end
 
+local function scheduleQueuedMarketplaceOffersRefresh(delaySeconds)
+	if publicMarketplaceQueuedRefreshScheduled then
+		return
+	end
+
+	publicMarketplaceQueuedRefreshScheduled = true
+
+	task.delay(math.max(delaySeconds or 0, 0), function()
+		publicMarketplaceQueuedRefreshScheduled = false
+
+		if publicMarketplaceQueuedRefresh and requestMarketplaceOffers then
+			requestMarketplaceOffers({
+				FromQueue = true,
+			})
+		end
+	end)
+end
+
+local function scheduleQueuedMySalesRefresh(delaySeconds)
+	if mySalesQueuedRefreshScheduled then
+		return
+	end
+
+	mySalesQueuedRefreshScheduled = true
+
+	task.delay(math.max(delaySeconds or 0, 0), function()
+		mySalesQueuedRefreshScheduled = false
+
+		if mySalesQueuedRefresh and requestMarketplaceMySales then
+			requestMarketplaceMySales({
+				FromQueue = true,
+			})
+		end
+	end)
+end
+
+requestMarketplaceOffers = function(options)
+	local queueIfBlocked = typeof(options) == "table" and options.Queue == true
+	local fromQueue = typeof(options) == "table" and options.FromQueue == true
+
+	if marketplacePublicListingsInFlight then
+		if queueIfBlocked then
+			publicMarketplaceQueuedRefresh = true
+		end
+
+		renderMarketplace()
+		return
+	end
+
+	local now = os.clock()
+	local cooldownRemaining = MARKETPLACE_REQUEST_COOLDOWN_SECONDS - (now - marketplaceLastRequestAt)
+
+	if cooldownRemaining > 0 then
+		if queueIfBlocked or fromQueue then
+			publicMarketplaceQueuedRefresh = true
+			scheduleQueuedMarketplaceOffersRefresh(cooldownRemaining)
+		else
+			setStatus("Please wait a moment.")
+			renderMarketplace()
+		end
+
+		return
+	end
+
+	publicMarketplaceQueuedRefresh = false
+	marketplacePublicListingsInFlight = true
+	marketplaceLastRequestAt = now
+	publicMarketplaceLastRequestAt = now
+	renderMarketplace()
+	marketplaceRequest:FireServer("GetPublicListings", {
+		SearchText = marketplaceSearchBox.Text,
+		MaxResults = 50,
+	})
+
+	local requestStartedAt = publicMarketplaceLastRequestAt
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if marketplacePublicListingsInFlight and publicMarketplaceLastRequestAt == requestStartedAt then
+			marketplacePublicListingsInFlight = false
+			setStatus("Marketplace offers request timed out.")
+			renderMarketplace()
+		end
+	end)
+end
+
+requestMarketplaceMySales = function(options)
+	local queueIfBlocked = typeof(options) == "table" and options.Queue == true
+	local fromQueue = typeof(options) == "table" and options.FromQueue == true
+
+	if marketplaceMySalesInFlight then
+		if queueIfBlocked then
+			mySalesQueuedRefresh = true
+		end
+
+		renderMarketplace()
+		return
+	end
+
+	local now = os.clock()
+	local cooldownRemaining = MARKETPLACE_REQUEST_COOLDOWN_SECONDS - (now - marketplaceLastRequestAt)
+
+	if cooldownRemaining > 0 then
+		if queueIfBlocked or fromQueue then
+			mySalesQueuedRefresh = true
+			scheduleQueuedMySalesRefresh(cooldownRemaining)
+		else
+			setStatus("Please wait a moment.")
+			renderMarketplace()
+		end
+
+		return
+	end
+
+	mySalesQueuedRefresh = false
+	marketplaceMySalesInFlight = true
+	marketplaceLastRequestAt = now
+	mySalesLastRequestAt = now
+	renderMarketplace()
+	marketplaceRequest:FireServer("GetMyListings")
+
+	local requestStartedAt = mySalesLastRequestAt
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if marketplaceMySalesInFlight and mySalesLastRequestAt == requestStartedAt then
+			marketplaceMySalesInFlight = false
+			setStatus("Marketplace sales request timed out.")
+			renderMarketplace()
+		end
+	end)
+end
+
+cancelMarketplaceSale = function(listingId)
+	if typeof(listingId) ~= "string" or listingId == "" then
+		setStatus("Invalid marketplace listing.")
+		return
+	end
+
+	if marketplaceCancelInFlightByListingId[listingId] then
+		return
+	end
+
+	local now = os.clock()
+	local cooldownRemaining = MARKETPLACE_REQUEST_COOLDOWN_SECONDS - (now - marketplaceLastRequestAt)
+
+	if cooldownRemaining > 0 then
+		setStatus("Please wait a moment.")
+		renderMarketplace()
+		return
+	end
+
+	marketplaceCancelInFlightByListingId[listingId] = true
+	marketplaceLastRequestAt = now
+	renderMarketplace()
+	marketplaceRequest:FireServer("CancelListing", {
+		ListingId = listingId,
+	})
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if marketplaceCancelInFlightByListingId[listingId] then
+			marketplaceCancelInFlightByListingId[listingId] = nil
+			setStatus("Cancel listing request timed out.")
+			renderMarketplace()
+		end
+	end)
+end
+
 updateOpenButton = function()
 	if placingItemData then
 		openButton.Visible = false
@@ -1597,9 +2260,87 @@ updateOpenButton = function()
 	end
 end
 
+shopSectionButton.MouseButton1Click:Connect(function()
+	if catalogViewMode == CATALOG_VIEW_SHOP then
+		return
+	end
+
+	catalogViewMode = CATALOG_VIEW_SHOP
+	selectedCategory = "All"
+	renderCatalog(latestCatalogItems)
+
+	if #latestCatalogItems == 0 then
+		setStatus("Loading shop...")
+		furnitureCatalogRequest:FireServer("GetCatalog", {})
+	end
+end)
+
+marketplaceSectionButton.MouseButton1Click:Connect(function()
+	catalogViewMode = CATALOG_VIEW_MARKETPLACE
+	marketplaceViewMode = MARKETPLACE_VIEW_OFFERS
+	renderMarketplace()
+	requestMarketplaceOffers({
+		Queue = true,
+	})
+end)
+
+marketplaceOffersButton.MouseButton1Click:Connect(function()
+	if marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+		return
+	end
+
+	marketplaceViewMode = MARKETPLACE_VIEW_OFFERS
+	renderMarketplace()
+	requestMarketplaceOffers({
+		Queue = true,
+	})
+end)
+
+marketplaceMySalesButton.MouseButton1Click:Connect(function()
+	if marketplaceViewMode == MARKETPLACE_VIEW_MY_SALES then
+		return
+	end
+
+	marketplaceViewMode = MARKETPLACE_VIEW_MY_SALES
+	renderMarketplace()
+	requestMarketplaceMySales({
+		Queue = true,
+	})
+end)
+
+marketplaceRefreshButton.MouseButton1Click:Connect(function()
+	if catalogViewMode ~= CATALOG_VIEW_MARKETPLACE then
+		return
+	end
+
+	if marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+		requestMarketplaceOffers({
+			Queue = true,
+		})
+	else
+		requestMarketplaceMySales({
+			Queue = true,
+		})
+	end
+end)
+
+marketplaceSearchBox.FocusLost:Connect(function(enterPressed)
+	if enterPressed
+		and catalogViewMode == CATALOG_VIEW_MARKETPLACE
+		and marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+
+		requestMarketplaceOffers({
+			Queue = true,
+		})
+	end
+end)
+
 openButton.MouseButton1Click:Connect(function()
+	catalogViewMode = CATALOG_VIEW_SHOP
 	selectedCategory = "All"
 	setPanelVisible(true)
+	updateCatalogChrome()
+	renderCatalog(latestCatalogItems)
 	setStatus("Loading shop...")
 	furnitureCatalogRequest:FireServer("GetCatalog", {})
 end)
@@ -1664,6 +2405,137 @@ mouse.Button1Down:Connect(function()
 	confirmCatalogPlacement()
 end)
 
+marketplaceResult.OnClientEvent:Connect(function(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	local kind = response.Kind
+	local success = response.Success == true
+	local message = getMarketplaceWaitMessage(response.Message)
+
+	if kind == "PublicListings" or kind == "GetPublicListings" then
+		marketplacePublicListingsInFlight = false
+		local shouldRunQueuedRefresh = publicMarketplaceQueuedRefresh == true
+
+		if success then
+			latestPublicMarketplaceListings = typeof(response.Listings) == "table"
+				and response.Listings
+				or {}
+			message = ""
+		else
+			shouldRunQueuedRefresh = false
+			publicMarketplaceQueuedRefresh = false
+
+			if message == "" then
+				message = "Could not load marketplace offers."
+			end
+		end
+
+		if catalogViewMode == CATALOG_VIEW_MARKETPLACE
+			and marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+
+			renderMarketplace()
+
+			if message ~= "" then
+				setStatus(message)
+			end
+		else
+			updateCatalogChrome()
+		end
+
+		if shouldRunQueuedRefresh then
+			scheduleQueuedMarketplaceOffersRefresh(
+				MARKETPLACE_REQUEST_COOLDOWN_SECONDS - (os.clock() - publicMarketplaceLastRequestAt)
+			)
+		end
+
+		return
+	end
+
+	if kind == "MyListings" or kind == "GetMyListings" then
+		marketplaceMySalesInFlight = false
+		local shouldRunQueuedRefresh = mySalesQueuedRefresh == true
+
+		if success then
+			latestMySalesListings = typeof(response.Listings) == "table"
+				and response.Listings
+				or {}
+			message = ""
+		else
+			shouldRunQueuedRefresh = false
+			mySalesQueuedRefresh = false
+
+			if message == "" then
+				message = "Could not load marketplace sales."
+			end
+		end
+
+		if catalogViewMode == CATALOG_VIEW_MARKETPLACE
+			and marketplaceViewMode == MARKETPLACE_VIEW_MY_SALES then
+
+			renderMarketplace()
+
+			if message ~= "" then
+				setStatus(message)
+			end
+		else
+			updateCatalogChrome()
+		end
+
+		if shouldRunQueuedRefresh then
+			scheduleQueuedMySalesRefresh(
+				MARKETPLACE_REQUEST_COOLDOWN_SECONDS - (os.clock() - mySalesLastRequestAt)
+			)
+		end
+
+		return
+	end
+
+	if kind == "CancelListing" then
+		marketplaceCancelInFlightByListingId = {}
+
+		local listing = response.Listing
+		local templateId = nil
+
+		if typeof(listing) == "table" then
+			templateId = listing.TemplateId
+			upsertMySaleListing(listing)
+		end
+
+		if success then
+			fireInventoryLocalDeltaFromMarketplaceDetails(templateId, response.InventoryDetails)
+			inventoryRefreshRequested:Fire({
+				Reason = "MarketplaceCancelListing",
+				Force = true,
+			})
+			setStatus("Listing cancelled.")
+
+			if requestMarketplaceMySales then
+				task.delay(0.4, function()
+					requestMarketplaceMySales({
+						Queue = true,
+					})
+				end)
+			end
+
+			if requestMarketplaceOffers then
+				task.delay(0.5, function()
+					requestMarketplaceOffers({
+						Queue = true,
+					})
+				end)
+			end
+		else
+			setStatus(message ~= "" and message or "Could not cancel listing.")
+		end
+
+		if catalogViewMode == CATALOG_VIEW_MARKETPLACE then
+			renderMarketplace()
+		end
+	end
+end)
+
 furnitureCatalogResult.OnClientEvent:Connect(function(response)
 	if typeof(response) ~= "table" then
 		return
@@ -1679,7 +2551,10 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 			renderCatalog(data.Items)
 		else
 			renderCatalog({})
-			setStatus(message)
+
+			if catalogViewMode == CATALOG_VIEW_SHOP then
+				setStatus(message)
+			end
 		end
 
 		return
