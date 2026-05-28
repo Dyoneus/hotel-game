@@ -148,6 +148,31 @@ local function normalizeInventoryCounts(inventory)
 	return normalized
 end
 
+local function normalizeInventorySubsetCount(subsetCount, totalCount)
+	if not isPositiveInteger(totalCount) then
+		return nil
+	end
+
+	if not isPositiveInteger(subsetCount) then
+		return nil
+	end
+
+	-- Equality is valid: all remaining copies can be untradable or unsellable.
+	return math.min(subsetCount, totalCount)
+end
+
+local function setInventorySubsetCount(subsetInventory, templateId, subsetCount, totalCount)
+	local normalizedCount = normalizeInventorySubsetCount(subsetCount, totalCount)
+
+	if normalizedCount then
+		subsetInventory[templateId] = normalizedCount
+	else
+		subsetInventory[templateId] = nil
+	end
+
+	return normalizedCount or 0
+end
+
 local function ensureInventory(profile)
 	local inventory = normalizeInventoryCounts(profile.Inventory)
 	local untradable = normalizeInventoryCounts(profile.InventoryUntradable)
@@ -156,21 +181,13 @@ local function ensureInventory(profile)
 	for templateId, untradableCount in pairs(untradable) do
 		local totalCount = inventory[templateId] or 0
 
-		if totalCount <= 0 then
-			untradable[templateId] = nil
-		elseif untradableCount > totalCount then
-			untradable[templateId] = totalCount
-		end
+		setInventorySubsetCount(untradable, templateId, untradableCount, totalCount)
 	end
 
 	for templateId, unsellableCount in pairs(unsellable) do
 		local totalCount = inventory[templateId] or 0
 
-		if totalCount <= 0 then
-			unsellable[templateId] = nil
-		elseif unsellableCount > totalCount then
-			unsellable[templateId] = totalCount
-		end
+		setInventorySubsetCount(unsellable, templateId, unsellableCount, totalCount)
 	end
 
 	profile.Inventory = inventory
@@ -448,10 +465,10 @@ end
 local function getInventoryCountDetails(profile, templateId)
 	local inventory, untradable, unsellable = ensureInventory(profile)
 	local total = inventory[templateId] or 0
-	local untradableCount = math.min(untradable[templateId] or 0, total)
-	local tradableCount = total - untradableCount
-	local unsellableCount = math.min(unsellable[templateId] or 0, total)
-	local sellableCount = total - unsellableCount
+	local untradableCount = normalizeInventorySubsetCount(untradable[templateId], total) or 0
+	local tradableCount = math.max(0, total - untradableCount)
+	local unsellableCount = normalizeInventorySubsetCount(unsellable[templateId], total) or 0
+	local sellableCount = math.max(0, total - unsellableCount)
 
 	return {
 		Total = total,
@@ -680,7 +697,10 @@ local MARKETPLACE_LISTING_FIELDS = {
 	ExpiresAt = true,
 	BuyerUserId = true,
 	TransactionId = true,
+	Escrowed = true,
+	ReturnTradable = true,
 	ReturnSellable = true,
+	LegacyNoEscrow = true,
 }
 
 local function isValidListingRecord(listingRecord)
@@ -695,6 +715,10 @@ local function isValidListingRecord(listingRecord)
 		and listingRecord.CurrencyKey ~= ""
 		and typeof(listingRecord.Status) == "string"
 		and listingRecord.Status ~= ""
+		and (listingRecord.Escrowed == nil or typeof(listingRecord.Escrowed) == "boolean")
+		and (listingRecord.ReturnTradable == nil or typeof(listingRecord.ReturnTradable) == "boolean")
+		and (listingRecord.ReturnSellable == nil or typeof(listingRecord.ReturnSellable) == "boolean")
+		and (listingRecord.LegacyNoEscrow == nil or typeof(listingRecord.LegacyNoEscrow) == "boolean")
 end
 
 local function copyMarketplaceListing(listingRecord)
@@ -1207,12 +1231,150 @@ function RoomPersistence.UpdateMarketplaceListing(player, listingId, updates)
 		end
 	end
 
+	if updates.Escrowed ~= nil then
+		if typeof(updates.Escrowed) ~= "boolean" then
+			return false, "Invalid marketplace escrow state."
+		end
+
+		listingRecord.Escrowed = updates.Escrowed
+	end
+
+	if updates.ReturnTradable ~= nil then
+		if typeof(updates.ReturnTradable) ~= "boolean" then
+			return false, "Invalid marketplace tradable return state."
+		end
+
+		listingRecord.ReturnTradable = updates.ReturnTradable
+	end
+
+	if updates.ReturnSellable ~= nil then
+		if typeof(updates.ReturnSellable) ~= "boolean" then
+			return false, "Invalid marketplace sellable return state."
+		end
+
+		listingRecord.ReturnSellable = updates.ReturnSellable
+	end
+
+	if updates.LegacyNoEscrow ~= nil then
+		if typeof(updates.LegacyNoEscrow) ~= "boolean" then
+			return false, "Invalid marketplace legacy escrow state."
+		end
+
+		listingRecord.LegacyNoEscrow = updates.LegacyNoEscrow
+	end
+
 	listingRecord.UpdatedAt = os.time()
 	profile.UpdatedAt = os.time()
 
 	RoomPersistence.QueueSave(player)
 
 	return true, "Marketplace listing updated.", deepCopy(listingRecord)
+end
+
+function RoomPersistence.CancelMarketplaceListingWithEscrowReturn(player, listingId, sellerUserId)
+	if typeof(listingId) ~= "string" or listingId == "" then
+		return false, "Invalid marketplace listing.", nil, nil
+	end
+
+	if not isPositiveInteger(sellerUserId) then
+		return false, "Invalid marketplace seller.", nil, nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil, nil
+	end
+
+	local listings = ensureMarketplaceListings(profile)
+	local listingRecord = listings[listingId]
+
+	if not listingRecord then
+		return false, "Marketplace listing not found.", nil, nil
+	end
+
+	if listingRecord.SellerUserId ~= sellerUserId then
+		return false, "Only the seller can cancel this listing.", nil, nil
+	end
+
+	if listingRecord.Status ~= "Active" then
+		return false, "This listing is no longer active.", nil, nil
+	end
+
+	if listingRecord.Escrowed ~= true then
+		return false, "Marketplace listing is not escrowed.", nil, nil
+	end
+
+	local returned, returnMessage, _, inventoryDetails =
+		RoomPersistence.ReturnMarketplaceListableInventoryItem(
+			player,
+			listingRecord.TemplateId,
+			listingRecord.Quantity,
+			{
+				ReturnTradable = listingRecord.ReturnTradable,
+				ReturnSellable = listingRecord.ReturnSellable,
+			}
+		)
+
+	if not returned then
+		return false, returnMessage or "Could not return listed item.", nil, inventoryDetails
+	end
+
+	local now = os.time()
+	listingRecord.Status = "Cancelled"
+	listingRecord.Escrowed = false
+	listingRecord.UpdatedAt = now
+	profile.UpdatedAt = now
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Marketplace listing cancelled.", deepCopy(listingRecord), inventoryDetails
+end
+
+function RoomPersistence.CancelLegacyMarketplaceListingWithoutEscrowReturn(player, listingId, sellerUserId)
+	if typeof(listingId) ~= "string" or listingId == "" then
+		return false, "Invalid marketplace listing.", nil
+	end
+
+	if not isPositiveInteger(sellerUserId) then
+		return false, "Invalid marketplace seller.", nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local listings = ensureMarketplaceListings(profile)
+	local listingRecord = listings[listingId]
+
+	if not listingRecord then
+		return false, "Marketplace listing not found.", nil
+	end
+
+	if listingRecord.SellerUserId ~= sellerUserId then
+		return false, "Only the seller can cancel this listing.", nil
+	end
+
+	if listingRecord.Status ~= "Active" then
+		return false, "This listing is no longer active.", nil
+	end
+
+	if listingRecord.Escrowed == true then
+		return false, "Marketplace listing is escrowed.", nil
+	end
+
+	local now = os.time()
+	listingRecord.Status = "Cancelled"
+	listingRecord.Escrowed = false
+	listingRecord.LegacyNoEscrow = true
+	listingRecord.UpdatedAt = now
+	profile.UpdatedAt = now
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Legacy marketplace listing cancelled.", deepCopy(listingRecord)
 end
 
 function RoomPersistence.GetRoomDirectorySnapshot(player)
@@ -1871,11 +2033,11 @@ function RoomPersistence.AddInventoryItem(player, templateId, amount, options)
 	inventory[templateId] = newCount
 
 	if typeof(options) == "table" and options.Tradable == false then
-		untradable[templateId] = (untradable[templateId] or 0) + amount
+		setInventorySubsetCount(untradable, templateId, (untradable[templateId] or 0) + amount, newCount)
 	end
 
 	if typeof(options) == "table" and options.Sellable == false then
-		unsellable[templateId] = (unsellable[templateId] or 0) + amount
+		setInventorySubsetCount(unsellable, templateId, (unsellable[templateId] or 0) + amount, newCount)
 	end
 
 	local details = getInventoryCountDetails(profile, templateId)
@@ -1964,17 +2126,8 @@ function RoomPersistence.RemoveInventoryItem(player, templateId, amount, options
 		inventory[templateId] = nil
 	end
 
-	if newUntradable > 0 and newCount > 0 then
-		untradable[templateId] = math.min(newUntradable, newCount)
-	else
-		untradable[templateId] = nil
-	end
-
-	if newUnsellable > 0 and newCount > 0 then
-		unsellable[templateId] = math.min(newUnsellable, newCount)
-	else
-		unsellable[templateId] = nil
-	end
+	setInventorySubsetCount(untradable, templateId, newUntradable, newCount)
+	setInventorySubsetCount(unsellable, templateId, newUnsellable, newCount)
 
 	local details = getInventoryCountDetails(profile, templateId)
 	details.ConsumedTradable = consumedTradable > 0
@@ -2006,43 +2159,88 @@ function RoomPersistence.RemoveMarketplaceListableInventoryItem(player, template
 		return false, "Profile is not loaded.", nil
 	end
 
-	local inventory, untradable, unsellable = ensureInventory(profile)
-	local currentCount = inventory[templateId] or 0
-	local details = getInventoryCountDetails(profile, templateId)
-	local currentTradable = math.max(details.Tradable or 0, 0)
+	ensureInventory(profile)
 
-	if currentTradable < amount then
-		return false, "You do not have enough tradable copies to list.", currentCount, details
+	local inventory = profile.Inventory
+	local untradable = profile.InventoryUntradable
+	local unsellable = profile.InventoryUnsellable
+	local oldTotal = inventory[templateId] or 0
+	local oldUntradable = untradable[templateId] or 0
+	local oldUnsellable = unsellable[templateId] or 0
+	local oldTradable = math.max(0, oldTotal - oldUntradable)
+
+	if oldTradable < amount then
+		return false, "You do not have enough tradable copies to list.", oldTotal, getInventoryCountDetails(profile, templateId)
 	end
 
-	local newCount = currentCount - amount
-	local currentUntradable = math.min(untradable[templateId] or 0, currentCount)
-	local currentUnsellable = math.min(unsellable[templateId] or 0, currentCount)
+	local newTotal = oldTotal - amount
+	local newUntradable = math.min(oldUntradable, newTotal)
+	local newUnsellable = math.min(oldUnsellable, newTotal)
 
-	if newCount > 0 then
-		inventory[templateId] = newCount
+	if newTotal > 0 then
+		inventory[templateId] = newTotal
 	else
 		inventory[templateId] = nil
 	end
 
-	if newCount <= 0 then
-		untradable[templateId] = nil
-		unsellable[templateId] = nil
+	if newUntradable > 0 then
+		untradable[templateId] = newUntradable
 	else
-		local newUntradable = math.min(currentUntradable, newCount)
-		local newUnsellable = math.min(currentUnsellable, newCount)
+		untradable[templateId] = nil
+	end
 
-		if newUntradable > 0 then
-			untradable[templateId] = newUntradable
+	if newUnsellable > 0 then
+		unsellable[templateId] = newUnsellable
+	else
+		unsellable[templateId] = nil
+	end
+
+	local afterTotal = inventory[templateId] or 0
+	local afterUntradable = untradable[templateId] or 0
+	local afterTradable = math.max(0, afterTotal - afterUntradable)
+	local expectedAfterTradable = oldTradable - amount
+
+	if afterTotal ~= newTotal
+		or afterUntradable ~= newUntradable
+		or afterTradable ~= expectedAfterTradable then
+
+		warn(
+			"Marketplace escrow verification failed",
+			"templateId=", templateId,
+			"oldTotal=", oldTotal,
+			"oldUntradable=", oldUntradable,
+			"oldTradable=", oldTradable,
+			"quantity=", amount,
+			"newTotal=", newTotal,
+			"newUntradable=", newUntradable,
+			"afterTotal=", afterTotal,
+			"afterUntradable=", afterUntradable,
+			"afterTradable=", afterTradable,
+			"expectedAfterTradable=", expectedAfterTradable
+		)
+
+		if oldTotal > 0 then
+			inventory[templateId] = oldTotal
+		else
+			inventory[templateId] = nil
+		end
+
+		if oldUntradable > 0 then
+			untradable[templateId] = oldUntradable
 		else
 			untradable[templateId] = nil
 		end
 
-		if newUnsellable > 0 then
-			unsellable[templateId] = newUnsellable
+		if oldUnsellable > 0 then
+			unsellable[templateId] = oldUnsellable
 		else
 			unsellable[templateId] = nil
 		end
+
+		return false,
+			"Marketplace escrow failed. Please try again.",
+			oldTotal,
+			getInventoryCountDetails(profile, templateId)
 	end
 
 	local updatedDetails = getInventoryCountDetails(profile, templateId)
@@ -2050,20 +2248,25 @@ function RoomPersistence.RemoveMarketplaceListableInventoryItem(player, template
 
 	RoomPersistence.QueueSave(player)
 
-	return true, "Marketplace tradable inventory item removed.", newCount, updatedDetails
+	return true, "Marketplace tradable inventory item removed.", newTotal, updatedDetails
 end
 
 function RoomPersistence.ReturnMarketplaceListableInventoryItem(player, templateId, amount, options)
+	local returnTradable = true
 	local returnSellable = true
 
 	-- Current marketplace escrow stores aggregate counts; future item-instance
 	-- tracking can set ReturnSellable to preserve the exact sellable state.
+	if typeof(options) == "table" and typeof(options.ReturnTradable) == "boolean" then
+		returnTradable = options.ReturnTradable
+	end
+
 	if typeof(options) == "table" and typeof(options.ReturnSellable) == "boolean" then
 		returnSellable = options.ReturnSellable
 	end
 
 	return RoomPersistence.AddInventoryItem(player, templateId, amount, {
-		Tradable = true,
+		Tradable = returnTradable,
 		Sellable = returnSellable,
 	})
 end
@@ -2107,17 +2310,8 @@ function RoomPersistence.RemoveSellableInventoryItem(player, templateId, amount)
 		inventory[templateId] = nil
 	end
 
-	if newUntradable > 0 and newCount > 0 then
-		untradable[templateId] = math.min(newUntradable, newCount)
-	else
-		untradable[templateId] = nil
-	end
-
-	if newUnsellable > 0 and newCount > 0 then
-		unsellable[templateId] = math.min(newUnsellable, newCount)
-	else
-		unsellable[templateId] = nil
-	end
+	setInventorySubsetCount(untradable, templateId, newUntradable, newCount)
+	setInventorySubsetCount(unsellable, templateId, newUnsellable, newCount)
 
 	local details = getInventoryCountDetails(profile, templateId)
 	details.ConsumedTradable = consumedTradable > 0

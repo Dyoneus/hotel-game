@@ -28,6 +28,7 @@ MarketplaceService.STATUS_CANCELLED = "Cancelled"
 MarketplaceService.STATUS_EXPIRED = "Expired"
 
 local LISTINGS_DISABLED_MESSAGE = "Marketplace listings are not enabled yet."
+local marketplaceMutationLocksByUserId = {}
 
 local function trimString(value)
 	if typeof(value) ~= "string" then
@@ -136,6 +137,23 @@ local function getTradableCount(details)
 		or 0
 end
 
+local function getInventoryDetailsForTemplate(player, templateId)
+	local detailsSnapshot = RoomPersistence.GetInventoryDetailsSnapshot(player)
+	local details = detailsSnapshot[templateId]
+
+	if typeof(details) == "table" then
+		return details
+	end
+
+	return {
+		Total = 0,
+		Tradable = 0,
+		Untradable = 0,
+		Sellable = 0,
+		Unsellable = 0,
+	}
+end
+
 local function countActiveListings(listings)
 	local count = 0
 
@@ -160,6 +178,47 @@ local function normalizeListingId(listingId)
 	end
 
 	return normalized
+end
+
+local function beginMarketplaceMutation(player)
+	if not playerIsValid(player) then
+		return false, "Invalid player."
+	end
+
+	local userId = player.UserId
+
+	if marketplaceMutationLocksByUserId[userId] then
+		return false, "Marketplace is busy. Please try again."
+	end
+
+	marketplaceMutationLocksByUserId[userId] = true
+	return true, nil
+end
+
+local function finishMarketplaceMutation(player)
+	if player and typeof(player.UserId) == "number" then
+		marketplaceMutationLocksByUserId[player.UserId] = nil
+	end
+end
+
+local function runMarketplaceMutation(player, callback)
+	local locked, lockMessage = beginMarketplaceMutation(player)
+
+	if not locked then
+		return false, lockMessage
+	end
+
+	local success, resultSuccess, resultMessage, resultListing, resultInventoryDetails =
+		pcall(callback)
+
+	finishMarketplaceMutation(player)
+
+	if not success then
+		warn("Marketplace mutation failed:", resultSuccess)
+		return false, "Marketplace request failed."
+	end
+
+	return resultSuccess, resultMessage, resultListing, resultInventoryDetails
 end
 
 function MarketplaceService.PlayerCanListItem(player, templateId, quantity)
@@ -300,6 +359,9 @@ function MarketplaceService.BuildListingRecord(sellerUserId, templateId, quantit
 		ExpiresAt = nil,
 		BuyerUserId = nil,
 		TransactionId = nil,
+		Escrowed = true,
+		ReturnTradable = true,
+		ReturnSellable = true,
 	}
 end
 
@@ -318,6 +380,8 @@ function MarketplaceService.GetPublicListingSnapshot(listing)
 		Status = listing.Status,
 		CreatedAt = listing.CreatedAt,
 		ExpiresAt = listing.ExpiresAt,
+		Escrowed = listing.Escrowed == true,
+		LegacyNoEscrow = listing.LegacyNoEscrow == true,
 	}
 end
 
@@ -347,131 +411,200 @@ function MarketplaceService.GetListingTotalPrice(listingOrQuantity, unitPriceCoi
 end
 
 function MarketplaceService.CreateListing(player, templateId, quantity, unitPriceCoins)
-	local valid, validationMessage, listingData =
-		MarketplaceService.ValidateListingRequest(player, templateId, quantity, unitPriceCoins)
+	return runMarketplaceMutation(player, function()
+		local valid, validationMessage, listingData =
+			MarketplaceService.ValidateListingRequest(player, templateId, quantity, unitPriceCoins)
 
-	if not valid then
-		return false, validationMessage or "Invalid listing request."
-	end
+		if not valid then
+			return false, validationMessage or "Invalid listing request."
+		end
 
-	local listings = RoomPersistence.GetMarketplaceListingsSnapshot(player)
+		local listings = RoomPersistence.GetMarketplaceListingsSnapshot(player)
 
-	if countActiveListings(listings) >= MarketplaceService.MAX_ACTIVE_LISTINGS_PER_PLAYER then
-		return false, "You have too many active marketplace listings."
-	end
+		if countActiveListings(listings) >= MarketplaceService.MAX_ACTIVE_LISTINGS_PER_PLAYER then
+			return false, "You have too many active marketplace listings."
+		end
 
-	local removed, removeMessage, _, inventoryDetails =
-		RoomPersistence.RemoveMarketplaceListableInventoryItem(
-			player,
-			listingData.TemplateId,
-			listingData.Quantity
-		)
+		local beforeDetails = getInventoryDetailsForTemplate(player, listingData.TemplateId)
+		local beforeTradable = getTradableCount(beforeDetails)
 
-	if not removed then
-		return false, removeMessage or "Could not escrow item for listing.", nil, inventoryDetails
-	end
+		if beforeTradable < listingData.Quantity then
+			return false, "You do not have enough tradable copies to list."
+		end
 
-	local listingRecord = MarketplaceService.BuildListingRecord(
-		player.UserId,
-		listingData.TemplateId,
-		listingData.Quantity,
-		listingData.UnitPriceCoins
-	)
-
-	if not listingRecord then
-		RoomPersistence.ReturnMarketplaceListableInventoryItem(
-			player,
-			listingData.TemplateId,
-			listingData.Quantity
-		)
-
-		return false, "Could not create marketplace listing.", nil, inventoryDetails
-	end
-
-	local added, addMessage = RoomPersistence.AddMarketplaceListing(player, listingRecord)
-
-	if not added then
-		local returned, _, _, returnDetails =
-			RoomPersistence.ReturnMarketplaceListableInventoryItem(
+		local removed, removeMessage, _, inventoryDetails =
+			RoomPersistence.RemoveMarketplaceListableInventoryItem(
 				player,
 				listingData.TemplateId,
 				listingData.Quantity
 			)
 
-		return false,
-			addMessage or "Could not save marketplace listing.",
-			nil,
-			returned and returnDetails or inventoryDetails
-	end
+		if not removed then
+			return false, removeMessage or "Could not escrow item for listing.", nil, inventoryDetails
+		end
 
-	return true,
-		"Marketplace listing created.",
-		MarketplaceService.GetPublicListingSnapshot(listingRecord),
-		inventoryDetails
+		local afterDetails = typeof(inventoryDetails) == "table"
+			and inventoryDetails
+			or getInventoryDetailsForTemplate(player, listingData.TemplateId)
+		local afterTradable = getTradableCount(afterDetails)
+
+		if afterTradable ~= beforeTradable - listingData.Quantity
+			or afterTradable >= beforeTradable then
+
+			warn(
+				"Marketplace CreateListing escrow verification failed",
+				"player=", player.UserId,
+				"templateId=", listingData.TemplateId,
+				"oldTradable=", beforeTradable,
+				"quantity=", listingData.Quantity,
+				"afterTradable=", afterTradable,
+				"expectedAfterTradable=", beforeTradable - listingData.Quantity
+			)
+
+			local returned, _, _, returnDetails =
+				RoomPersistence.ReturnMarketplaceListableInventoryItem(
+					player,
+					listingData.TemplateId,
+					listingData.Quantity,
+					{
+						ReturnTradable = true,
+						ReturnSellable = true,
+					}
+				)
+
+			return false,
+				"Marketplace escrow failed. Please try again.",
+				nil,
+				returned and returnDetails or afterDetails
+		end
+
+		inventoryDetails = afterDetails
+
+		local listingRecord = MarketplaceService.BuildListingRecord(
+			player.UserId,
+			listingData.TemplateId,
+			listingData.Quantity,
+			listingData.UnitPriceCoins
+		)
+
+		if not listingRecord then
+			local returned, _, _, returnDetails =
+				RoomPersistence.ReturnMarketplaceListableInventoryItem(
+					player,
+					listingData.TemplateId,
+					listingData.Quantity,
+					{
+						ReturnTradable = true,
+						ReturnSellable = true,
+					}
+				)
+
+			return false,
+				"Could not create marketplace listing.",
+				nil,
+				returned and returnDetails or inventoryDetails
+		end
+
+		local added, addMessage = RoomPersistence.AddMarketplaceListing(player, listingRecord)
+
+		if not added then
+			local returned, _, _, returnDetails =
+				RoomPersistence.ReturnMarketplaceListableInventoryItem(
+					player,
+					listingData.TemplateId,
+					listingData.Quantity,
+					{
+						ReturnTradable = listingRecord.ReturnTradable,
+						ReturnSellable = listingRecord.ReturnSellable,
+					}
+				)
+			local restoredDetails = getInventoryDetailsForTemplate(player, listingData.TemplateId)
+
+			if getTradableCount(restoredDetails) < beforeTradable then
+				warn(
+					"Marketplace listing save failed and escrow rollback did not restore tradable inventory for",
+					player.UserId,
+					listingData.TemplateId
+				)
+			end
+
+			return false,
+				addMessage or "Could not save marketplace listing.",
+				nil,
+				returned and returnDetails or restoredDetails
+		end
+
+		return true,
+			"Marketplace listing created.",
+			MarketplaceService.GetPublicListingSnapshot(listingRecord),
+			inventoryDetails
+	end)
 end
 
 function MarketplaceService.CancelListing(player, listingId)
-	if not playerIsValid(player) then
-		return false, "Invalid player."
-	end
+	return runMarketplaceMutation(player, function()
+		if not playerIsValid(player) then
+			return false, "Invalid player."
+		end
 
-	if not getLoadedProfile(player) then
-		return false, "Profile is not loaded."
-	end
+		if not getLoadedProfile(player) then
+			return false, "Profile is not loaded."
+		end
 
-	local normalizedListingId = normalizeListingId(listingId)
+		local normalizedListingId = normalizeListingId(listingId)
 
-	if not normalizedListingId then
-		return false, "Invalid marketplace listing."
-	end
+		if not normalizedListingId then
+			return false, "Invalid marketplace listing."
+		end
 
-	local listing = RoomPersistence.GetMarketplaceListing(player, normalizedListingId)
+		local listing = RoomPersistence.GetMarketplaceListing(player, normalizedListingId)
 
-	if not listing then
-		return false, "Marketplace listing not found."
-	end
+		if not listing then
+			return false, "Marketplace listing not found."
+		end
 
-	if listing.SellerUserId ~= player.UserId then
-		return false, "Only the seller can cancel this listing."
-	end
+		if listing.SellerUserId ~= player.UserId then
+			return false, "Only the seller can cancel this listing."
+		end
 
-	if listing.Status ~= MarketplaceService.STATUS_ACTIVE then
-		return false, "This listing is no longer active."
-	end
+		if listing.Status ~= MarketplaceService.STATUS_ACTIVE then
+			return false, "This listing is no longer active."
+		end
 
-	local updated, updateMessage =
-		RoomPersistence.UpdateMarketplaceListing(player, normalizedListingId, {
-			Status = MarketplaceService.STATUS_CANCELLED,
-		})
+		if listing.Escrowed ~= true then
+			local legacyCancelled, legacyMessage, legacyListing =
+				RoomPersistence.CancelLegacyMarketplaceListingWithoutEscrowReturn(
+					player,
+					normalizedListingId,
+					player.UserId
+				)
 
-	if not updated then
-		return false, updateMessage or "Could not cancel marketplace listing."
-	end
+			if not legacyCancelled then
+				return false, legacyMessage or "Could not cancel legacy marketplace listing."
+			end
 
-	local returned, returnMessage, _, inventoryDetails =
-		RoomPersistence.ReturnMarketplaceListableInventoryItem(
-			player,
-			listing.TemplateId,
-			listing.Quantity,
-			{
-				ReturnSellable = listing.ReturnSellable,
-			}
-		)
+			return true,
+				"Legacy marketplace listing cancelled.",
+				MarketplaceService.GetPublicListingSnapshot(legacyListing),
+				nil
+		end
 
-	if not returned then
-		RoomPersistence.UpdateMarketplaceListing(player, normalizedListingId, {
-			Status = MarketplaceService.STATUS_ACTIVE,
-		})
+		local cancelled, cancelMessage, cancelledListing, inventoryDetails =
+			RoomPersistence.CancelMarketplaceListingWithEscrowReturn(
+				player,
+				normalizedListingId,
+				player.UserId
+			)
 
-		return false, returnMessage or "Could not return listed item.", nil, inventoryDetails
-	end
+		if not cancelled then
+			return false, cancelMessage or "Could not cancel marketplace listing.", nil, inventoryDetails
+		end
 
-	local cancelledListing = RoomPersistence.GetMarketplaceListing(player, normalizedListingId) or listing
-
-	return true,
-		"Marketplace listing cancelled.",
-		MarketplaceService.GetPublicListingSnapshot(cancelledListing),
-		inventoryDetails
+		return true,
+			"Marketplace listing cancelled.",
+			MarketplaceService.GetPublicListingSnapshot(cancelledListing),
+			inventoryDetails
+	end)
 end
 
 function MarketplaceService.GetMyListings(player)
@@ -508,5 +641,9 @@ end
 function MarketplaceService.PurchaseListing(player, listingId)
 	return false, "Marketplace purchases are not enabled yet."
 end
+
+Players.PlayerRemoving:Connect(function(player)
+	marketplaceMutationLocksByUserId[player.UserId] = nil
+end)
 
 return MarketplaceService

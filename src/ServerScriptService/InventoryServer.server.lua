@@ -40,6 +40,8 @@ local inventoryResult = getOrCreateRemoteEvent("InventoryResult")
 local REQUEST_COOLDOWN_SECONDS = 0.5
 local SELL_COOLDOWN_SECONDS = 0.35
 local MAX_SELL_QUANTITY = 99
+local DEBUG_GET_INVENTORY = false
+local DEBUG_GET_INVENTORY_TEMPLATE_ID = "Chair_01"
 local lastRequestAtByUserId = {}
 local lastSellRequestAtByUserId = {}
 
@@ -68,6 +70,36 @@ local function sendPayload(player, payload)
 	payload.Message = tostring(payload.Message or "")
 
 	inventoryResult:FireClient(player, payload)
+end
+
+local function debugGetInventorySnapshot(player, inventory, inventoryDetails)
+	if not DEBUG_GET_INVENTORY then
+		return
+	end
+
+	local templateId = DEBUG_GET_INVENTORY_TEMPLATE_ID
+	local details = typeof(inventoryDetails) == "table" and inventoryDetails[templateId] or nil
+
+	print(
+		"InventoryServer GetInventory",
+		"userId=", player.UserId,
+		"Inventory." .. templateId .. "=", typeof(inventory) == "table" and inventory[templateId] or nil,
+		"Total=", typeof(details) == "table" and details.Total or nil,
+		"Tradable=", typeof(details) == "table" and details.Tradable or nil
+	)
+end
+
+local function getCurrentInventoryPayload(player)
+	if not RoomPersistence.GetProfile(player) then
+		return false, "Profile is not loaded.", {}, {}
+	end
+
+	local inventory = RoomPersistence.GetInventorySnapshot(player)
+	local inventoryDetails = RoomPersistence.GetInventoryDetailsSnapshot(player)
+
+	debugGetInventorySnapshot(player, inventory, inventoryDetails)
+
+	return true, "Inventory loaded.", inventory, inventoryDetails
 end
 
 local function checkCooldown(player)
@@ -295,10 +327,9 @@ inventoryRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	end
 
 	if actionName == "GetInventory" then
-		local snapshot = RoomPersistence.GetInventorySnapshot(player)
-		local detailsSnapshot = RoomPersistence.GetInventoryDetailsSnapshot(player)
+		local success, message, inventory, inventoryDetails = getCurrentInventoryPayload(player)
 
-		sendResult(player, "Inventory", true, "Inventory loaded.", snapshot, detailsSnapshot)
+		sendResult(player, "Inventory", success, message, inventory, inventoryDetails)
 		return
 	end
 

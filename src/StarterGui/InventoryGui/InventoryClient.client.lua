@@ -61,7 +61,15 @@ local inventoryViewMode = "Items"
 local marketplaceListingTemplateId = nil
 local marketplaceListingQuantity = 1
 local marketplaceCreateInFlight = false
+local marketplaceCreateRequestSerial = 0
+local pendingCreateListingRequestId = nil
+local pendingCreateListingTemplateId = nil
+local pendingCreateListingQuantity = 1
+local pendingCreateListingUnitPriceCoins = nil
 local marketplaceMyListingsInFlight = false
+local myListingsLastRequestAt = -math.huge
+local myListingsQueuedRefresh = false
+local myListingsQueuedRefreshScheduled = false
 local marketplaceCancelInFlightByListingId = {}
 local latestMarketplaceListings = {}
 local pendingPlacementTemplateId = nil
@@ -88,6 +96,7 @@ local INVENTORY_VIEW_MY_LISTINGS = "MyListings"
 local MARKETPLACE_MIN_UNIT_PRICE_COINS = 1
 local MARKETPLACE_MAX_UNIT_PRICE_COINS = 999999
 local MARKETPLACE_MAX_LISTING_QUANTITY = 99
+local MY_LISTINGS_LOCAL_COOLDOWN_SECONDS = 0.7
 local PANEL_SCREEN_MARGIN = 12
 
 local function createCorner(parent, radius)
@@ -153,638 +162,639 @@ local setPanelVisible = nil
 local hideInventoryForPlacement = nil
 local restoreInventoryAfterPlacement = nil
 local sellRequestInFlight = false
-
-local openButton = Instance.new("TextButton")
-openButton.Name = "OpenInventoryButton"
-openButton.AnchorPoint = Vector2.new(1, 1)
-openButton.Position = UDim2.new(1, -20, 1, -128)
-openButton.Size = UDim2.fromOffset(150, 44)
-openButton.BackgroundColor3 = Color3.fromRGB(80, 120, 90)
-openButton.BorderSizePixel = 0
-openButton.Text = "Inventory"
-openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-openButton.TextSize = 20
-openButton.Font = Enum.Font.GothamBold
-openButton.Visible = false
-openButton.Parent = gui
-
-createCorner(openButton, 10)
-createStroke(openButton, Color3.fromRGB(255, 255, 255), 1, 0.25)
-
-local panel = Instance.new("Frame")
-panel.Name = "InventoryPanel"
-panel.AnchorPoint = Vector2.new(1, 0.5)
-panel.Position = UDim2.new(1, -24, 0.5, 0)
-panel.Size = UDim2.fromOffset(680, 460)
-panel.BackgroundColor3 = Color3.fromRGB(245, 245, 238)
-panel.BorderSizePixel = 0
-panel.Visible = false
-panel.Parent = gui
-
-createCorner(panel, 16)
-createStroke(panel, Color3.fromRGB(255, 255, 255), 2, 0.1)
-
-local titleLabel = Instance.new("TextLabel")
-titleLabel.Name = "TitleLabel"
-titleLabel.Position = UDim2.fromOffset(18, 14)
-titleLabel.Size = UDim2.new(1, -70, 0, 36)
-titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Inventory"
-titleLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-titleLabel.TextSize = 24
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Font = Enum.Font.GothamBold
-titleLabel.Parent = panel
-
-local closeButton = Instance.new("TextButton")
-closeButton.Name = "CloseButton"
-closeButton.AnchorPoint = Vector2.new(1, 0)
-closeButton.Position = UDim2.new(1, -18, 0, 18)
-closeButton.Size = UDim2.fromOffset(34, 34)
-closeButton.BackgroundColor3 = Color3.fromRGB(160, 70, 70)
-closeButton.BorderSizePixel = 0
-closeButton.Text = "X"
-closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeButton.TextSize = 18
-closeButton.Font = Enum.Font.GothamBold
-closeButton.Parent = panel
-
-createCorner(closeButton, 8)
-
-local dragHandle = Instance.new("Frame")
-dragHandle.Name = "InventoryDragHandle"
-dragHandle.Position = UDim2.fromOffset(0, 0)
-dragHandle.Size = UDim2.new(1, -74, 0, 58)
-dragHandle.BackgroundTransparency = 1
-dragHandle.Active = true
-dragHandle.ZIndex = 5
-dragHandle.Parent = panel
-
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Name = "StatusLabel"
-statusLabel.Position = UDim2.fromOffset(18, 56)
-statusLabel.Size = UDim2.new(1, -36, 0, 28)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = ""
-statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
-statusLabel.TextWrapped = true
-statusLabel.TextSize = 13
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.Parent = panel
-
-local categoryButton = Instance.new("TextButton")
-categoryButton.Name = "CategoryDropdownButton"
-categoryButton.Position = UDim2.fromOffset(18, 92)
-categoryButton.Size = UDim2.new(0, 184, 0, 32)
-categoryButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
-categoryButton.BorderSizePixel = 0
-categoryButton.Text = "Category: All"
-categoryButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-categoryButton.TextSize = 14
-categoryButton.TextXAlignment = Enum.TextXAlignment.Left
-categoryButton.Font = Enum.Font.GothamBold
-categoryButton.ZIndex = 20
-categoryButton.Parent = panel
-
-createCorner(categoryButton, 8)
-createStroke(categoryButton, Color3.fromRGB(210, 215, 220), 1, 0)
-
-local myListingsButton = Instance.new("TextButton")
-myListingsButton.Name = "MyListingsButton"
-myListingsButton.Position = UDim2.fromOffset(210, 92)
-myListingsButton.Size = UDim2.new(0, 108, 0, 32)
-myListingsButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
-myListingsButton.BorderSizePixel = 0
-myListingsButton.Text = "My Listings"
-myListingsButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-myListingsButton.TextSize = 13
-myListingsButton.Font = Enum.Font.GothamBold
-myListingsButton.Parent = panel
-
-createCorner(myListingsButton, 8)
-createStroke(myListingsButton, Color3.fromRGB(210, 215, 220), 1, 0)
-
-local categoryDropdown = Instance.new("ScrollingFrame")
-categoryDropdown.Name = "CategoryDropdownList"
-categoryDropdown.Position = UDim2.fromOffset(18, 128)
-categoryDropdown.Size = UDim2.fromOffset(184, 0)
-categoryDropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-categoryDropdown.BorderSizePixel = 0
-categoryDropdown.CanvasSize = UDim2.fromOffset(0, 0)
-categoryDropdown.ScrollBarThickness = 4
-categoryDropdown.Visible = false
-categoryDropdown.ZIndex = 30
-categoryDropdown.Parent = panel
-
-createCorner(categoryDropdown, 8)
-createStroke(categoryDropdown, Color3.fromRGB(210, 215, 220), 1, 0)
-
-local categoryDropdownLayout = Instance.new("UIListLayout")
-categoryDropdownLayout.SortOrder = Enum.SortOrder.LayoutOrder
-categoryDropdownLayout.Padding = UDim.new(0, 2)
-categoryDropdownLayout.Parent = categoryDropdown
-
-local listFrame = Instance.new("ScrollingFrame")
-listFrame.Name = "InventoryList"
-listFrame.Position = UDim2.fromOffset(18, 138)
-listFrame.Size = UDim2.new(0, 300, 1, -158)
-listFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-listFrame.BorderSizePixel = 0
-listFrame.ScrollBarThickness = 6
-listFrame.CanvasSize = UDim2.fromOffset(0, 0)
-listFrame.Parent = panel
-
-createCorner(listFrame, 12)
-createStroke(listFrame, Color3.fromRGB(220, 220, 220), 1, 0)
-
-local gridLayout = Instance.new("UIGridLayout")
-gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
-gridLayout.CellSize = UDim2.fromOffset(86, 86)
-gridLayout.CellPadding = UDim2.fromOffset(8, 8)
-gridLayout.Parent = listFrame
-
-local listPadding = Instance.new("UIPadding")
-listPadding.PaddingTop = UDim.new(0, 10)
-listPadding.PaddingBottom = UDim.new(0, 10)
-listPadding.PaddingLeft = UDim.new(0, 10)
-listPadding.PaddingRight = UDim.new(0, 10)
-listPadding.Parent = listFrame
-
-local detailsPanel = Instance.new("Frame")
-detailsPanel.Name = "SelectedItemDetails"
-detailsPanel.Position = UDim2.new(0, 334, 0, 92)
-detailsPanel.Size = UDim2.new(1, -352, 1, -112)
-detailsPanel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-detailsPanel.BorderSizePixel = 0
-detailsPanel.Parent = panel
-
-createCorner(detailsPanel, 12)
-createStroke(detailsPanel, Color3.fromRGB(220, 220, 220), 1, 0)
-
-local detailsTitle = Instance.new("TextLabel")
-detailsTitle.Name = "DetailsTitle"
-detailsTitle.Position = UDim2.fromOffset(16, 14)
-detailsTitle.Size = UDim2.new(1, -32, 0, 28)
-detailsTitle.BackgroundTransparency = 1
-detailsTitle.Text = "Select an item"
-detailsTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
-detailsTitle.TextSize = 20
-detailsTitle.TextXAlignment = Enum.TextXAlignment.Left
-detailsTitle.TextTruncate = Enum.TextTruncate.AtEnd
-detailsTitle.Font = Enum.Font.GothamBold
-detailsTitle.Parent = detailsPanel
-
-local detailsSubtitle = Instance.new("TextLabel")
-detailsSubtitle.Name = "DetailsSubtitle"
-detailsSubtitle.Position = UDim2.fromOffset(16, 46)
-detailsSubtitle.Size = UDim2.new(1, -32, 0, 20)
-detailsSubtitle.BackgroundTransparency = 1
-detailsSubtitle.Text = ""
-detailsSubtitle.TextColor3 = Color3.fromRGB(85, 85, 85)
-detailsSubtitle.TextSize = 13
-detailsSubtitle.TextXAlignment = Enum.TextXAlignment.Left
-detailsSubtitle.TextTruncate = Enum.TextTruncate.AtEnd
-detailsSubtitle.Font = Enum.Font.Gotham
-detailsSubtitle.Parent = detailsPanel
-
-local detailsDescription = Instance.new("TextLabel")
-detailsDescription.Name = "DetailsDescription"
-detailsDescription.Position = UDim2.fromOffset(16, 72)
-detailsDescription.Size = UDim2.new(1, -32, 0, 44)
-detailsDescription.BackgroundTransparency = 1
-detailsDescription.Text = "Choose an owned furniture item to see details."
-detailsDescription.TextColor3 = Color3.fromRGB(90, 90, 90)
-detailsDescription.TextSize = 13
-detailsDescription.TextWrapped = true
-detailsDescription.TextXAlignment = Enum.TextXAlignment.Left
-detailsDescription.TextYAlignment = Enum.TextYAlignment.Top
-detailsDescription.Font = Enum.Font.Gotham
-detailsDescription.Parent = detailsPanel
-
-local ownershipLabel = Instance.new("TextLabel")
-ownershipLabel.Name = "OwnershipLabel"
-ownershipLabel.Position = UDim2.fromOffset(16, 126)
-ownershipLabel.Size = UDim2.new(1, -32, 0, 84)
-ownershipLabel.BackgroundTransparency = 1
-ownershipLabel.Text = ""
-ownershipLabel.TextColor3 = Color3.fromRGB(55, 60, 55)
-ownershipLabel.TextSize = 13
-ownershipLabel.TextWrapped = true
-ownershipLabel.TextXAlignment = Enum.TextXAlignment.Left
-ownershipLabel.TextYAlignment = Enum.TextYAlignment.Top
-ownershipLabel.Font = Enum.Font.GothamMedium
-ownershipLabel.Parent = detailsPanel
-
-local placeButton = Instance.new("TextButton")
-placeButton.Name = "PlaceToRoomButton"
-placeButton.Position = UDim2.new(0, 16, 0, 218)
-placeButton.Size = UDim2.new(1, -32, 0, 34)
-placeButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
-placeButton.BorderSizePixel = 0
-placeButton.Text = "Place to room"
-placeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-placeButton.TextSize = 15
-placeButton.Font = Enum.Font.GothamBold
-placeButton.Parent = detailsPanel
-
-createCorner(placeButton, 8)
-
-local sellControlsFrame = Instance.new("Frame")
-sellControlsFrame.Name = "SellControls"
-sellControlsFrame.Position = UDim2.new(0, 16, 0, 264)
-sellControlsFrame.Size = UDim2.new(1, -32, 0, 34)
-sellControlsFrame.BackgroundTransparency = 1
-sellControlsFrame.Parent = detailsPanel
-
-local sellDecreaseButton = Instance.new("TextButton")
-sellDecreaseButton.Name = "DecreaseSellQuantityButton"
-sellDecreaseButton.Position = UDim2.fromOffset(0, 0)
-sellDecreaseButton.Size = UDim2.fromOffset(34, 34)
-sellDecreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
-sellDecreaseButton.BorderSizePixel = 0
-sellDecreaseButton.Text = "<"
-sellDecreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-sellDecreaseButton.TextSize = 15
-sellDecreaseButton.Font = Enum.Font.GothamBold
-sellDecreaseButton.Parent = sellControlsFrame
-
-createCorner(sellDecreaseButton, 8)
-
-local sellQuantityLabel = Instance.new("TextLabel")
-sellQuantityLabel.Name = "SellQuantityLabel"
-sellQuantityLabel.Position = UDim2.fromOffset(40, 0)
-sellQuantityLabel.Size = UDim2.fromOffset(42, 34)
-sellQuantityLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
-sellQuantityLabel.BorderSizePixel = 0
-sellQuantityLabel.Text = "1"
-sellQuantityLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-sellQuantityLabel.TextSize = 14
-sellQuantityLabel.Font = Enum.Font.GothamBold
-sellQuantityLabel.Parent = sellControlsFrame
-
-createCorner(sellQuantityLabel, 8)
-
-local sellIncreaseButton = Instance.new("TextButton")
-sellIncreaseButton.Name = "IncreaseSellQuantityButton"
-sellIncreaseButton.Position = UDim2.fromOffset(88, 0)
-sellIncreaseButton.Size = UDim2.fromOffset(34, 34)
-sellIncreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
-sellIncreaseButton.BorderSizePixel = 0
-sellIncreaseButton.Text = ">"
-sellIncreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-sellIncreaseButton.TextSize = 15
-sellIncreaseButton.Font = Enum.Font.GothamBold
-sellIncreaseButton.Parent = sellControlsFrame
-
-createCorner(sellIncreaseButton, 8)
-
-local sellButton = Instance.new("TextButton")
-sellButton.Name = "SellForDollarsButton"
-sellButton.Position = UDim2.new(0, 132, 0, 0)
-sellButton.Size = UDim2.new(1, -132, 0, 34)
-sellButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
-sellButton.BorderSizePixel = 0
-sellButton.Text = "Sell for Dollars"
-sellButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-sellButton.TextSize = 14
-sellButton.Font = Enum.Font.GothamBold
-sellButton.Parent = sellControlsFrame
-
-createCorner(sellButton, 8)
-
-local marketplaceButton = Instance.new("TextButton")
-marketplaceButton.Name = "SellInMarketplaceButton"
-marketplaceButton.Position = UDim2.new(0, 16, 0, 310)
-marketplaceButton.Size = UDim2.new(1, -32, 0, 32)
-marketplaceButton.BackgroundColor3 = Color3.fromRGB(70, 120, 170)
-marketplaceButton.BorderSizePixel = 0
-marketplaceButton.Text = "Sell in Marketplace"
-marketplaceButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-marketplaceButton.TextSize = 14
-marketplaceButton.Font = Enum.Font.GothamBold
-marketplaceButton.Active = true
-marketplaceButton.AutoButtonColor = true
-marketplaceButton.Parent = detailsPanel
-
-createCorner(marketplaceButton, 8)
-
-local myListingsPanel = Instance.new("Frame")
-myListingsPanel.Name = "MyListingsPanel"
-myListingsPanel.Position = detailsPanel.Position
-myListingsPanel.Size = detailsPanel.Size
-myListingsPanel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-myListingsPanel.BorderSizePixel = 0
-myListingsPanel.Visible = false
-myListingsPanel.Parent = panel
-
-createCorner(myListingsPanel, 12)
-createStroke(myListingsPanel, Color3.fromRGB(220, 220, 220), 1, 0)
-
-local myListingsTitle = Instance.new("TextLabel")
-myListingsTitle.Name = "MyListingsTitle"
-myListingsTitle.Position = UDim2.fromOffset(16, 14)
-myListingsTitle.Size = UDim2.new(1, -154, 0, 28)
-myListingsTitle.BackgroundTransparency = 1
-myListingsTitle.Text = "My Listings"
-myListingsTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
-myListingsTitle.TextSize = 20
-myListingsTitle.TextXAlignment = Enum.TextXAlignment.Left
-myListingsTitle.TextTruncate = Enum.TextTruncate.AtEnd
-myListingsTitle.Font = Enum.Font.GothamBold
-myListingsTitle.Parent = myListingsPanel
-
-local myListingsBackButton = Instance.new("TextButton")
-myListingsBackButton.Name = "BackToItemsButton"
-myListingsBackButton.AnchorPoint = Vector2.new(1, 0)
-myListingsBackButton.Position = UDim2.new(1, -16, 0, 14)
-myListingsBackButton.Size = UDim2.fromOffset(58, 28)
-myListingsBackButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
-myListingsBackButton.BorderSizePixel = 0
-myListingsBackButton.Text = "Items"
-myListingsBackButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-myListingsBackButton.TextSize = 12
-myListingsBackButton.Font = Enum.Font.GothamBold
-myListingsBackButton.Parent = myListingsPanel
-
-createCorner(myListingsBackButton, 7)
-
-local myListingsRefreshButton = Instance.new("TextButton")
-myListingsRefreshButton.Name = "RefreshListingsButton"
-myListingsRefreshButton.AnchorPoint = Vector2.new(1, 0)
-myListingsRefreshButton.Position = UDim2.new(1, -82, 0, 14)
-myListingsRefreshButton.Size = UDim2.fromOffset(64, 28)
-myListingsRefreshButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
-myListingsRefreshButton.BorderSizePixel = 0
-myListingsRefreshButton.Text = "Refresh"
-myListingsRefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-myListingsRefreshButton.TextSize = 12
-myListingsRefreshButton.Font = Enum.Font.GothamBold
-myListingsRefreshButton.Parent = myListingsPanel
-
-createCorner(myListingsRefreshButton, 7)
-
-local myListingsStatusLabel = Instance.new("TextLabel")
-myListingsStatusLabel.Name = "MyListingsStatusLabel"
-myListingsStatusLabel.Position = UDim2.fromOffset(16, 48)
-myListingsStatusLabel.Size = UDim2.new(1, -32, 0, 22)
-myListingsStatusLabel.BackgroundTransparency = 1
-myListingsStatusLabel.Text = ""
-myListingsStatusLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
-myListingsStatusLabel.TextSize = 13
-myListingsStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-myListingsStatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
-myListingsStatusLabel.Font = Enum.Font.Gotham
-myListingsStatusLabel.Parent = myListingsPanel
-
-local myListingsListFrame = Instance.new("ScrollingFrame")
-myListingsListFrame.Name = "MyListingsList"
-myListingsListFrame.Position = UDim2.fromOffset(16, 78)
-myListingsListFrame.Size = UDim2.new(1, -32, 1, -94)
-myListingsListFrame.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
-myListingsListFrame.BorderSizePixel = 0
-myListingsListFrame.ScrollBarThickness = 5
-myListingsListFrame.CanvasSize = UDim2.fromOffset(0, 0)
-myListingsListFrame.Parent = myListingsPanel
-
-createCorner(myListingsListFrame, 8)
-createStroke(myListingsListFrame, Color3.fromRGB(225, 225, 225), 1, 0)
-
-local myListingsListLayout = Instance.new("UIListLayout")
-myListingsListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-myListingsListLayout.Padding = UDim.new(0, 8)
-myListingsListLayout.Parent = myListingsListFrame
-
-local myListingsListPadding = Instance.new("UIPadding")
-myListingsListPadding.PaddingTop = UDim.new(0, 8)
-myListingsListPadding.PaddingBottom = UDim.new(0, 8)
-myListingsListPadding.PaddingLeft = UDim.new(0, 8)
-myListingsListPadding.PaddingRight = UDim.new(0, 8)
-myListingsListPadding.Parent = myListingsListFrame
-
-local marketplaceModalOverlay = Instance.new("Frame")
-marketplaceModalOverlay.Name = "MarketplaceListingModalOverlay"
-marketplaceModalOverlay.Position = UDim2.fromScale(0, 0)
-marketplaceModalOverlay.Size = UDim2.fromScale(1, 1)
-marketplaceModalOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-marketplaceModalOverlay.BackgroundTransparency = 0.35
-marketplaceModalOverlay.BorderSizePixel = 0
-marketplaceModalOverlay.Visible = false
-marketplaceModalOverlay.Active = true
-marketplaceModalOverlay.ZIndex = 100
-marketplaceModalOverlay.Parent = panel
-
-local marketplaceModalWindow = Instance.new("Frame")
-marketplaceModalWindow.Name = "MarketplaceListingModal"
-marketplaceModalWindow.AnchorPoint = Vector2.new(0.5, 0.5)
-marketplaceModalWindow.Position = UDim2.fromScale(0.5, 0.5)
-marketplaceModalWindow.Size = UDim2.fromOffset(360, 314)
-marketplaceModalWindow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-marketplaceModalWindow.BorderSizePixel = 0
-marketplaceModalWindow.ZIndex = 101
-marketplaceModalWindow.Parent = marketplaceModalOverlay
-
-createCorner(marketplaceModalWindow, 12)
-createStroke(marketplaceModalWindow, Color3.fromRGB(230, 230, 230), 1, 0)
-
-local listingModalTitle = Instance.new("TextLabel")
-listingModalTitle.Name = "ListingModalTitle"
-listingModalTitle.Position = UDim2.fromOffset(18, 14)
-listingModalTitle.Size = UDim2.new(1, -36, 0, 26)
-listingModalTitle.BackgroundTransparency = 1
-listingModalTitle.Text = "List in Marketplace"
-listingModalTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
-listingModalTitle.TextSize = 20
-listingModalTitle.TextXAlignment = Enum.TextXAlignment.Left
-listingModalTitle.Font = Enum.Font.GothamBold
-listingModalTitle.ZIndex = 102
-listingModalTitle.Parent = marketplaceModalWindow
-
-local listingModalItemLabel = Instance.new("TextLabel")
-listingModalItemLabel.Name = "ListingModalItemLabel"
-listingModalItemLabel.Position = UDim2.fromOffset(18, 48)
-listingModalItemLabel.Size = UDim2.new(1, -36, 0, 22)
-listingModalItemLabel.BackgroundTransparency = 1
-listingModalItemLabel.Text = ""
-listingModalItemLabel.TextColor3 = Color3.fromRGB(55, 55, 55)
-listingModalItemLabel.TextSize = 14
-listingModalItemLabel.TextXAlignment = Enum.TextXAlignment.Left
-listingModalItemLabel.TextTruncate = Enum.TextTruncate.AtEnd
-listingModalItemLabel.Font = Enum.Font.GothamBold
-listingModalItemLabel.ZIndex = 102
-listingModalItemLabel.Parent = marketplaceModalWindow
-
-local listingModalAvailableLabel = Instance.new("TextLabel")
-listingModalAvailableLabel.Name = "ListingModalAvailableLabel"
-listingModalAvailableLabel.Position = UDim2.fromOffset(18, 72)
-listingModalAvailableLabel.Size = UDim2.new(1, -36, 0, 22)
-listingModalAvailableLabel.BackgroundTransparency = 1
-listingModalAvailableLabel.Text = ""
-listingModalAvailableLabel.TextColor3 = Color3.fromRGB(80, 80, 80)
-listingModalAvailableLabel.TextSize = 13
-listingModalAvailableLabel.TextXAlignment = Enum.TextXAlignment.Left
-listingModalAvailableLabel.Font = Enum.Font.Gotham
-listingModalAvailableLabel.ZIndex = 102
-listingModalAvailableLabel.Parent = marketplaceModalWindow
-
-local listingQuantityLabel = Instance.new("TextLabel")
-listingQuantityLabel.Name = "ListingQuantityText"
-listingQuantityLabel.Position = UDim2.fromOffset(18, 108)
-listingQuantityLabel.Size = UDim2.fromOffset(96, 28)
-listingQuantityLabel.BackgroundTransparency = 1
-listingQuantityLabel.Text = "Quantity"
-listingQuantityLabel.TextColor3 = Color3.fromRGB(55, 55, 55)
-listingQuantityLabel.TextSize = 13
-listingQuantityLabel.TextXAlignment = Enum.TextXAlignment.Left
-listingQuantityLabel.Font = Enum.Font.GothamMedium
-listingQuantityLabel.ZIndex = 102
-listingQuantityLabel.Parent = marketplaceModalWindow
-
-local listingQuantityDecreaseButton = Instance.new("TextButton")
-listingQuantityDecreaseButton.Name = "DecreaseListingQuantityButton"
-listingQuantityDecreaseButton.Position = UDim2.fromOffset(128, 104)
-listingQuantityDecreaseButton.Size = UDim2.fromOffset(34, 34)
-listingQuantityDecreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
-listingQuantityDecreaseButton.BorderSizePixel = 0
-listingQuantityDecreaseButton.Text = "<"
-listingQuantityDecreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-listingQuantityDecreaseButton.TextSize = 15
-listingQuantityDecreaseButton.Font = Enum.Font.GothamBold
-listingQuantityDecreaseButton.ZIndex = 102
-listingQuantityDecreaseButton.Parent = marketplaceModalWindow
-
-createCorner(listingQuantityDecreaseButton, 8)
-
-local listingQuantityValueLabel = Instance.new("TextLabel")
-listingQuantityValueLabel.Name = "ListingQuantityValue"
-listingQuantityValueLabel.Position = UDim2.fromOffset(168, 104)
-listingQuantityValueLabel.Size = UDim2.fromOffset(48, 34)
-listingQuantityValueLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
-listingQuantityValueLabel.BorderSizePixel = 0
-listingQuantityValueLabel.Text = "1"
-listingQuantityValueLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-listingQuantityValueLabel.TextSize = 14
-listingQuantityValueLabel.Font = Enum.Font.GothamBold
-listingQuantityValueLabel.ZIndex = 102
-listingQuantityValueLabel.Parent = marketplaceModalWindow
-
-createCorner(listingQuantityValueLabel, 8)
-
-local listingQuantityIncreaseButton = Instance.new("TextButton")
-listingQuantityIncreaseButton.Name = "IncreaseListingQuantityButton"
-listingQuantityIncreaseButton.Position = UDim2.fromOffset(222, 104)
-listingQuantityIncreaseButton.Size = UDim2.fromOffset(34, 34)
-listingQuantityIncreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
-listingQuantityIncreaseButton.BorderSizePixel = 0
-listingQuantityIncreaseButton.Text = ">"
-listingQuantityIncreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-listingQuantityIncreaseButton.TextSize = 15
-listingQuantityIncreaseButton.Font = Enum.Font.GothamBold
-listingQuantityIncreaseButton.ZIndex = 102
-listingQuantityIncreaseButton.Parent = marketplaceModalWindow
-
-createCorner(listingQuantityIncreaseButton, 8)
-
-local unitPriceLabel = Instance.new("TextLabel")
-unitPriceLabel.Name = "UnitPriceText"
-unitPriceLabel.Position = UDim2.fromOffset(18, 154)
-unitPriceLabel.Size = UDim2.fromOffset(124, 28)
-unitPriceLabel.BackgroundTransparency = 1
-unitPriceLabel.Text = "Unit price"
-unitPriceLabel.TextColor3 = Color3.fromRGB(55, 55, 55)
-unitPriceLabel.TextSize = 13
-unitPriceLabel.TextXAlignment = Enum.TextXAlignment.Left
-unitPriceLabel.Font = Enum.Font.GothamMedium
-unitPriceLabel.ZIndex = 102
-unitPriceLabel.Parent = marketplaceModalWindow
-
-local unitPriceTextBox = Instance.new("TextBox")
-unitPriceTextBox.Name = "UnitPriceCoinsTextBox"
-unitPriceTextBox.Position = UDim2.fromOffset(128, 150)
-unitPriceTextBox.Size = UDim2.fromOffset(144, 34)
-unitPriceTextBox.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
-unitPriceTextBox.BorderSizePixel = 0
-unitPriceTextBox.ClearTextOnFocus = false
-unitPriceTextBox.PlaceholderText = "Coins"
-unitPriceTextBox.Text = "1"
-unitPriceTextBox.TextColor3 = Color3.fromRGB(40, 40, 40)
-unitPriceTextBox.PlaceholderColor3 = Color3.fromRGB(135, 135, 135)
-unitPriceTextBox.TextSize = 14
-unitPriceTextBox.TextXAlignment = Enum.TextXAlignment.Left
-unitPriceTextBox.Font = Enum.Font.GothamBold
-unitPriceTextBox.ZIndex = 102
-unitPriceTextBox.Parent = marketplaceModalWindow
-
-createCorner(unitPriceTextBox, 8)
-
-local unitPriceCoinsLabel = Instance.new("TextLabel")
-unitPriceCoinsLabel.Name = "UnitPriceCoinsLabel"
-unitPriceCoinsLabel.Position = UDim2.fromOffset(278, 154)
-unitPriceCoinsLabel.Size = UDim2.fromOffset(58, 26)
-unitPriceCoinsLabel.BackgroundTransparency = 1
-unitPriceCoinsLabel.Text = "Coins"
-unitPriceCoinsLabel.TextColor3 = Color3.fromRGB(80, 80, 80)
-unitPriceCoinsLabel.TextSize = 13
-unitPriceCoinsLabel.TextXAlignment = Enum.TextXAlignment.Left
-unitPriceCoinsLabel.Font = Enum.Font.Gotham
-unitPriceCoinsLabel.ZIndex = 102
-unitPriceCoinsLabel.Parent = marketplaceModalWindow
-
-local listingTotalPriceLabel = Instance.new("TextLabel")
-listingTotalPriceLabel.Name = "ListingTotalPriceLabel"
-listingTotalPriceLabel.Position = UDim2.fromOffset(18, 198)
-listingTotalPriceLabel.Size = UDim2.new(1, -36, 0, 24)
-listingTotalPriceLabel.BackgroundTransparency = 1
-listingTotalPriceLabel.Text = "Total: 1 Coins"
-listingTotalPriceLabel.TextColor3 = Color3.fromRGB(50, 90, 60)
-listingTotalPriceLabel.TextSize = 14
-listingTotalPriceLabel.TextXAlignment = Enum.TextXAlignment.Left
-listingTotalPriceLabel.Font = Enum.Font.GothamBold
-listingTotalPriceLabel.ZIndex = 102
-listingTotalPriceLabel.Parent = marketplaceModalWindow
-
-local listingModalMessageLabel = Instance.new("TextLabel")
-listingModalMessageLabel.Name = "ListingModalMessage"
-listingModalMessageLabel.Position = UDim2.fromOffset(18, 226)
-listingModalMessageLabel.Size = UDim2.new(1, -36, 0, 26)
-listingModalMessageLabel.BackgroundTransparency = 1
-listingModalMessageLabel.Text = ""
-listingModalMessageLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
-listingModalMessageLabel.TextSize = 12
-listingModalMessageLabel.TextWrapped = true
-listingModalMessageLabel.TextXAlignment = Enum.TextXAlignment.Left
-listingModalMessageLabel.Font = Enum.Font.Gotham
-listingModalMessageLabel.ZIndex = 102
-listingModalMessageLabel.Parent = marketplaceModalWindow
-
-local listingCancelButton = Instance.new("TextButton")
-listingCancelButton.Name = "CancelListingModalButton"
-listingCancelButton.Position = UDim2.fromOffset(18, 264)
-listingCancelButton.Size = UDim2.fromOffset(142, 34)
-listingCancelButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
-listingCancelButton.BorderSizePixel = 0
-listingCancelButton.Text = "Cancel"
-listingCancelButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-listingCancelButton.TextSize = 14
-listingCancelButton.Font = Enum.Font.GothamBold
-listingCancelButton.ZIndex = 102
-listingCancelButton.Parent = marketplaceModalWindow
-
-createCorner(listingCancelButton, 8)
-
-local listingConfirmButton = Instance.new("TextButton")
-listingConfirmButton.Name = "ConfirmListingButton"
-listingConfirmButton.Position = UDim2.fromOffset(176, 264)
-listingConfirmButton.Size = UDim2.fromOffset(166, 34)
-listingConfirmButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
-listingConfirmButton.BorderSizePixel = 0
-listingConfirmButton.Text = "Confirm"
-listingConfirmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-listingConfirmButton.TextSize = 14
-listingConfirmButton.Font = Enum.Font.GothamBold
-listingConfirmButton.ZIndex = 102
-listingConfirmButton.Parent = marketplaceModalWindow
-
-createCorner(listingConfirmButton, 8)
+local ui = {}
+
+ui.openButton = Instance.new("TextButton")
+ui.openButton.Name = "OpenInventoryButton"
+ui.openButton.AnchorPoint = Vector2.new(1, 1)
+ui.openButton.Position = UDim2.new(1, -20, 1, -128)
+ui.openButton.Size = UDim2.fromOffset(150, 44)
+ui.openButton.BackgroundColor3 = Color3.fromRGB(80, 120, 90)
+ui.openButton.BorderSizePixel = 0
+ui.openButton.Text = "Inventory"
+ui.openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.openButton.TextSize = 20
+ui.openButton.Font = Enum.Font.GothamBold
+ui.openButton.Visible = false
+ui.openButton.Parent = gui
+
+createCorner(ui.openButton, 10)
+createStroke(ui.openButton, Color3.fromRGB(255, 255, 255), 1, 0.25)
+
+ui.panel = Instance.new("Frame")
+ui.panel.Name = "InventoryPanel"
+ui.panel.AnchorPoint = Vector2.new(1, 0.5)
+ui.panel.Position = UDim2.new(1, -24, 0.5, 0)
+ui.panel.Size = UDim2.fromOffset(680, 460)
+ui.panel.BackgroundColor3 = Color3.fromRGB(245, 245, 238)
+ui.panel.BorderSizePixel = 0
+ui.panel.Visible = false
+ui.panel.Parent = gui
+
+createCorner(ui.panel, 16)
+createStroke(ui.panel, Color3.fromRGB(255, 255, 255), 2, 0.1)
+
+ui.titleLabel = Instance.new("TextLabel")
+ui.titleLabel.Name = "TitleLabel"
+ui.titleLabel.Position = UDim2.fromOffset(18, 14)
+ui.titleLabel.Size = UDim2.new(1, -70, 0, 36)
+ui.titleLabel.BackgroundTransparency = 1
+ui.titleLabel.Text = "Inventory"
+ui.titleLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+ui.titleLabel.TextSize = 24
+ui.titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.titleLabel.Font = Enum.Font.GothamBold
+ui.titleLabel.Parent = ui.panel
+
+ui.closeButton = Instance.new("TextButton")
+ui.closeButton.Name = "CloseButton"
+ui.closeButton.AnchorPoint = Vector2.new(1, 0)
+ui.closeButton.Position = UDim2.new(1, -18, 0, 18)
+ui.closeButton.Size = UDim2.fromOffset(34, 34)
+ui.closeButton.BackgroundColor3 = Color3.fromRGB(160, 70, 70)
+ui.closeButton.BorderSizePixel = 0
+ui.closeButton.Text = "X"
+ui.closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.closeButton.TextSize = 18
+ui.closeButton.Font = Enum.Font.GothamBold
+ui.closeButton.Parent = ui.panel
+
+createCorner(ui.closeButton, 8)
+
+ui.dragHandle = Instance.new("Frame")
+ui.dragHandle.Name = "InventoryDragHandle"
+ui.dragHandle.Position = UDim2.fromOffset(0, 0)
+ui.dragHandle.Size = UDim2.new(1, -74, 0, 58)
+ui.dragHandle.BackgroundTransparency = 1
+ui.dragHandle.Active = true
+ui.dragHandle.ZIndex = 5
+ui.dragHandle.Parent = ui.panel
+
+ui.statusLabel = Instance.new("TextLabel")
+ui.statusLabel.Name = "StatusLabel"
+ui.statusLabel.Position = UDim2.fromOffset(18, 56)
+ui.statusLabel.Size = UDim2.new(1, -36, 0, 28)
+ui.statusLabel.BackgroundTransparency = 1
+ui.statusLabel.Text = ""
+ui.statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
+ui.statusLabel.TextWrapped = true
+ui.statusLabel.TextSize = 13
+ui.statusLabel.Font = Enum.Font.Gotham
+ui.statusLabel.Parent = ui.panel
+
+ui.categoryButton = Instance.new("TextButton")
+ui.categoryButton.Name = "CategoryDropdownButton"
+ui.categoryButton.Position = UDim2.fromOffset(18, 92)
+ui.categoryButton.Size = UDim2.new(0, 184, 0, 32)
+ui.categoryButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+ui.categoryButton.BorderSizePixel = 0
+ui.categoryButton.Text = "Category: All"
+ui.categoryButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+ui.categoryButton.TextSize = 14
+ui.categoryButton.TextXAlignment = Enum.TextXAlignment.Left
+ui.categoryButton.Font = Enum.Font.GothamBold
+ui.categoryButton.ZIndex = 20
+ui.categoryButton.Parent = ui.panel
+
+createCorner(ui.categoryButton, 8)
+createStroke(ui.categoryButton, Color3.fromRGB(210, 215, 220), 1, 0)
+
+ui.myListingsButton = Instance.new("TextButton")
+ui.myListingsButton.Name = "MyListingsButton"
+ui.myListingsButton.Position = UDim2.fromOffset(210, 92)
+ui.myListingsButton.Size = UDim2.new(0, 108, 0, 32)
+ui.myListingsButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+ui.myListingsButton.BorderSizePixel = 0
+ui.myListingsButton.Text = "My Listings"
+ui.myListingsButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+ui.myListingsButton.TextSize = 13
+ui.myListingsButton.Font = Enum.Font.GothamBold
+ui.myListingsButton.Parent = ui.panel
+
+createCorner(ui.myListingsButton, 8)
+createStroke(ui.myListingsButton, Color3.fromRGB(210, 215, 220), 1, 0)
+
+ui.categoryDropdown = Instance.new("ScrollingFrame")
+ui.categoryDropdown.Name = "CategoryDropdownList"
+ui.categoryDropdown.Position = UDim2.fromOffset(18, 128)
+ui.categoryDropdown.Size = UDim2.fromOffset(184, 0)
+ui.categoryDropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.categoryDropdown.BorderSizePixel = 0
+ui.categoryDropdown.CanvasSize = UDim2.fromOffset(0, 0)
+ui.categoryDropdown.ScrollBarThickness = 4
+ui.categoryDropdown.Visible = false
+ui.categoryDropdown.ZIndex = 30
+ui.categoryDropdown.Parent = ui.panel
+
+createCorner(ui.categoryDropdown, 8)
+createStroke(ui.categoryDropdown, Color3.fromRGB(210, 215, 220), 1, 0)
+
+ui.categoryDropdownLayout = Instance.new("UIListLayout")
+ui.categoryDropdownLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.categoryDropdownLayout.Padding = UDim.new(0, 2)
+ui.categoryDropdownLayout.Parent = ui.categoryDropdown
+
+ui.listFrame = Instance.new("ScrollingFrame")
+ui.listFrame.Name = "InventoryList"
+ui.listFrame.Position = UDim2.fromOffset(18, 138)
+ui.listFrame.Size = UDim2.new(0, 300, 1, -158)
+ui.listFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.listFrame.BorderSizePixel = 0
+ui.listFrame.ScrollBarThickness = 6
+ui.listFrame.CanvasSize = UDim2.fromOffset(0, 0)
+ui.listFrame.Parent = ui.panel
+
+createCorner(ui.listFrame, 12)
+createStroke(ui.listFrame, Color3.fromRGB(220, 220, 220), 1, 0)
+
+ui.gridLayout = Instance.new("UIGridLayout")
+ui.gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.gridLayout.CellSize = UDim2.fromOffset(86, 86)
+ui.gridLayout.CellPadding = UDim2.fromOffset(8, 8)
+ui.gridLayout.Parent = ui.listFrame
+
+ui.listPadding = Instance.new("UIPadding")
+ui.listPadding.PaddingTop = UDim.new(0, 10)
+ui.listPadding.PaddingBottom = UDim.new(0, 10)
+ui.listPadding.PaddingLeft = UDim.new(0, 10)
+ui.listPadding.PaddingRight = UDim.new(0, 10)
+ui.listPadding.Parent = ui.listFrame
+
+ui.detailsPanel = Instance.new("Frame")
+ui.detailsPanel.Name = "SelectedItemDetails"
+ui.detailsPanel.Position = UDim2.new(0, 334, 0, 92)
+ui.detailsPanel.Size = UDim2.new(1, -352, 1, -112)
+ui.detailsPanel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.detailsPanel.BorderSizePixel = 0
+ui.detailsPanel.Parent = ui.panel
+
+createCorner(ui.detailsPanel, 12)
+createStroke(ui.detailsPanel, Color3.fromRGB(220, 220, 220), 1, 0)
+
+ui.detailsTitle = Instance.new("TextLabel")
+ui.detailsTitle.Name = "DetailsTitle"
+ui.detailsTitle.Position = UDim2.fromOffset(16, 14)
+ui.detailsTitle.Size = UDim2.new(1, -32, 0, 28)
+ui.detailsTitle.BackgroundTransparency = 1
+ui.detailsTitle.Text = "Select an item"
+ui.detailsTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
+ui.detailsTitle.TextSize = 20
+ui.detailsTitle.TextXAlignment = Enum.TextXAlignment.Left
+ui.detailsTitle.TextTruncate = Enum.TextTruncate.AtEnd
+ui.detailsTitle.Font = Enum.Font.GothamBold
+ui.detailsTitle.Parent = ui.detailsPanel
+
+ui.detailsSubtitle = Instance.new("TextLabel")
+ui.detailsSubtitle.Name = "DetailsSubtitle"
+ui.detailsSubtitle.Position = UDim2.fromOffset(16, 46)
+ui.detailsSubtitle.Size = UDim2.new(1, -32, 0, 20)
+ui.detailsSubtitle.BackgroundTransparency = 1
+ui.detailsSubtitle.Text = ""
+ui.detailsSubtitle.TextColor3 = Color3.fromRGB(85, 85, 85)
+ui.detailsSubtitle.TextSize = 13
+ui.detailsSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+ui.detailsSubtitle.TextTruncate = Enum.TextTruncate.AtEnd
+ui.detailsSubtitle.Font = Enum.Font.Gotham
+ui.detailsSubtitle.Parent = ui.detailsPanel
+
+ui.detailsDescription = Instance.new("TextLabel")
+ui.detailsDescription.Name = "DetailsDescription"
+ui.detailsDescription.Position = UDim2.fromOffset(16, 72)
+ui.detailsDescription.Size = UDim2.new(1, -32, 0, 44)
+ui.detailsDescription.BackgroundTransparency = 1
+ui.detailsDescription.Text = "Choose an owned furniture item to see details."
+ui.detailsDescription.TextColor3 = Color3.fromRGB(90, 90, 90)
+ui.detailsDescription.TextSize = 13
+ui.detailsDescription.TextWrapped = true
+ui.detailsDescription.TextXAlignment = Enum.TextXAlignment.Left
+ui.detailsDescription.TextYAlignment = Enum.TextYAlignment.Top
+ui.detailsDescription.Font = Enum.Font.Gotham
+ui.detailsDescription.Parent = ui.detailsPanel
+
+ui.ownershipLabel = Instance.new("TextLabel")
+ui.ownershipLabel.Name = "OwnershipLabel"
+ui.ownershipLabel.Position = UDim2.fromOffset(16, 126)
+ui.ownershipLabel.Size = UDim2.new(1, -32, 0, 84)
+ui.ownershipLabel.BackgroundTransparency = 1
+ui.ownershipLabel.Text = ""
+ui.ownershipLabel.TextColor3 = Color3.fromRGB(55, 60, 55)
+ui.ownershipLabel.TextSize = 13
+ui.ownershipLabel.TextWrapped = true
+ui.ownershipLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.ownershipLabel.TextYAlignment = Enum.TextYAlignment.Top
+ui.ownershipLabel.Font = Enum.Font.GothamMedium
+ui.ownershipLabel.Parent = ui.detailsPanel
+
+ui.placeButton = Instance.new("TextButton")
+ui.placeButton.Name = "PlaceToRoomButton"
+ui.placeButton.Position = UDim2.new(0, 16, 0, 218)
+ui.placeButton.Size = UDim2.new(1, -32, 0, 34)
+ui.placeButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+ui.placeButton.BorderSizePixel = 0
+ui.placeButton.Text = "Place to room"
+ui.placeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.placeButton.TextSize = 15
+ui.placeButton.Font = Enum.Font.GothamBold
+ui.placeButton.Parent = ui.detailsPanel
+
+createCorner(ui.placeButton, 8)
+
+ui.sellControlsFrame = Instance.new("Frame")
+ui.sellControlsFrame.Name = "SellControls"
+ui.sellControlsFrame.Position = UDim2.new(0, 16, 0, 264)
+ui.sellControlsFrame.Size = UDim2.new(1, -32, 0, 34)
+ui.sellControlsFrame.BackgroundTransparency = 1
+ui.sellControlsFrame.Parent = ui.detailsPanel
+
+ui.sellDecreaseButton = Instance.new("TextButton")
+ui.sellDecreaseButton.Name = "DecreaseSellQuantityButton"
+ui.sellDecreaseButton.Position = UDim2.fromOffset(0, 0)
+ui.sellDecreaseButton.Size = UDim2.fromOffset(34, 34)
+ui.sellDecreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+ui.sellDecreaseButton.BorderSizePixel = 0
+ui.sellDecreaseButton.Text = "<"
+ui.sellDecreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+ui.sellDecreaseButton.TextSize = 15
+ui.sellDecreaseButton.Font = Enum.Font.GothamBold
+ui.sellDecreaseButton.Parent = ui.sellControlsFrame
+
+createCorner(ui.sellDecreaseButton, 8)
+
+ui.sellQuantityLabel = Instance.new("TextLabel")
+ui.sellQuantityLabel.Name = "SellQuantityLabel"
+ui.sellQuantityLabel.Position = UDim2.fromOffset(40, 0)
+ui.sellQuantityLabel.Size = UDim2.fromOffset(42, 34)
+ui.sellQuantityLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+ui.sellQuantityLabel.BorderSizePixel = 0
+ui.sellQuantityLabel.Text = "1"
+ui.sellQuantityLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+ui.sellQuantityLabel.TextSize = 14
+ui.sellQuantityLabel.Font = Enum.Font.GothamBold
+ui.sellQuantityLabel.Parent = ui.sellControlsFrame
+
+createCorner(ui.sellQuantityLabel, 8)
+
+ui.sellIncreaseButton = Instance.new("TextButton")
+ui.sellIncreaseButton.Name = "IncreaseSellQuantityButton"
+ui.sellIncreaseButton.Position = UDim2.fromOffset(88, 0)
+ui.sellIncreaseButton.Size = UDim2.fromOffset(34, 34)
+ui.sellIncreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+ui.sellIncreaseButton.BorderSizePixel = 0
+ui.sellIncreaseButton.Text = ">"
+ui.sellIncreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+ui.sellIncreaseButton.TextSize = 15
+ui.sellIncreaseButton.Font = Enum.Font.GothamBold
+ui.sellIncreaseButton.Parent = ui.sellControlsFrame
+
+createCorner(ui.sellIncreaseButton, 8)
+
+ui.sellButton = Instance.new("TextButton")
+ui.sellButton.Name = "SellForDollarsButton"
+ui.sellButton.Position = UDim2.new(0, 132, 0, 0)
+ui.sellButton.Size = UDim2.new(1, -132, 0, 34)
+ui.sellButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+ui.sellButton.BorderSizePixel = 0
+ui.sellButton.Text = "Sell for Dollars"
+ui.sellButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.sellButton.TextSize = 14
+ui.sellButton.Font = Enum.Font.GothamBold
+ui.sellButton.Parent = ui.sellControlsFrame
+
+createCorner(ui.sellButton, 8)
+
+ui.marketplaceButton = Instance.new("TextButton")
+ui.marketplaceButton.Name = "SellInMarketplaceButton"
+ui.marketplaceButton.Position = UDim2.new(0, 16, 0, 310)
+ui.marketplaceButton.Size = UDim2.new(1, -32, 0, 32)
+ui.marketplaceButton.BackgroundColor3 = Color3.fromRGB(70, 120, 170)
+ui.marketplaceButton.BorderSizePixel = 0
+ui.marketplaceButton.Text = "Sell in Marketplace"
+ui.marketplaceButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.marketplaceButton.TextSize = 14
+ui.marketplaceButton.Font = Enum.Font.GothamBold
+ui.marketplaceButton.Active = true
+ui.marketplaceButton.AutoButtonColor = true
+ui.marketplaceButton.Parent = ui.detailsPanel
+
+createCorner(ui.marketplaceButton, 8)
+
+ui.myListingsPanel = Instance.new("Frame")
+ui.myListingsPanel.Name = "MyListingsPanel"
+ui.myListingsPanel.Position = ui.detailsPanel.Position
+ui.myListingsPanel.Size = ui.detailsPanel.Size
+ui.myListingsPanel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.myListingsPanel.BorderSizePixel = 0
+ui.myListingsPanel.Visible = false
+ui.myListingsPanel.Parent = ui.panel
+
+createCorner(ui.myListingsPanel, 12)
+createStroke(ui.myListingsPanel, Color3.fromRGB(220, 220, 220), 1, 0)
+
+ui.myListingsTitle = Instance.new("TextLabel")
+ui.myListingsTitle.Name = "MyListingsTitle"
+ui.myListingsTitle.Position = UDim2.fromOffset(16, 14)
+ui.myListingsTitle.Size = UDim2.new(1, -154, 0, 28)
+ui.myListingsTitle.BackgroundTransparency = 1
+ui.myListingsTitle.Text = "My Listings"
+ui.myListingsTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
+ui.myListingsTitle.TextSize = 20
+ui.myListingsTitle.TextXAlignment = Enum.TextXAlignment.Left
+ui.myListingsTitle.TextTruncate = Enum.TextTruncate.AtEnd
+ui.myListingsTitle.Font = Enum.Font.GothamBold
+ui.myListingsTitle.Parent = ui.myListingsPanel
+
+ui.myListingsBackButton = Instance.new("TextButton")
+ui.myListingsBackButton.Name = "BackToItemsButton"
+ui.myListingsBackButton.AnchorPoint = Vector2.new(1, 0)
+ui.myListingsBackButton.Position = UDim2.new(1, -16, 0, 14)
+ui.myListingsBackButton.Size = UDim2.fromOffset(58, 28)
+ui.myListingsBackButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+ui.myListingsBackButton.BorderSizePixel = 0
+ui.myListingsBackButton.Text = "Items"
+ui.myListingsBackButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+ui.myListingsBackButton.TextSize = 12
+ui.myListingsBackButton.Font = Enum.Font.GothamBold
+ui.myListingsBackButton.Parent = ui.myListingsPanel
+
+createCorner(ui.myListingsBackButton, 7)
+
+ui.myListingsRefreshButton = Instance.new("TextButton")
+ui.myListingsRefreshButton.Name = "RefreshListingsButton"
+ui.myListingsRefreshButton.AnchorPoint = Vector2.new(1, 0)
+ui.myListingsRefreshButton.Position = UDim2.new(1, -82, 0, 14)
+ui.myListingsRefreshButton.Size = UDim2.fromOffset(64, 28)
+ui.myListingsRefreshButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+ui.myListingsRefreshButton.BorderSizePixel = 0
+ui.myListingsRefreshButton.Text = "Refresh"
+ui.myListingsRefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.myListingsRefreshButton.TextSize = 12
+ui.myListingsRefreshButton.Font = Enum.Font.GothamBold
+ui.myListingsRefreshButton.Parent = ui.myListingsPanel
+
+createCorner(ui.myListingsRefreshButton, 7)
+
+ui.myListingsStatusLabel = Instance.new("TextLabel")
+ui.myListingsStatusLabel.Name = "MyListingsStatusLabel"
+ui.myListingsStatusLabel.Position = UDim2.fromOffset(16, 48)
+ui.myListingsStatusLabel.Size = UDim2.new(1, -32, 0, 22)
+ui.myListingsStatusLabel.BackgroundTransparency = 1
+ui.myListingsStatusLabel.Text = ""
+ui.myListingsStatusLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
+ui.myListingsStatusLabel.TextSize = 13
+ui.myListingsStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.myListingsStatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+ui.myListingsStatusLabel.Font = Enum.Font.Gotham
+ui.myListingsStatusLabel.Parent = ui.myListingsPanel
+
+ui.myListingsListFrame = Instance.new("ScrollingFrame")
+ui.myListingsListFrame.Name = "MyListingsList"
+ui.myListingsListFrame.Position = UDim2.fromOffset(16, 78)
+ui.myListingsListFrame.Size = UDim2.new(1, -32, 1, -94)
+ui.myListingsListFrame.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
+ui.myListingsListFrame.BorderSizePixel = 0
+ui.myListingsListFrame.ScrollBarThickness = 5
+ui.myListingsListFrame.CanvasSize = UDim2.fromOffset(0, 0)
+ui.myListingsListFrame.Parent = ui.myListingsPanel
+
+createCorner(ui.myListingsListFrame, 8)
+createStroke(ui.myListingsListFrame, Color3.fromRGB(225, 225, 225), 1, 0)
+
+ui.myListingsListLayout = Instance.new("UIListLayout")
+ui.myListingsListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.myListingsListLayout.Padding = UDim.new(0, 8)
+ui.myListingsListLayout.Parent = ui.myListingsListFrame
+
+ui.myListingsListPadding = Instance.new("UIPadding")
+ui.myListingsListPadding.PaddingTop = UDim.new(0, 8)
+ui.myListingsListPadding.PaddingBottom = UDim.new(0, 8)
+ui.myListingsListPadding.PaddingLeft = UDim.new(0, 8)
+ui.myListingsListPadding.PaddingRight = UDim.new(0, 8)
+ui.myListingsListPadding.Parent = ui.myListingsListFrame
+
+ui.marketplaceModalOverlay = Instance.new("Frame")
+ui.marketplaceModalOverlay.Name = "MarketplaceListingModalOverlay"
+ui.marketplaceModalOverlay.Position = UDim2.fromScale(0, 0)
+ui.marketplaceModalOverlay.Size = UDim2.fromScale(1, 1)
+ui.marketplaceModalOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ui.marketplaceModalOverlay.BackgroundTransparency = 0.35
+ui.marketplaceModalOverlay.BorderSizePixel = 0
+ui.marketplaceModalOverlay.Visible = false
+ui.marketplaceModalOverlay.Active = true
+ui.marketplaceModalOverlay.ZIndex = 100
+ui.marketplaceModalOverlay.Parent = ui.panel
+
+ui.marketplaceModalWindow = Instance.new("Frame")
+ui.marketplaceModalWindow.Name = "MarketplaceListingModal"
+ui.marketplaceModalWindow.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.marketplaceModalWindow.Position = UDim2.fromScale(0.5, 0.5)
+ui.marketplaceModalWindow.Size = UDim2.fromOffset(360, 314)
+ui.marketplaceModalWindow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.marketplaceModalWindow.BorderSizePixel = 0
+ui.marketplaceModalWindow.ZIndex = 101
+ui.marketplaceModalWindow.Parent = ui.marketplaceModalOverlay
+
+createCorner(ui.marketplaceModalWindow, 12)
+createStroke(ui.marketplaceModalWindow, Color3.fromRGB(230, 230, 230), 1, 0)
+
+ui.listingModalTitle = Instance.new("TextLabel")
+ui.listingModalTitle.Name = "ListingModalTitle"
+ui.listingModalTitle.Position = UDim2.fromOffset(18, 14)
+ui.listingModalTitle.Size = UDim2.new(1, -36, 0, 26)
+ui.listingModalTitle.BackgroundTransparency = 1
+ui.listingModalTitle.Text = "List in Marketplace"
+ui.listingModalTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
+ui.listingModalTitle.TextSize = 20
+ui.listingModalTitle.TextXAlignment = Enum.TextXAlignment.Left
+ui.listingModalTitle.Font = Enum.Font.GothamBold
+ui.listingModalTitle.ZIndex = 102
+ui.listingModalTitle.Parent = ui.marketplaceModalWindow
+
+ui.listingModalItemLabel = Instance.new("TextLabel")
+ui.listingModalItemLabel.Name = "ListingModalItemLabel"
+ui.listingModalItemLabel.Position = UDim2.fromOffset(18, 48)
+ui.listingModalItemLabel.Size = UDim2.new(1, -36, 0, 22)
+ui.listingModalItemLabel.BackgroundTransparency = 1
+ui.listingModalItemLabel.Text = ""
+ui.listingModalItemLabel.TextColor3 = Color3.fromRGB(55, 55, 55)
+ui.listingModalItemLabel.TextSize = 14
+ui.listingModalItemLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.listingModalItemLabel.TextTruncate = Enum.TextTruncate.AtEnd
+ui.listingModalItemLabel.Font = Enum.Font.GothamBold
+ui.listingModalItemLabel.ZIndex = 102
+ui.listingModalItemLabel.Parent = ui.marketplaceModalWindow
+
+ui.listingModalAvailableLabel = Instance.new("TextLabel")
+ui.listingModalAvailableLabel.Name = "ListingModalAvailableLabel"
+ui.listingModalAvailableLabel.Position = UDim2.fromOffset(18, 72)
+ui.listingModalAvailableLabel.Size = UDim2.new(1, -36, 0, 22)
+ui.listingModalAvailableLabel.BackgroundTransparency = 1
+ui.listingModalAvailableLabel.Text = ""
+ui.listingModalAvailableLabel.TextColor3 = Color3.fromRGB(80, 80, 80)
+ui.listingModalAvailableLabel.TextSize = 13
+ui.listingModalAvailableLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.listingModalAvailableLabel.Font = Enum.Font.Gotham
+ui.listingModalAvailableLabel.ZIndex = 102
+ui.listingModalAvailableLabel.Parent = ui.marketplaceModalWindow
+
+ui.listingQuantityLabel = Instance.new("TextLabel")
+ui.listingQuantityLabel.Name = "ListingQuantityText"
+ui.listingQuantityLabel.Position = UDim2.fromOffset(18, 108)
+ui.listingQuantityLabel.Size = UDim2.fromOffset(96, 28)
+ui.listingQuantityLabel.BackgroundTransparency = 1
+ui.listingQuantityLabel.Text = "Quantity"
+ui.listingQuantityLabel.TextColor3 = Color3.fromRGB(55, 55, 55)
+ui.listingQuantityLabel.TextSize = 13
+ui.listingQuantityLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.listingQuantityLabel.Font = Enum.Font.GothamMedium
+ui.listingQuantityLabel.ZIndex = 102
+ui.listingQuantityLabel.Parent = ui.marketplaceModalWindow
+
+ui.listingQuantityDecreaseButton = Instance.new("TextButton")
+ui.listingQuantityDecreaseButton.Name = "DecreaseListingQuantityButton"
+ui.listingQuantityDecreaseButton.Position = UDim2.fromOffset(128, 104)
+ui.listingQuantityDecreaseButton.Size = UDim2.fromOffset(34, 34)
+ui.listingQuantityDecreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+ui.listingQuantityDecreaseButton.BorderSizePixel = 0
+ui.listingQuantityDecreaseButton.Text = "<"
+ui.listingQuantityDecreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+ui.listingQuantityDecreaseButton.TextSize = 15
+ui.listingQuantityDecreaseButton.Font = Enum.Font.GothamBold
+ui.listingQuantityDecreaseButton.ZIndex = 102
+ui.listingQuantityDecreaseButton.Parent = ui.marketplaceModalWindow
+
+createCorner(ui.listingQuantityDecreaseButton, 8)
+
+ui.listingQuantityValueLabel = Instance.new("TextLabel")
+ui.listingQuantityValueLabel.Name = "ListingQuantityValue"
+ui.listingQuantityValueLabel.Position = UDim2.fromOffset(168, 104)
+ui.listingQuantityValueLabel.Size = UDim2.fromOffset(48, 34)
+ui.listingQuantityValueLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+ui.listingQuantityValueLabel.BorderSizePixel = 0
+ui.listingQuantityValueLabel.Text = "1"
+ui.listingQuantityValueLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+ui.listingQuantityValueLabel.TextSize = 14
+ui.listingQuantityValueLabel.Font = Enum.Font.GothamBold
+ui.listingQuantityValueLabel.ZIndex = 102
+ui.listingQuantityValueLabel.Parent = ui.marketplaceModalWindow
+
+createCorner(ui.listingQuantityValueLabel, 8)
+
+ui.listingQuantityIncreaseButton = Instance.new("TextButton")
+ui.listingQuantityIncreaseButton.Name = "IncreaseListingQuantityButton"
+ui.listingQuantityIncreaseButton.Position = UDim2.fromOffset(222, 104)
+ui.listingQuantityIncreaseButton.Size = UDim2.fromOffset(34, 34)
+ui.listingQuantityIncreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+ui.listingQuantityIncreaseButton.BorderSizePixel = 0
+ui.listingQuantityIncreaseButton.Text = ">"
+ui.listingQuantityIncreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+ui.listingQuantityIncreaseButton.TextSize = 15
+ui.listingQuantityIncreaseButton.Font = Enum.Font.GothamBold
+ui.listingQuantityIncreaseButton.ZIndex = 102
+ui.listingQuantityIncreaseButton.Parent = ui.marketplaceModalWindow
+
+createCorner(ui.listingQuantityIncreaseButton, 8)
+
+ui.unitPriceLabel = Instance.new("TextLabel")
+ui.unitPriceLabel.Name = "UnitPriceText"
+ui.unitPriceLabel.Position = UDim2.fromOffset(18, 154)
+ui.unitPriceLabel.Size = UDim2.fromOffset(124, 28)
+ui.unitPriceLabel.BackgroundTransparency = 1
+ui.unitPriceLabel.Text = "Unit price"
+ui.unitPriceLabel.TextColor3 = Color3.fromRGB(55, 55, 55)
+ui.unitPriceLabel.TextSize = 13
+ui.unitPriceLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.unitPriceLabel.Font = Enum.Font.GothamMedium
+ui.unitPriceLabel.ZIndex = 102
+ui.unitPriceLabel.Parent = ui.marketplaceModalWindow
+
+ui.unitPriceTextBox = Instance.new("TextBox")
+ui.unitPriceTextBox.Name = "UnitPriceCoinsTextBox"
+ui.unitPriceTextBox.Position = UDim2.fromOffset(128, 150)
+ui.unitPriceTextBox.Size = UDim2.fromOffset(144, 34)
+ui.unitPriceTextBox.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+ui.unitPriceTextBox.BorderSizePixel = 0
+ui.unitPriceTextBox.ClearTextOnFocus = false
+ui.unitPriceTextBox.PlaceholderText = "Coins"
+ui.unitPriceTextBox.Text = "1"
+ui.unitPriceTextBox.TextColor3 = Color3.fromRGB(40, 40, 40)
+ui.unitPriceTextBox.PlaceholderColor3 = Color3.fromRGB(135, 135, 135)
+ui.unitPriceTextBox.TextSize = 14
+ui.unitPriceTextBox.TextXAlignment = Enum.TextXAlignment.Left
+ui.unitPriceTextBox.Font = Enum.Font.GothamBold
+ui.unitPriceTextBox.ZIndex = 102
+ui.unitPriceTextBox.Parent = ui.marketplaceModalWindow
+
+createCorner(ui.unitPriceTextBox, 8)
+
+ui.unitPriceCoinsLabel = Instance.new("TextLabel")
+ui.unitPriceCoinsLabel.Name = "UnitPriceCoinsLabel"
+ui.unitPriceCoinsLabel.Position = UDim2.fromOffset(278, 154)
+ui.unitPriceCoinsLabel.Size = UDim2.fromOffset(58, 26)
+ui.unitPriceCoinsLabel.BackgroundTransparency = 1
+ui.unitPriceCoinsLabel.Text = "Coins"
+ui.unitPriceCoinsLabel.TextColor3 = Color3.fromRGB(80, 80, 80)
+ui.unitPriceCoinsLabel.TextSize = 13
+ui.unitPriceCoinsLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.unitPriceCoinsLabel.Font = Enum.Font.Gotham
+ui.unitPriceCoinsLabel.ZIndex = 102
+ui.unitPriceCoinsLabel.Parent = ui.marketplaceModalWindow
+
+ui.listingTotalPriceLabel = Instance.new("TextLabel")
+ui.listingTotalPriceLabel.Name = "ListingTotalPriceLabel"
+ui.listingTotalPriceLabel.Position = UDim2.fromOffset(18, 198)
+ui.listingTotalPriceLabel.Size = UDim2.new(1, -36, 0, 24)
+ui.listingTotalPriceLabel.BackgroundTransparency = 1
+ui.listingTotalPriceLabel.Text = "Total: 1 Coins"
+ui.listingTotalPriceLabel.TextColor3 = Color3.fromRGB(50, 90, 60)
+ui.listingTotalPriceLabel.TextSize = 14
+ui.listingTotalPriceLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.listingTotalPriceLabel.Font = Enum.Font.GothamBold
+ui.listingTotalPriceLabel.ZIndex = 102
+ui.listingTotalPriceLabel.Parent = ui.marketplaceModalWindow
+
+ui.listingModalMessageLabel = Instance.new("TextLabel")
+ui.listingModalMessageLabel.Name = "ListingModalMessage"
+ui.listingModalMessageLabel.Position = UDim2.fromOffset(18, 226)
+ui.listingModalMessageLabel.Size = UDim2.new(1, -36, 0, 26)
+ui.listingModalMessageLabel.BackgroundTransparency = 1
+ui.listingModalMessageLabel.Text = ""
+ui.listingModalMessageLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
+ui.listingModalMessageLabel.TextSize = 12
+ui.listingModalMessageLabel.TextWrapped = true
+ui.listingModalMessageLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.listingModalMessageLabel.Font = Enum.Font.Gotham
+ui.listingModalMessageLabel.ZIndex = 102
+ui.listingModalMessageLabel.Parent = ui.marketplaceModalWindow
+
+ui.listingCancelButton = Instance.new("TextButton")
+ui.listingCancelButton.Name = "CancelListingModalButton"
+ui.listingCancelButton.Position = UDim2.fromOffset(18, 264)
+ui.listingCancelButton.Size = UDim2.fromOffset(142, 34)
+ui.listingCancelButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+ui.listingCancelButton.BorderSizePixel = 0
+ui.listingCancelButton.Text = "Cancel"
+ui.listingCancelButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+ui.listingCancelButton.TextSize = 14
+ui.listingCancelButton.Font = Enum.Font.GothamBold
+ui.listingCancelButton.ZIndex = 102
+ui.listingCancelButton.Parent = ui.marketplaceModalWindow
+
+createCorner(ui.listingCancelButton, 8)
+
+ui.listingConfirmButton = Instance.new("TextButton")
+ui.listingConfirmButton.Name = "ConfirmListingButton"
+ui.listingConfirmButton.Position = UDim2.fromOffset(176, 264)
+ui.listingConfirmButton.Size = UDim2.fromOffset(166, 34)
+ui.listingConfirmButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+ui.listingConfirmButton.BorderSizePixel = 0
+ui.listingConfirmButton.Text = "Confirm"
+ui.listingConfirmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.listingConfirmButton.TextSize = 14
+ui.listingConfirmButton.Font = Enum.Font.GothamBold
+ui.listingConfirmButton.ZIndex = 102
+ui.listingConfirmButton.Parent = ui.marketplaceModalWindow
+
+createCorner(ui.listingConfirmButton, 8)
 
 local function shouldShowInventoryButton()
 	return player:GetAttribute("OnboardingStep") == "Complete"
@@ -792,7 +802,7 @@ local function shouldShowInventoryButton()
 end
 
 local function updateOpenButton()
-	openButton.Visible = (not panel.Visible)
+	ui.openButton.Visible = (not ui.panel.Visible)
 		and not inventoryHiddenForPlacement
 		and player:GetAttribute("CatalogPlacementActive") ~= true
 		and not anyMajorMenuOpen
@@ -817,26 +827,26 @@ local function publishMajorMenuState(isOpen)
 end
 
 local function setStatus(text, success)
-	statusLabel.Text = tostring(text or "")
+	ui.statusLabel.Text = tostring(text or "")
 
 	if success == true then
-		statusLabel.TextColor3 = Color3.fromRGB(50, 110, 60)
+		ui.statusLabel.TextColor3 = Color3.fromRGB(50, 110, 60)
 	elseif success == false then
-		statusLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
+		ui.statusLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
 	else
-		statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
+		ui.statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
 	end
 end
 
 local function setMyListingsStatus(text, success)
-	myListingsStatusLabel.Text = tostring(text or "")
+	ui.myListingsStatusLabel.Text = tostring(text or "")
 
 	if success == true then
-		myListingsStatusLabel.TextColor3 = Color3.fromRGB(50, 110, 60)
+		ui.myListingsStatusLabel.TextColor3 = Color3.fromRGB(50, 110, 60)
 	elseif success == false then
-		myListingsStatusLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
+		ui.myListingsStatusLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
 	else
-		myListingsStatusLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
+		ui.myListingsStatusLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
 	end
 end
 
@@ -942,11 +952,11 @@ local function categoryExists(categoryName, categories)
 end
 
 local function updateCategoryButton()
-	categoryButton.Text = "  Category: " .. tostring(selectedInventoryCategory) .. " v"
+	ui.categoryButton.Text = "  Category: " .. tostring(selectedInventoryCategory) .. " v"
 end
 
 local function clearCategoryDropdown()
-	for _, child in ipairs(categoryDropdown:GetChildren()) do
+	for _, child in ipairs(ui.categoryDropdown:GetChildren()) do
 		if child:IsA("TextButton") then
 			child:Destroy()
 		end
@@ -955,25 +965,25 @@ end
 
 local function setDropdownOpen(isOpen)
 	dropdownOpen = isOpen == true
-	categoryDropdown.Visible = dropdownOpen
+	ui.categoryDropdown.Visible = dropdownOpen
 
 	if dropdownOpen then
 		local dropdownHeight = math.min(#currentInventoryCategories * 30 + 8, 156)
-		categoryDropdown.Size = UDim2.fromOffset(184, dropdownHeight)
+		ui.categoryDropdown.Size = UDim2.fromOffset(184, dropdownHeight)
 	else
-		categoryDropdown.Size = UDim2.fromOffset(184, 0)
+		ui.categoryDropdown.Size = UDim2.fromOffset(184, 0)
 	end
 end
 
 local function updateInventoryViewMode()
 	local showingMyListings = inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS
 
-	detailsPanel.Visible = not showingMyListings
-	myListingsPanel.Visible = showingMyListings
-	myListingsButton.BackgroundColor3 = showingMyListings
+	ui.detailsPanel.Visible = not showingMyListings
+	ui.myListingsPanel.Visible = showingMyListings
+	ui.myListingsButton.BackgroundColor3 = showingMyListings
 		and Color3.fromRGB(70, 150, 210)
 		or Color3.fromRGB(235, 238, 242)
-	myListingsButton.TextColor3 = showingMyListings
+	ui.myListingsButton.TextColor3 = showingMyListings
 		and Color3.fromRGB(255, 255, 255)
 		or Color3.fromRGB(45, 45, 45)
 
@@ -1014,7 +1024,7 @@ local function requestPlayModeIfInventoryCausedEdit()
 		if inventoryPlacementEnteredEditMode
 			and player:GetAttribute("RoomMode") == "Edit"
 			and player:GetAttribute("CatalogPlacementActive") ~= true
-			and not panel.Visible then
+			and not ui.panel.Visible then
 
 			setRoomModeRequest:FireServer("Play")
 		end
@@ -1048,13 +1058,13 @@ local function getScreenSize()
 end
 
 local function getPanelSize()
-	local panelSize = panel.AbsoluteSize
+	local panelSize = ui.panel.AbsoluteSize
 
 	if panelSize.X > 0 and panelSize.Y > 0 then
 		return panelSize
 	end
 
-	return Vector2.new(panel.Size.X.Offset, panel.Size.Y.Offset)
+	return Vector2.new(ui.panel.Size.X.Offset, ui.panel.Size.Y.Offset)
 end
 
 local function clampPanelPosition(position)
@@ -1084,13 +1094,13 @@ local function clampPanelPosition(position)
 end
 
 local function clampPanelToScreen()
-	panel.Position = clampPanelPosition(panel.Position)
+	ui.panel.Position = clampPanelPosition(ui.panel.Position)
 end
 
 local function beginPanelDrag(input)
 	panelDragInput = input
 	panelDragStartInputPosition = input.Position
-	panelDragStartPanelPosition = panel.Position
+	panelDragStartPanelPosition = ui.panel.Position
 
 	input.Changed:Connect(function()
 		if input.UserInputState == Enum.UserInputState.End and panelDragInput == input then
@@ -1102,7 +1112,7 @@ local function beginPanelDrag(input)
 	end)
 end
 
-dragHandle.InputBegan:Connect(function(input)
+ui.dragHandle.InputBegan:Connect(function(input)
 	if input.UserInputType ~= Enum.UserInputType.MouseButton1
 		and input.UserInputType ~= Enum.UserInputType.Touch then
 
@@ -1128,7 +1138,7 @@ UserInputService.InputChanged:Connect(function(input)
 
 	local delta = input.Position - panelDragStartInputPosition
 
-	panel.Position = clampPanelPosition(UDim2.new(
+	ui.panel.Position = clampPanelPosition(UDim2.new(
 		panelDragStartPanelPosition.X.Scale,
 		panelDragStartPanelPosition.X.Offset + delta.X,
 		panelDragStartPanelPosition.Y.Scale,
@@ -1137,7 +1147,7 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
-	if panel.Visible then
+	if ui.panel.Visible then
 		clampPanelToScreen()
 	end
 end)
@@ -1168,7 +1178,7 @@ local function updateCategoryDropdown(categories)
 		optionButton.TextSize = 13
 		optionButton.Font = Enum.Font.GothamBold
 		optionButton.ZIndex = 31
-		optionButton.Parent = categoryDropdown
+		optionButton.Parent = ui.categoryDropdown
 
 		createCorner(optionButton, 6)
 
@@ -1183,9 +1193,9 @@ local function updateCategoryDropdown(categories)
 	end
 
 	task.defer(function()
-		categoryDropdown.CanvasSize = UDim2.fromOffset(
+		ui.categoryDropdown.CanvasSize = UDim2.fromOffset(
 			0,
-			categoryDropdownLayout.AbsoluteContentSize.Y + 8
+			ui.categoryDropdownLayout.AbsoluteContentSize.Y + 8
 		)
 	end)
 
@@ -1244,7 +1254,7 @@ local function isFiniteNumber(value)
 end
 
 local function clearRows()
-	for _, child in ipairs(listFrame:GetChildren()) do
+	for _, child in ipairs(ui.listFrame:GetChildren()) do
 		if child:IsA("Frame") or child:IsA("TextButton") or child:IsA("TextLabel") then
 			child:Destroy()
 		end
@@ -1261,7 +1271,7 @@ local function createEmptyState(message)
 	emptyLabel.TextSize = 15
 	emptyLabel.TextWrapped = true
 	emptyLabel.Font = Enum.Font.Gotham
-	emptyLabel.Parent = listFrame
+	emptyLabel.Parent = ui.listFrame
 end
 
 local function getInventoryCounts(templateId)
@@ -1390,13 +1400,13 @@ local function updateSelectedItemDetails()
 	local entry = getSelectedInventoryEntry()
 
 	if not entry then
-		detailsTitle.Text = "Select an item"
-		detailsSubtitle.Text = ""
-		detailsDescription.Text = "Choose an owned furniture item to see details."
-		ownershipLabel.Text = ""
-		setButtonEnabled(placeButton, false, Color3.fromRGB(70, 135, 90))
-		sellControlsFrame.Visible = false
-		marketplaceButton.Visible = false
+		ui.detailsTitle.Text = "Select an item"
+		ui.detailsSubtitle.Text = ""
+		ui.detailsDescription.Text = "Choose an owned furniture item to see details."
+		ui.ownershipLabel.Text = ""
+		setButtonEnabled(ui.placeButton, false, Color3.fromRGB(70, 135, 90))
+		ui.sellControlsFrame.Visible = false
+		ui.marketplaceButton.Visible = false
 		pendingPlacementTemplateId = nil
 		return
 	end
@@ -1414,9 +1424,9 @@ local function updateSelectedItemDetails()
 		selectedSellQuantity = math.clamp(selectedSellQuantity, 1, maxSellQuantity)
 	end
 
-	detailsTitle.Text = entry.DisplayName
-	detailsSubtitle.Text = tostring(templateId) .. "  -  " .. tostring(entry.Category or INVENTORY_CATEGORY_OTHER)
-	detailsDescription.Text = typeof(item.Description) == "string" and item.Description ~= ""
+	ui.detailsTitle.Text = entry.DisplayName
+	ui.detailsSubtitle.Text = tostring(templateId) .. "  -  " .. tostring(entry.Category or INVENTORY_CATEGORY_OTHER)
+	ui.detailsDescription.Text = typeof(item.Description) == "string" and item.Description ~= ""
 		and item.Description
 		or "No description available."
 
@@ -1446,21 +1456,21 @@ local function updateSelectedItemDetails()
 		table.insert(statusLines, "Sell price: " .. tostring(sellPrice) .. " Dollars")
 	end
 
-	ownershipLabel.Text = table.concat(statusLines, "\n")
+	ui.ownershipLabel.Text = table.concat(statusLines, "\n")
 
-	setButtonEnabled(placeButton, counts.Total > 0, Color3.fromRGB(70, 135, 90))
-	placeButton.Text = pendingPlacementTemplateId == templateId and "Preparing..." or "Place to room"
+	setButtonEnabled(ui.placeButton, counts.Total > 0, Color3.fromRGB(70, 135, 90))
+	ui.placeButton.Text = pendingPlacementTemplateId == templateId and "Preparing..." or "Place to room"
 
-	sellControlsFrame.Visible = canSell
-	sellQuantityLabel.Text = tostring(selectedSellQuantity)
-	setButtonEnabled(sellDecreaseButton, canSell and not sellRequestInFlight and selectedSellQuantity > 1, Color3.fromRGB(230, 235, 240))
-	setButtonEnabled(sellIncreaseButton, canSell and not sellRequestInFlight and selectedSellQuantity < maxSellQuantity, Color3.fromRGB(230, 235, 240))
-	setButtonEnabled(sellButton, canSell and not sellRequestInFlight, Color3.fromRGB(70, 135, 90))
-	sellButton.Text = sellRequestInFlight and "Selling..." or "Sell for Dollars"
+	ui.sellControlsFrame.Visible = canSell
+	ui.sellQuantityLabel.Text = tostring(selectedSellQuantity)
+	setButtonEnabled(ui.sellDecreaseButton, canSell and not sellRequestInFlight and selectedSellQuantity > 1, Color3.fromRGB(230, 235, 240))
+	setButtonEnabled(ui.sellIncreaseButton, canSell and not sellRequestInFlight and selectedSellQuantity < maxSellQuantity, Color3.fromRGB(230, 235, 240))
+	setButtonEnabled(ui.sellButton, canSell and not sellRequestInFlight, Color3.fromRGB(70, 135, 90))
+	ui.sellButton.Text = sellRequestInFlight and "Selling..." or "Sell for Dollars"
 
-	marketplaceButton.Visible = counts.Tradable > 0
-	setButtonEnabled(marketplaceButton, counts.Tradable > 0 and not marketplaceCreateInFlight, Color3.fromRGB(70, 120, 170))
-	marketplaceButton.Text = marketplaceCreateInFlight and "Listing..." or "Sell in Marketplace"
+	ui.marketplaceButton.Visible = counts.Tradable > 0
+	setButtonEnabled(ui.marketplaceButton, counts.Tradable > 0 and not marketplaceCreateInFlight, Color3.fromRGB(70, 120, 170))
+	ui.marketplaceButton.Text = marketplaceCreateInFlight and "Listing..." or "Sell in Marketplace"
 end
 
 local function createInventoryCard(entry, layoutOrder)
@@ -1478,7 +1488,7 @@ local function createInventoryCard(entry, layoutOrder)
 	card.BorderSizePixel = 0
 	card.Text = ""
 	card.AutoButtonColor = true
-	card.Parent = listFrame
+	card.Parent = ui.listFrame
 
 	createCorner(card, 9)
 	createStroke(
@@ -1590,9 +1600,9 @@ renderInventory = function(inventory, inventoryDetails)
 	updateSelectedItemDetails()
 
 	task.defer(function()
-		listFrame.CanvasSize = UDim2.fromOffset(
+		ui.listFrame.CanvasSize = UDim2.fromOffset(
 			0,
-			gridLayout.AbsoluteContentSize.Y + 20
+			ui.gridLayout.AbsoluteContentSize.Y + 20
 		)
 	end)
 end
@@ -1704,7 +1714,7 @@ local function applyInventoryLocalDelta(payload)
 	hasLoadedInventory = true
 	markInventoryCacheUpdated()
 
-	if panel.Visible then
+	if ui.panel.Visible then
 		renderInventory(latestInventory, latestInventoryDetails)
 	end
 end
@@ -1741,7 +1751,7 @@ end
 
 local function parseListingUnitPrice()
 	return normalizeIntegerText(
-		unitPriceTextBox.Text,
+		ui.unitPriceTextBox.Text,
 		MARKETPLACE_MIN_UNIT_PRICE_COINS,
 		MARKETPLACE_MAX_UNIT_PRICE_COINS,
 		"Enter a Coin price."
@@ -1755,17 +1765,32 @@ local function getMarketplaceListingMaxQuantity(templateId)
 end
 
 local function setListingModalMessage(message, success)
-	listingModalMessageLabel.Text = tostring(message or "")
+	ui.listingModalMessageLabel.Text = tostring(message or "")
 
 	if success == true then
-		listingModalMessageLabel.TextColor3 = Color3.fromRGB(50, 110, 60)
+		ui.listingModalMessageLabel.TextColor3 = Color3.fromRGB(50, 110, 60)
+	elseif success == false then
+		ui.listingModalMessageLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
 	else
-		listingModalMessageLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
+		ui.listingModalMessageLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
 	end
 end
 
+local function getMarketplaceWaitMessage(message)
+	local normalizedMessage = tostring(message or "")
+
+	if normalizedMessage:find("Slow down", 1, true)
+		or normalizedMessage:find("busy", 1, true)
+		or normalizedMessage:find("try again", 1, true) then
+
+		return "Please wait a moment."
+	end
+
+	return normalizedMessage
+end
+
 local function updateListingModal()
-	if not marketplaceModalOverlay.Visible then
+	if not ui.marketplaceModalOverlay.Visible then
 		return
 	end
 
@@ -1784,12 +1809,12 @@ local function updateListingModal()
 		)
 	end
 
-	listingModalItemLabel.Text = getInventoryDisplayName(templateId)
-	listingModalAvailableLabel.Text = "Tradable available: " .. tostring(counts.Tradable)
-	listingQuantityValueLabel.Text = tostring(marketplaceListingQuantity)
+	ui.listingModalItemLabel.Text = getInventoryDisplayName(templateId)
+	ui.listingModalAvailableLabel.Text = "Tradable available: " .. tostring(counts.Tradable)
+	ui.listingQuantityValueLabel.Text = tostring(marketplaceListingQuantity)
 
 	if unitPrice then
-		listingTotalPriceLabel.Text = "Total: "
+		ui.listingTotalPriceLabel.Text = "Total: "
 			.. tostring(marketplaceListingQuantity * unitPrice)
 			.. " Coins"
 
@@ -1797,7 +1822,7 @@ local function updateListingModal()
 			setListingModalMessage("", nil)
 		end
 	else
-		listingTotalPriceLabel.Text = "Total: -"
+		ui.listingTotalPriceLabel.Text = "Total: -"
 
 		if not marketplaceCreateInFlight then
 			setListingModalMessage(priceMessage, false)
@@ -1805,35 +1830,35 @@ local function updateListingModal()
 	end
 
 	setButtonEnabled(
-		listingQuantityDecreaseButton,
+		ui.listingQuantityDecreaseButton,
 		not marketplaceCreateInFlight and marketplaceListingQuantity > 1,
 		Color3.fromRGB(230, 235, 240)
 	)
 	setButtonEnabled(
-		listingQuantityIncreaseButton,
+		ui.listingQuantityIncreaseButton,
 		not marketplaceCreateInFlight and maxQuantity > 0 and marketplaceListingQuantity < maxQuantity,
 		Color3.fromRGB(230, 235, 240)
 	)
-	setButtonEnabled(listingCancelButton, not marketplaceCreateInFlight, Color3.fromRGB(235, 238, 242))
+	setButtonEnabled(ui.listingCancelButton, true, Color3.fromRGB(235, 238, 242))
 	setButtonEnabled(
-		listingConfirmButton,
+		ui.listingConfirmButton,
 		not marketplaceCreateInFlight and maxQuantity > 0 and unitPrice ~= nil,
 		Color3.fromRGB(70, 135, 90)
 	)
 
-	listingConfirmButton.Text = marketplaceCreateInFlight and "Listing..." or "Confirm"
-	unitPriceTextBox.TextEditable = not marketplaceCreateInFlight
+	ui.listingConfirmButton.Text = marketplaceCreateInFlight and "Listing..." or "Confirm"
+	ui.unitPriceTextBox.TextEditable = not marketplaceCreateInFlight
 end
 
 local function closeMarketplaceListingModal()
-	if marketplaceCreateInFlight then
-		return
+	ui.marketplaceModalOverlay.Visible = false
+	setListingModalMessage("", nil)
+
+	if not marketplaceCreateInFlight then
+		marketplaceListingTemplateId = nil
+		marketplaceListingQuantity = 1
 	end
 
-	marketplaceModalOverlay.Visible = false
-	marketplaceListingTemplateId = nil
-	marketplaceListingQuantity = 1
-	setListingModalMessage("", nil)
 	updateSelectedItemDetails()
 end
 
@@ -1855,14 +1880,14 @@ local function openMarketplaceListingModal()
 
 	marketplaceListingTemplateId = entry.TemplateId
 	marketplaceListingQuantity = 1
-	unitPriceTextBox.Text = tostring(MARKETPLACE_MIN_UNIT_PRICE_COINS)
+	ui.unitPriceTextBox.Text = tostring(MARKETPLACE_MIN_UNIT_PRICE_COINS)
 	setListingModalMessage("", nil)
-	marketplaceModalOverlay.Visible = true
+	ui.marketplaceModalOverlay.Visible = true
 	updateListingModal()
 end
 
 local function updateMarketplaceListingQuantity(delta)
-	if marketplaceCreateInFlight or not marketplaceModalOverlay.Visible then
+	if marketplaceCreateInFlight or not ui.marketplaceModalOverlay.Visible then
 		return
 	end
 
@@ -1899,8 +1924,26 @@ end
 local requestMyListings = nil
 local cancelMarketplaceListing = nil
 
+local function scheduleQueuedMyListingsRefresh(delaySeconds)
+	if myListingsQueuedRefreshScheduled then
+		return
+	end
+
+	myListingsQueuedRefreshScheduled = true
+
+	task.delay(math.max(delaySeconds or 0, 0), function()
+		myListingsQueuedRefreshScheduled = false
+
+		if myListingsQueuedRefresh and requestMyListings then
+			requestMyListings({
+				FromQueue = true,
+			})
+		end
+	end)
+end
+
 local function clearMyListingRows()
-	for _, child in ipairs(myListingsListFrame:GetChildren()) do
+	for _, child in ipairs(ui.myListingsListFrame:GetChildren()) do
 		if child:IsA("Frame") or child:IsA("TextLabel") then
 			child:Destroy()
 		end
@@ -1931,7 +1974,7 @@ local function createMyListingsEmptyState(message)
 	emptyLabel.TextSize = 14
 	emptyLabel.TextWrapped = true
 	emptyLabel.Font = Enum.Font.Gotham
-	emptyLabel.Parent = myListingsListFrame
+	emptyLabel.Parent = ui.myListingsListFrame
 end
 
 local function upsertMarketplaceListing(listing)
@@ -1961,8 +2004,8 @@ local function renderMyListingsPanel()
 	updateInventoryViewMode()
 	clearMyListingRows()
 
-	setButtonEnabled(myListingsRefreshButton, not marketplaceMyListingsInFlight, Color3.fromRGB(70, 135, 90))
-	myListingsRefreshButton.Text = marketplaceMyListingsInFlight and "Loading..." or "Refresh"
+	setButtonEnabled(ui.myListingsRefreshButton, not marketplaceMyListingsInFlight, Color3.fromRGB(70, 135, 90))
+	ui.myListingsRefreshButton.Text = marketplaceMyListingsInFlight and "Loading..." or "Refresh"
 
 	local listings = {}
 
@@ -2003,7 +2046,7 @@ local function renderMyListingsPanel()
 			row.Size = UDim2.new(1, -16, 0, 74)
 			row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			row.BorderSizePixel = 0
-			row.Parent = myListingsListFrame
+			row.Parent = ui.myListingsListFrame
 
 			createCorner(row, 8)
 			createStroke(row, Color3.fromRGB(225, 225, 225), 1, 0)
@@ -2081,25 +2124,52 @@ local function renderMyListingsPanel()
 	end
 
 	task.defer(function()
-		myListingsListFrame.CanvasSize = UDim2.fromOffset(
+		ui.myListingsListFrame.CanvasSize = UDim2.fromOffset(
 			0,
-			myListingsListLayout.AbsoluteContentSize.Y + 16
+			ui.myListingsListLayout.AbsoluteContentSize.Y + 16
 		)
 	end)
 end
 
-requestMyListings = function()
+requestMyListings = function(options)
+	local queueIfBlocked = typeof(options) == "table" and options.Queue == true
+	local fromQueue = typeof(options) == "table" and options.FromQueue == true
+
 	if marketplaceMyListingsInFlight then
+		if queueIfBlocked then
+			myListingsQueuedRefresh = true
+		end
+
+		renderMyListingsPanel()
 		return
 	end
 
+	local now = os.clock()
+	local cooldownRemaining = MY_LISTINGS_LOCAL_COOLDOWN_SECONDS - (now - myListingsLastRequestAt)
+
+	if cooldownRemaining > 0 then
+		if queueIfBlocked or fromQueue then
+			myListingsQueuedRefresh = true
+			scheduleQueuedMyListingsRefresh(cooldownRemaining)
+		else
+			setMyListingsStatus("Please wait a moment.", false)
+			renderMyListingsPanel()
+		end
+
+		return
+	end
+
+	myListingsQueuedRefresh = false
 	marketplaceMyListingsInFlight = true
+	myListingsLastRequestAt = now
 	setMyListingsStatus("Loading listings...", nil)
 	renderMyListingsPanel()
 	marketplaceRequest:FireServer("GetMyListings")
 
+	local requestStartedAt = myListingsLastRequestAt
+
 	task.delay(REQUEST_TIMEOUT_SECONDS, function()
-		if marketplaceMyListingsInFlight then
+		if marketplaceMyListingsInFlight and myListingsLastRequestAt == requestStartedAt then
 			marketplaceMyListingsInFlight = false
 			setMyListingsStatus("Marketplace listings request timed out.", false)
 			renderMyListingsPanel()
@@ -2177,8 +2247,13 @@ local function confirmMarketplaceListing()
 		1,
 		maxQuantity
 	)
+	marketplaceCreateRequestSerial += 1
 	marketplaceCreateInFlight = true
-	setListingModalMessage("", nil)
+	pendingCreateListingRequestId = tostring(marketplaceCreateRequestSerial)
+	pendingCreateListingTemplateId = templateId
+	pendingCreateListingQuantity = marketplaceListingQuantity
+	pendingCreateListingUnitPriceCoins = unitPrice
+	setListingModalMessage("Listing item...", nil)
 	setStatus("", nil)
 	updateListingModal()
 	updateSelectedItemDetails()
@@ -2186,12 +2261,25 @@ local function confirmMarketplaceListing()
 		TemplateId = templateId,
 		Quantity = marketplaceListingQuantity,
 		UnitPriceCoins = unitPrice,
+		RequestId = pendingCreateListingRequestId,
 	})
 
+	local requestId = pendingCreateListingRequestId
+
 	task.delay(REQUEST_TIMEOUT_SECONDS, function()
-		if marketplaceCreateInFlight and marketplaceListingTemplateId == templateId then
+		if marketplaceCreateInFlight and pendingCreateListingRequestId == requestId then
 			marketplaceCreateInFlight = false
-			setListingModalMessage("Marketplace listing request timed out.", false)
+			pendingCreateListingRequestId = nil
+			pendingCreateListingTemplateId = nil
+			pendingCreateListingQuantity = 1
+			pendingCreateListingUnitPriceCoins = nil
+
+			if ui.marketplaceModalOverlay.Visible then
+				setListingModalMessage("Marketplace listing request timed out.", false)
+			else
+				setStatus("Marketplace listing request timed out.", false)
+			end
+
 			updateListingModal()
 			updateSelectedItemDetails()
 		end
@@ -2211,7 +2299,7 @@ local function fireInventoryPlacement(templateId)
 	pendingPlacementTemplateId = nil
 	pendingPlaceAfterEdit = false
 	setStatus("Choose a floor tile to place this item.", true)
-	inventoryHideRequestedForPlacement = panel.Visible == true
+	inventoryHideRequestedForPlacement = ui.panel.Visible == true
 
 	startInventoryPlacement:Fire({
 		Id = templateId,
@@ -2375,7 +2463,7 @@ requestInventoryRefresh = function(reason, force)
 end
 
 setPanelVisible = function(isVisible, options)
-	local wasVisible = panel.Visible
+	local wasVisible = ui.panel.Visible
 	local preserveInventoryView = typeof(options) == "table" and options.PreserveInventoryView == true
 	local skipInventoryRefresh = typeof(options) == "table" and options.SkipInventoryRefresh == true
 
@@ -2392,7 +2480,7 @@ setPanelVisible = function(isVisible, options)
 		majorMenuOpened:Fire(MENU_NAME)
 	end
 
-	panel.Visible = isVisible
+	ui.panel.Visible = isVisible
 	updateOpenButton()
 
 	if isVisible then
@@ -2411,7 +2499,7 @@ setPanelVisible = function(isVisible, options)
 		end
 	elseif wasVisible or openMajorMenuName == MENU_NAME then
 		if not marketplaceCreateInFlight then
-			marketplaceModalOverlay.Visible = false
+			ui.marketplaceModalOverlay.Visible = false
 			marketplaceListingTemplateId = nil
 			marketplaceListingQuantity = 1
 		end
@@ -2428,13 +2516,13 @@ end
 hideInventoryForPlacement = function()
 	if inventoryHiddenForPlacement
 		or not inventoryHideRequestedForPlacement
-		or not panel.Visible then
+		or not ui.panel.Visible then
 
 		return
 	end
 
 	inventoryHiddenForPlacement = true
-	panel.Visible = false
+	ui.panel.Visible = false
 	setDropdownOpen(false)
 	publishMajorMenuState(false)
 	updateOpenButton()
@@ -2463,58 +2551,60 @@ restoreInventoryAfterPlacement = function()
 	end
 end
 
-openButton.MouseButton1Click:Connect(function()
+ui.openButton.MouseButton1Click:Connect(function()
 	setPanelVisible(true)
 end)
 
-closeButton.MouseButton1Click:Connect(function()
+ui.closeButton.MouseButton1Click:Connect(function()
 	setPanelVisible(false)
 end)
 
-categoryButton.MouseButton1Click:Connect(function()
+ui.categoryButton.MouseButton1Click:Connect(function()
 	setDropdownOpen(not dropdownOpen)
 end)
 
-placeButton.MouseButton1Click:Connect(requestPlacementForSelectedItem)
+ui.placeButton.MouseButton1Click:Connect(requestPlacementForSelectedItem)
 
-sellDecreaseButton.MouseButton1Click:Connect(function()
+ui.sellDecreaseButton.MouseButton1Click:Connect(function()
 	updateSellQuantity(-1)
 end)
 
-sellIncreaseButton.MouseButton1Click:Connect(function()
+ui.sellIncreaseButton.MouseButton1Click:Connect(function()
 	updateSellQuantity(1)
 end)
 
-sellButton.MouseButton1Click:Connect(sellSelectedItem)
+ui.sellButton.MouseButton1Click:Connect(sellSelectedItem)
 
-marketplaceButton.MouseButton1Click:Connect(openMarketplaceListingModal)
+ui.marketplaceButton.MouseButton1Click:Connect(openMarketplaceListingModal)
 
-myListingsButton.MouseButton1Click:Connect(openMyListingsPanel)
+ui.myListingsButton.MouseButton1Click:Connect(openMyListingsPanel)
 
-myListingsBackButton.MouseButton1Click:Connect(showInventoryItemsPanel)
+ui.myListingsBackButton.MouseButton1Click:Connect(showInventoryItemsPanel)
 
-myListingsRefreshButton.MouseButton1Click:Connect(function()
+ui.myListingsRefreshButton.MouseButton1Click:Connect(function()
 	if inventoryViewMode ~= INVENTORY_VIEW_MY_LISTINGS then
 		inventoryViewMode = INVENTORY_VIEW_MY_LISTINGS
 		renderMyListingsPanel()
 	end
 
-	requestMyListings()
+	requestMyListings({
+		Queue = true,
+	})
 end)
 
-listingQuantityDecreaseButton.MouseButton1Click:Connect(function()
+ui.listingQuantityDecreaseButton.MouseButton1Click:Connect(function()
 	updateMarketplaceListingQuantity(-1)
 end)
 
-listingQuantityIncreaseButton.MouseButton1Click:Connect(function()
+ui.listingQuantityIncreaseButton.MouseButton1Click:Connect(function()
 	updateMarketplaceListingQuantity(1)
 end)
 
-unitPriceTextBox:GetPropertyChangedSignal("Text"):Connect(updateListingModal)
+ui.unitPriceTextBox:GetPropertyChangedSignal("Text"):Connect(updateListingModal)
 
-listingCancelButton.MouseButton1Click:Connect(closeMarketplaceListingModal)
+ui.listingCancelButton.MouseButton1Click:Connect(closeMarketplaceListingModal)
 
-listingConfirmButton.MouseButton1Click:Connect(confirmMarketplaceListing)
+ui.listingConfirmButton.MouseButton1Click:Connect(confirmMarketplaceListing)
 
 inventoryRefreshRequested.Event:Connect(function(options)
 	local reason = "event"
@@ -2568,7 +2658,7 @@ roomModeResult.OnClientEvent:Connect(function(success, message, roomMode)
 		return
 	end
 
-	if panel.Visible then
+	if ui.panel.Visible then
 		setStatus(EDIT_MODE_FAILURE_MESSAGE, false)
 		updateSelectedItemDetails()
 	end
@@ -2602,13 +2692,13 @@ player:GetAttributeChangedSignal("CatalogPlacementActive"):Connect(function()
 end)
 
 majorMenuOpened.Event:Connect(function(menuName)
-	if menuName ~= MENU_NAME and panel.Visible then
+	if menuName ~= MENU_NAME and ui.panel.Visible then
 		setPanelVisible(false)
 	end
 end)
 
 closeMajorMenus.Event:Connect(function()
-	if panel.Visible then
+	if ui.panel.Visible then
 		setPanelVisible(false)
 	end
 end)
@@ -2628,9 +2718,18 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 
 	if kind == "CreateListing" then
 		local listing = response.Listing
-		local templateId = marketplaceListingTemplateId
-		local quantity = marketplaceListingQuantity
-		local unitPriceCoins = nil
+		local responseRequestId = response.RequestId
+
+		if pendingCreateListingRequestId
+			and responseRequestId ~= nil
+			and tostring(responseRequestId) ~= pendingCreateListingRequestId then
+
+			return
+		end
+
+		local templateId = pendingCreateListingTemplateId or marketplaceListingTemplateId
+		local quantity = pendingCreateListingQuantity or marketplaceListingQuantity
+		local unitPriceCoins = pendingCreateListingUnitPriceCoins
 
 		if typeof(listing) == "table" then
 			if typeof(listing.TemplateId) == "string" and listing.TemplateId ~= "" then
@@ -2651,10 +2750,14 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 		end
 
 		marketplaceCreateInFlight = false
+		pendingCreateListingRequestId = nil
+		pendingCreateListingTemplateId = nil
+		pendingCreateListingQuantity = 1
+		pendingCreateListingUnitPriceCoins = nil
 
 		if success then
 			applyMarketplaceInventoryDetails(templateId, response.InventoryDetails)
-			marketplaceModalOverlay.Visible = false
+			ui.marketplaceModalOverlay.Visible = false
 			marketplaceListingTemplateId = nil
 			marketplaceListingQuantity = 1
 			setListingModalMessage("", nil)
@@ -2679,14 +2782,21 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 				renderMyListingsPanel()
 				task.delay(0.6, function()
 					if inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS and requestMyListings then
-						requestMyListings()
+						requestMyListings({
+							Queue = true,
+						})
 					end
 				end)
 			end
 		else
 			applyMarketplaceInventoryDetails(templateId, response.InventoryDetails)
-			setListingModalMessage(message ~= "" and message or "Could not create marketplace listing.", false)
-			setStatus(message ~= "" and message or "Could not create marketplace listing.", false)
+			local errorMessage = message ~= "" and message or "Could not create marketplace listing."
+
+			if ui.marketplaceModalOverlay.Visible then
+				setListingModalMessage(errorMessage, false)
+			else
+				setStatus(errorMessage, false)
+			end
 		end
 
 		updateListingModal()
@@ -2696,6 +2806,7 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 
 	if kind == "MyListings" or kind == "GetMyListings" then
 		marketplaceMyListingsInFlight = false
+		local shouldRunQueuedRefresh = myListingsQueuedRefresh == true
 
 		if success then
 			latestMarketplaceListings = typeof(response.Listings) == "table"
@@ -2703,18 +2814,26 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 				or {}
 			setMyListingsStatus("", nil)
 		else
-			setMyListingsStatus(message ~= "" and message or "Could not load marketplace listings.", false)
+			shouldRunQueuedRefresh = false
+			myListingsQueuedRefresh = false
 
-			if message:find("Slow down", 1, true) then
-				task.delay(0.6, function()
-					if inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS and requestMyListings then
-						requestMyListings()
-					end
-				end)
+			local errorMessage = getMarketplaceWaitMessage(message)
+
+			if errorMessage == "" then
+				errorMessage = "Could not load marketplace listings."
 			end
+
+			setMyListingsStatus(errorMessage, false)
 		end
 
 		renderMyListingsPanel()
+
+		if shouldRunQueuedRefresh then
+			scheduleQueuedMyListingsRefresh(
+				MY_LISTINGS_LOCAL_COOLDOWN_SECONDS - (os.clock() - myListingsLastRequestAt)
+			)
+		end
+
 		return
 	end
 
@@ -2743,7 +2862,9 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 
 			task.delay(0.6, function()
 				if inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS and requestMyListings then
-					requestMyListings()
+					requestMyListings({
+						Queue = true,
+					})
 				end
 			end)
 		else
@@ -2811,7 +2932,7 @@ inventoryResult.OnClientEvent:Connect(function(response)
 
 			setStatus(message ~= "" and message or "Could not sell item.", false)
 
-			if panel.Visible then
+			if ui.panel.Visible then
 				renderInventory(latestInventory, latestInventoryDetails)
 			end
 		end
@@ -2823,8 +2944,8 @@ inventoryResult.OnClientEvent:Connect(function(response)
 		hasLoadedInventory = true
 		renderInventory(response.Inventory, response.InventoryDetails)
 
-		if statusLabel.Text ~= EDIT_MODE_FAILURE_MESSAGE
-			and statusLabel.Text ~= EDIT_MODE_PREPARING_MESSAGE then
+		if ui.statusLabel.Text ~= EDIT_MODE_FAILURE_MESSAGE
+			and ui.statusLabel.Text ~= EDIT_MODE_PREPARING_MESSAGE then
 
 			setStatus("", nil)
 		end
@@ -2836,7 +2957,7 @@ inventoryResult.OnClientEvent:Connect(function(response)
 end)
 
 local function handleVisibilityChanged()
-	if panel.Visible and not shouldShowInventoryButton() then
+	if ui.panel.Visible and not shouldShowInventoryButton() then
 		setPanelVisible(false)
 	else
 		updateOpenButton()

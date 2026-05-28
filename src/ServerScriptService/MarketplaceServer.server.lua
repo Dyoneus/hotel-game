@@ -90,7 +90,8 @@ local function handleCreateListing(player, payload)
 		Success = success,
 		Message = message,
 		Listing = listing,
-		InventoryDetails = inventoryDetails,
+		InventoryDetails = success and inventoryDetails or nil,
+		RequestId = payload.RequestId,
 	})
 end
 
@@ -112,7 +113,8 @@ local function handleCancelListing(player, payload)
 		Success = success,
 		Message = message,
 		Listing = listing,
-		InventoryDetails = inventoryDetails,
+		InventoryDetails = success and inventoryDetails or nil,
+		RequestId = payload.RequestId,
 	})
 end
 
@@ -133,6 +135,7 @@ marketplaceRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			Kind = typeof(actionName) == "string" and actionName or "Marketplace",
 			Success = false,
 			Message = "Slow down before using the marketplace.",
+			RequestId = typeof(payload) == "table" and payload.RequestId or nil,
 		})
 		return
 	end
