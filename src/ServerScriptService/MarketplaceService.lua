@@ -488,6 +488,47 @@ function MarketplaceService.GetPublicListingSnapshot(listing)
 	}
 end
 
+local function getListingCatalogMetadata(templateId)
+	local displayName = templateId
+	local category = nil
+	local item = getCatalogItem(templateId)
+
+	if item then
+		if typeof(item.DisplayName) == "string" and item.DisplayName ~= "" then
+			displayName = item.DisplayName
+		end
+
+		if typeof(item.Category) == "string" and item.Category ~= "" then
+			category = item.Category
+		end
+	end
+
+	return displayName, category
+end
+
+function MarketplaceService.GetMyListingSnapshot(listing)
+	if typeof(listing) ~= "table" then
+		return nil
+	end
+
+	local displayName, category = getListingCatalogMetadata(listing.TemplateId)
+
+	return {
+		ListingId = listing.ListingId,
+		TemplateId = listing.TemplateId,
+		DisplayName = displayName,
+		Category = category,
+		Quantity = listing.Quantity,
+		UnitPriceCoins = listing.UnitPriceCoins,
+		CurrencyKey = listing.CurrencyKey or MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+		Status = listing.Status,
+		CreatedAt = listing.CreatedAt,
+		UpdatedAt = listing.UpdatedAt,
+		SoldAt = listing.SoldAt,
+		BuyerUserId = listing.BuyerUserId,
+	}
+end
+
 function MarketplaceService.GetListingTotalPrice(listingOrQuantity, unitPriceCoins)
 	local quantity = nil
 	local price = nil
@@ -787,7 +828,7 @@ function MarketplaceService.GetMyListings(player)
 	local snapshots = {}
 
 	for _, listing in pairs(listings) do
-		local snapshot = MarketplaceService.GetPublicListingSnapshot(listing)
+		local snapshot = MarketplaceService.GetMyListingSnapshot(listing)
 
 		if snapshot then
 			table.insert(snapshots, snapshot)
@@ -795,7 +836,14 @@ function MarketplaceService.GetMyListings(player)
 	end
 
 	table.sort(snapshots, function(a, b)
-		return (a.CreatedAt or 0) > (b.CreatedAt or 0)
+		local aSort = a.UpdatedAt or a.CreatedAt or 0
+		local bSort = b.UpdatedAt or b.CreatedAt or 0
+
+		if aSort == bSort then
+			return tostring(a.ListingId or "") > tostring(b.ListingId or "")
+		end
+
+		return aSort > bSort
 	end)
 
 	return true, "Marketplace listings loaded.", snapshots

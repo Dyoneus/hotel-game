@@ -1645,6 +1645,48 @@ local function formatListingCreatedAt(createdAt)
 	return ""
 end
 
+local function getMarketplaceStatusColor(status)
+	if status == "Active" then
+		return Color3.fromRGB(45, 110, 65)
+	end
+
+	if status == "Sold" then
+		return Color3.fromRGB(55, 95, 150)
+	end
+
+	if status == "Cancelled" then
+		return Color3.fromRGB(130, 95, 65)
+	end
+
+	return Color3.fromRGB(105, 105, 105)
+end
+
+local function getMarketplaceSaleStatusText(listing)
+	local status = tostring(listing and listing.Status or "Unknown")
+	local createdText = formatListingCreatedAt(listing and listing.CreatedAt)
+	local updatedText = formatListingCreatedAt(listing and listing.UpdatedAt)
+	local soldText = formatListingCreatedAt(listing and listing.SoldAt)
+	local detailText = ""
+
+	if status == "Active" and createdText ~= "" then
+		detailText = "Created " .. createdText
+	elseif status == "Sold" and soldText ~= "" then
+		detailText = "Sold " .. soldText
+	elseif status == "Sold" and updatedText ~= "" then
+		detailText = "Sold " .. updatedText
+	elseif status == "Cancelled" and updatedText ~= "" then
+		detailText = "Cancelled " .. updatedText
+	elseif createdText ~= "" then
+		detailText = "Created " .. createdText
+	end
+
+	if detailText ~= "" then
+		return status .. " | " .. detailText
+	end
+
+	return status
+end
+
 local function getMarketplaceListingDisplayName(listing)
 	if typeof(listing) == "table"
 		and typeof(listing.DisplayName) == "string"
@@ -2128,7 +2170,7 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 	local status = tostring(listing.Status or "Unknown")
 	local isActive = status == "Active"
 	local isCancelInFlight = marketplaceCancelInFlightByListingId[listingId] == true
-	local createdText = formatListingCreatedAt(listing.CreatedAt)
+	local statusColor = getMarketplaceStatusColor(status)
 
 	local row = Instance.new("Frame")
 	row.Name = "MarketplaceSaleRow"
@@ -2172,8 +2214,8 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 	listingStatusLabel.Position = UDim2.fromOffset(12, 54)
 	listingStatusLabel.Size = UDim2.new(1, isActive and -120 or -24, 0, 18)
 	listingStatusLabel.BackgroundTransparency = 1
-	listingStatusLabel.Text = createdText ~= "" and (status .. " | " .. createdText) or status
-	listingStatusLabel.TextColor3 = isActive and Color3.fromRGB(45, 110, 65) or Color3.fromRGB(105, 105, 105)
+	listingStatusLabel.Text = getMarketplaceSaleStatusText(listing)
+	listingStatusLabel.TextColor3 = statusColor
 	listingStatusLabel.TextSize = 12
 	listingStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 	listingStatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2224,24 +2266,55 @@ local function upsertMySaleListing(listing)
 	table.insert(latestMySalesListings, listing)
 end
 
+local function sortMySaleListings()
+	table.sort(latestMySalesListings, function(a, b)
+		local aTime = typeof(a) == "table" and (a.UpdatedAt or a.CreatedAt or 0) or 0
+		local bTime = typeof(b) == "table" and (b.UpdatedAt or b.CreatedAt or 0) or 0
+
+		if aTime == bTime then
+			local aId = typeof(a) == "table" and a.ListingId or ""
+			local bId = typeof(b) == "table" and b.ListingId or ""
+
+			return tostring(aId or "") > tostring(bId or "")
+		end
+
+		return aTime > bTime
+	end)
+end
+
 renderMarketplace = function()
 	updateCatalogChrome()
 	clearItemRows()
 
 	if marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+		local activeOfferCount = 0
+
+		for _, listing in ipairs(latestPublicMarketplaceListings) do
+			if typeof(listing) == "table" and tostring(listing.Status or "") == "Active" then
+				activeOfferCount += 1
+			end
+		end
+
 		if marketplacePublicListingsInFlight then
 			setStatus("Loading marketplace offers...")
-		elseif #latestPublicMarketplaceListings == 0 then
-			setStatus("No active marketplace offers.")
-			createEmptyCatalogState("No active marketplace offers.")
+		elseif activeOfferCount == 0 then
+			setStatus("No active offers right now.")
+			createEmptyCatalogState("No active offers right now.")
 		else
 			setStatus("Browse marketplace offers.")
 		end
 
-		for index, listing in ipairs(latestPublicMarketplaceListings) do
-			createMarketplaceOfferRow(listing, index)
+		local visibleIndex = 0
+
+		for _, listing in ipairs(latestPublicMarketplaceListings) do
+			if typeof(listing) == "table" and tostring(listing.Status or "") == "Active" then
+				visibleIndex += 1
+				createMarketplaceOfferRow(listing, visibleIndex)
+			end
 		end
 	else
+		sortMySaleListings()
+
 		if marketplaceMySalesInFlight then
 			setStatus("Loading marketplace sales...")
 		elseif #latestMySalesListings == 0 then
@@ -2719,9 +2792,16 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 		local shouldRunQueuedRefresh = publicMarketplaceQueuedRefresh == true
 
 		if success then
-			latestPublicMarketplaceListings = typeof(response.Listings) == "table"
-				and response.Listings
-				or {}
+			latestPublicMarketplaceListings = {}
+
+			if typeof(response.Listings) == "table" then
+				for _, listing in ipairs(response.Listings) do
+					if typeof(listing) == "table" and tostring(listing.Status or "") == "Active" then
+						table.insert(latestPublicMarketplaceListings, listing)
+					end
+				end
+			end
+
 			message = ""
 		else
 			shouldRunQueuedRefresh = false
@@ -2761,6 +2841,7 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			latestMySalesListings = typeof(response.Listings) == "table"
 				and response.Listings
 				or {}
+			sortMySaleListings()
 			message = ""
 		else
 			shouldRunQueuedRefresh = false
