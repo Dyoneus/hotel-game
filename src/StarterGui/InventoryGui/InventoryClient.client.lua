@@ -9,6 +9,8 @@ local playerGui = player:WaitForChild("PlayerGui")
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local inventoryRequest = remoteEvents:WaitForChild("InventoryRequest")
 local inventoryResult = remoteEvents:WaitForChild("InventoryResult")
+local marketplaceRequest = remoteEvents:WaitForChild("MarketplaceRequest")
+local marketplaceResult = remoteEvents:WaitForChild("MarketplaceResult")
 local setRoomModeRequest = remoteEvents:WaitForChild("SetRoomModeRequest")
 local roomModeResult = remoteEvents:WaitForChild("RoomModeResult")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
@@ -55,6 +57,13 @@ local selectedInventoryTemplateId = nil
 local dropdownOpen = false
 local currentInventoryCategories = { "All" }
 local selectedSellQuantity = 1
+local inventoryViewMode = "Items"
+local marketplaceListingTemplateId = nil
+local marketplaceListingQuantity = 1
+local marketplaceCreateInFlight = false
+local marketplaceMyListingsInFlight = false
+local marketplaceCancelInFlightByListingId = {}
+local latestMarketplaceListings = {}
 local pendingPlacementTemplateId = nil
 local pendingPlaceAfterEdit = false
 local inventoryPlacementRequestedEditMode = false
@@ -74,6 +83,11 @@ local EDIT_MODE_FAILURE_MESSAGE = "Go to a room you can edit to place this item.
 local EDIT_MODE_PREPARING_MESSAGE = "Preparing room editing..."
 local INVENTORY_CATEGORY_ALL = "All"
 local INVENTORY_CATEGORY_OTHER = "Other"
+local INVENTORY_VIEW_ITEMS = "Items"
+local INVENTORY_VIEW_MY_LISTINGS = "MyListings"
+local MARKETPLACE_MIN_UNIT_PRICE_COINS = 1
+local MARKETPLACE_MAX_UNIT_PRICE_COINS = 999999
+local MARKETPLACE_MAX_LISTING_QUANTITY = 99
 local PANEL_SCREEN_MARGIN = 12
 
 local function createCorner(parent, radius)
@@ -221,7 +235,7 @@ statusLabel.Parent = panel
 local categoryButton = Instance.new("TextButton")
 categoryButton.Name = "CategoryDropdownButton"
 categoryButton.Position = UDim2.fromOffset(18, 92)
-categoryButton.Size = UDim2.new(0, 300, 0, 32)
+categoryButton.Size = UDim2.new(0, 184, 0, 32)
 categoryButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
 categoryButton.BorderSizePixel = 0
 categoryButton.Text = "Category: All"
@@ -235,10 +249,25 @@ categoryButton.Parent = panel
 createCorner(categoryButton, 8)
 createStroke(categoryButton, Color3.fromRGB(210, 215, 220), 1, 0)
 
+local myListingsButton = Instance.new("TextButton")
+myListingsButton.Name = "MyListingsButton"
+myListingsButton.Position = UDim2.fromOffset(210, 92)
+myListingsButton.Size = UDim2.new(0, 108, 0, 32)
+myListingsButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+myListingsButton.BorderSizePixel = 0
+myListingsButton.Text = "My Listings"
+myListingsButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+myListingsButton.TextSize = 13
+myListingsButton.Font = Enum.Font.GothamBold
+myListingsButton.Parent = panel
+
+createCorner(myListingsButton, 8)
+createStroke(myListingsButton, Color3.fromRGB(210, 215, 220), 1, 0)
+
 local categoryDropdown = Instance.new("ScrollingFrame")
 categoryDropdown.Name = "CategoryDropdownList"
 categoryDropdown.Position = UDim2.fromOffset(18, 128)
-categoryDropdown.Size = UDim2.fromOffset(300, 0)
+categoryDropdown.Size = UDim2.fromOffset(184, 0)
 categoryDropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 categoryDropdown.BorderSizePixel = 0
 categoryDropdown.CanvasSize = UDim2.fromOffset(0, 0)
@@ -424,20 +453,338 @@ sellButton.Parent = sellControlsFrame
 createCorner(sellButton, 8)
 
 local marketplaceButton = Instance.new("TextButton")
-marketplaceButton.Name = "MarketplaceSoonButton"
+marketplaceButton.Name = "SellInMarketplaceButton"
 marketplaceButton.Position = UDim2.new(0, 16, 0, 310)
 marketplaceButton.Size = UDim2.new(1, -32, 0, 32)
-marketplaceButton.BackgroundColor3 = Color3.fromRGB(165, 170, 175)
+marketplaceButton.BackgroundColor3 = Color3.fromRGB(70, 120, 170)
 marketplaceButton.BorderSizePixel = 0
-marketplaceButton.Text = "Marketplace Soon"
+marketplaceButton.Text = "Sell in Marketplace"
 marketplaceButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 marketplaceButton.TextSize = 14
 marketplaceButton.Font = Enum.Font.GothamBold
-marketplaceButton.Active = false
-marketplaceButton.AutoButtonColor = false
+marketplaceButton.Active = true
+marketplaceButton.AutoButtonColor = true
 marketplaceButton.Parent = detailsPanel
 
 createCorner(marketplaceButton, 8)
+
+local myListingsPanel = Instance.new("Frame")
+myListingsPanel.Name = "MyListingsPanel"
+myListingsPanel.Position = detailsPanel.Position
+myListingsPanel.Size = detailsPanel.Size
+myListingsPanel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+myListingsPanel.BorderSizePixel = 0
+myListingsPanel.Visible = false
+myListingsPanel.Parent = panel
+
+createCorner(myListingsPanel, 12)
+createStroke(myListingsPanel, Color3.fromRGB(220, 220, 220), 1, 0)
+
+local myListingsTitle = Instance.new("TextLabel")
+myListingsTitle.Name = "MyListingsTitle"
+myListingsTitle.Position = UDim2.fromOffset(16, 14)
+myListingsTitle.Size = UDim2.new(1, -154, 0, 28)
+myListingsTitle.BackgroundTransparency = 1
+myListingsTitle.Text = "My Listings"
+myListingsTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
+myListingsTitle.TextSize = 20
+myListingsTitle.TextXAlignment = Enum.TextXAlignment.Left
+myListingsTitle.TextTruncate = Enum.TextTruncate.AtEnd
+myListingsTitle.Font = Enum.Font.GothamBold
+myListingsTitle.Parent = myListingsPanel
+
+local myListingsBackButton = Instance.new("TextButton")
+myListingsBackButton.Name = "BackToItemsButton"
+myListingsBackButton.AnchorPoint = Vector2.new(1, 0)
+myListingsBackButton.Position = UDim2.new(1, -16, 0, 14)
+myListingsBackButton.Size = UDim2.fromOffset(58, 28)
+myListingsBackButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+myListingsBackButton.BorderSizePixel = 0
+myListingsBackButton.Text = "Items"
+myListingsBackButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+myListingsBackButton.TextSize = 12
+myListingsBackButton.Font = Enum.Font.GothamBold
+myListingsBackButton.Parent = myListingsPanel
+
+createCorner(myListingsBackButton, 7)
+
+local myListingsRefreshButton = Instance.new("TextButton")
+myListingsRefreshButton.Name = "RefreshListingsButton"
+myListingsRefreshButton.AnchorPoint = Vector2.new(1, 0)
+myListingsRefreshButton.Position = UDim2.new(1, -82, 0, 14)
+myListingsRefreshButton.Size = UDim2.fromOffset(64, 28)
+myListingsRefreshButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+myListingsRefreshButton.BorderSizePixel = 0
+myListingsRefreshButton.Text = "Refresh"
+myListingsRefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+myListingsRefreshButton.TextSize = 12
+myListingsRefreshButton.Font = Enum.Font.GothamBold
+myListingsRefreshButton.Parent = myListingsPanel
+
+createCorner(myListingsRefreshButton, 7)
+
+local myListingsStatusLabel = Instance.new("TextLabel")
+myListingsStatusLabel.Name = "MyListingsStatusLabel"
+myListingsStatusLabel.Position = UDim2.fromOffset(16, 48)
+myListingsStatusLabel.Size = UDim2.new(1, -32, 0, 22)
+myListingsStatusLabel.BackgroundTransparency = 1
+myListingsStatusLabel.Text = ""
+myListingsStatusLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
+myListingsStatusLabel.TextSize = 13
+myListingsStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+myListingsStatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+myListingsStatusLabel.Font = Enum.Font.Gotham
+myListingsStatusLabel.Parent = myListingsPanel
+
+local myListingsListFrame = Instance.new("ScrollingFrame")
+myListingsListFrame.Name = "MyListingsList"
+myListingsListFrame.Position = UDim2.fromOffset(16, 78)
+myListingsListFrame.Size = UDim2.new(1, -32, 1, -94)
+myListingsListFrame.BackgroundColor3 = Color3.fromRGB(248, 248, 248)
+myListingsListFrame.BorderSizePixel = 0
+myListingsListFrame.ScrollBarThickness = 5
+myListingsListFrame.CanvasSize = UDim2.fromOffset(0, 0)
+myListingsListFrame.Parent = myListingsPanel
+
+createCorner(myListingsListFrame, 8)
+createStroke(myListingsListFrame, Color3.fromRGB(225, 225, 225), 1, 0)
+
+local myListingsListLayout = Instance.new("UIListLayout")
+myListingsListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+myListingsListLayout.Padding = UDim.new(0, 8)
+myListingsListLayout.Parent = myListingsListFrame
+
+local myListingsListPadding = Instance.new("UIPadding")
+myListingsListPadding.PaddingTop = UDim.new(0, 8)
+myListingsListPadding.PaddingBottom = UDim.new(0, 8)
+myListingsListPadding.PaddingLeft = UDim.new(0, 8)
+myListingsListPadding.PaddingRight = UDim.new(0, 8)
+myListingsListPadding.Parent = myListingsListFrame
+
+local marketplaceModalOverlay = Instance.new("Frame")
+marketplaceModalOverlay.Name = "MarketplaceListingModalOverlay"
+marketplaceModalOverlay.Position = UDim2.fromScale(0, 0)
+marketplaceModalOverlay.Size = UDim2.fromScale(1, 1)
+marketplaceModalOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+marketplaceModalOverlay.BackgroundTransparency = 0.35
+marketplaceModalOverlay.BorderSizePixel = 0
+marketplaceModalOverlay.Visible = false
+marketplaceModalOverlay.Active = true
+marketplaceModalOverlay.ZIndex = 100
+marketplaceModalOverlay.Parent = panel
+
+local marketplaceModalWindow = Instance.new("Frame")
+marketplaceModalWindow.Name = "MarketplaceListingModal"
+marketplaceModalWindow.AnchorPoint = Vector2.new(0.5, 0.5)
+marketplaceModalWindow.Position = UDim2.fromScale(0.5, 0.5)
+marketplaceModalWindow.Size = UDim2.fromOffset(360, 314)
+marketplaceModalWindow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+marketplaceModalWindow.BorderSizePixel = 0
+marketplaceModalWindow.ZIndex = 101
+marketplaceModalWindow.Parent = marketplaceModalOverlay
+
+createCorner(marketplaceModalWindow, 12)
+createStroke(marketplaceModalWindow, Color3.fromRGB(230, 230, 230), 1, 0)
+
+local listingModalTitle = Instance.new("TextLabel")
+listingModalTitle.Name = "ListingModalTitle"
+listingModalTitle.Position = UDim2.fromOffset(18, 14)
+listingModalTitle.Size = UDim2.new(1, -36, 0, 26)
+listingModalTitle.BackgroundTransparency = 1
+listingModalTitle.Text = "List in Marketplace"
+listingModalTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
+listingModalTitle.TextSize = 20
+listingModalTitle.TextXAlignment = Enum.TextXAlignment.Left
+listingModalTitle.Font = Enum.Font.GothamBold
+listingModalTitle.ZIndex = 102
+listingModalTitle.Parent = marketplaceModalWindow
+
+local listingModalItemLabel = Instance.new("TextLabel")
+listingModalItemLabel.Name = "ListingModalItemLabel"
+listingModalItemLabel.Position = UDim2.fromOffset(18, 48)
+listingModalItemLabel.Size = UDim2.new(1, -36, 0, 22)
+listingModalItemLabel.BackgroundTransparency = 1
+listingModalItemLabel.Text = ""
+listingModalItemLabel.TextColor3 = Color3.fromRGB(55, 55, 55)
+listingModalItemLabel.TextSize = 14
+listingModalItemLabel.TextXAlignment = Enum.TextXAlignment.Left
+listingModalItemLabel.TextTruncate = Enum.TextTruncate.AtEnd
+listingModalItemLabel.Font = Enum.Font.GothamBold
+listingModalItemLabel.ZIndex = 102
+listingModalItemLabel.Parent = marketplaceModalWindow
+
+local listingModalAvailableLabel = Instance.new("TextLabel")
+listingModalAvailableLabel.Name = "ListingModalAvailableLabel"
+listingModalAvailableLabel.Position = UDim2.fromOffset(18, 72)
+listingModalAvailableLabel.Size = UDim2.new(1, -36, 0, 22)
+listingModalAvailableLabel.BackgroundTransparency = 1
+listingModalAvailableLabel.Text = ""
+listingModalAvailableLabel.TextColor3 = Color3.fromRGB(80, 80, 80)
+listingModalAvailableLabel.TextSize = 13
+listingModalAvailableLabel.TextXAlignment = Enum.TextXAlignment.Left
+listingModalAvailableLabel.Font = Enum.Font.Gotham
+listingModalAvailableLabel.ZIndex = 102
+listingModalAvailableLabel.Parent = marketplaceModalWindow
+
+local listingQuantityLabel = Instance.new("TextLabel")
+listingQuantityLabel.Name = "ListingQuantityText"
+listingQuantityLabel.Position = UDim2.fromOffset(18, 108)
+listingQuantityLabel.Size = UDim2.fromOffset(96, 28)
+listingQuantityLabel.BackgroundTransparency = 1
+listingQuantityLabel.Text = "Quantity"
+listingQuantityLabel.TextColor3 = Color3.fromRGB(55, 55, 55)
+listingQuantityLabel.TextSize = 13
+listingQuantityLabel.TextXAlignment = Enum.TextXAlignment.Left
+listingQuantityLabel.Font = Enum.Font.GothamMedium
+listingQuantityLabel.ZIndex = 102
+listingQuantityLabel.Parent = marketplaceModalWindow
+
+local listingQuantityDecreaseButton = Instance.new("TextButton")
+listingQuantityDecreaseButton.Name = "DecreaseListingQuantityButton"
+listingQuantityDecreaseButton.Position = UDim2.fromOffset(128, 104)
+listingQuantityDecreaseButton.Size = UDim2.fromOffset(34, 34)
+listingQuantityDecreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+listingQuantityDecreaseButton.BorderSizePixel = 0
+listingQuantityDecreaseButton.Text = "<"
+listingQuantityDecreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+listingQuantityDecreaseButton.TextSize = 15
+listingQuantityDecreaseButton.Font = Enum.Font.GothamBold
+listingQuantityDecreaseButton.ZIndex = 102
+listingQuantityDecreaseButton.Parent = marketplaceModalWindow
+
+createCorner(listingQuantityDecreaseButton, 8)
+
+local listingQuantityValueLabel = Instance.new("TextLabel")
+listingQuantityValueLabel.Name = "ListingQuantityValue"
+listingQuantityValueLabel.Position = UDim2.fromOffset(168, 104)
+listingQuantityValueLabel.Size = UDim2.fromOffset(48, 34)
+listingQuantityValueLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+listingQuantityValueLabel.BorderSizePixel = 0
+listingQuantityValueLabel.Text = "1"
+listingQuantityValueLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+listingQuantityValueLabel.TextSize = 14
+listingQuantityValueLabel.Font = Enum.Font.GothamBold
+listingQuantityValueLabel.ZIndex = 102
+listingQuantityValueLabel.Parent = marketplaceModalWindow
+
+createCorner(listingQuantityValueLabel, 8)
+
+local listingQuantityIncreaseButton = Instance.new("TextButton")
+listingQuantityIncreaseButton.Name = "IncreaseListingQuantityButton"
+listingQuantityIncreaseButton.Position = UDim2.fromOffset(222, 104)
+listingQuantityIncreaseButton.Size = UDim2.fromOffset(34, 34)
+listingQuantityIncreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
+listingQuantityIncreaseButton.BorderSizePixel = 0
+listingQuantityIncreaseButton.Text = ">"
+listingQuantityIncreaseButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+listingQuantityIncreaseButton.TextSize = 15
+listingQuantityIncreaseButton.Font = Enum.Font.GothamBold
+listingQuantityIncreaseButton.ZIndex = 102
+listingQuantityIncreaseButton.Parent = marketplaceModalWindow
+
+createCorner(listingQuantityIncreaseButton, 8)
+
+local unitPriceLabel = Instance.new("TextLabel")
+unitPriceLabel.Name = "UnitPriceText"
+unitPriceLabel.Position = UDim2.fromOffset(18, 154)
+unitPriceLabel.Size = UDim2.fromOffset(124, 28)
+unitPriceLabel.BackgroundTransparency = 1
+unitPriceLabel.Text = "Unit price"
+unitPriceLabel.TextColor3 = Color3.fromRGB(55, 55, 55)
+unitPriceLabel.TextSize = 13
+unitPriceLabel.TextXAlignment = Enum.TextXAlignment.Left
+unitPriceLabel.Font = Enum.Font.GothamMedium
+unitPriceLabel.ZIndex = 102
+unitPriceLabel.Parent = marketplaceModalWindow
+
+local unitPriceTextBox = Instance.new("TextBox")
+unitPriceTextBox.Name = "UnitPriceCoinsTextBox"
+unitPriceTextBox.Position = UDim2.fromOffset(128, 150)
+unitPriceTextBox.Size = UDim2.fromOffset(144, 34)
+unitPriceTextBox.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
+unitPriceTextBox.BorderSizePixel = 0
+unitPriceTextBox.ClearTextOnFocus = false
+unitPriceTextBox.PlaceholderText = "Coins"
+unitPriceTextBox.Text = "1"
+unitPriceTextBox.TextColor3 = Color3.fromRGB(40, 40, 40)
+unitPriceTextBox.PlaceholderColor3 = Color3.fromRGB(135, 135, 135)
+unitPriceTextBox.TextSize = 14
+unitPriceTextBox.TextXAlignment = Enum.TextXAlignment.Left
+unitPriceTextBox.Font = Enum.Font.GothamBold
+unitPriceTextBox.ZIndex = 102
+unitPriceTextBox.Parent = marketplaceModalWindow
+
+createCorner(unitPriceTextBox, 8)
+
+local unitPriceCoinsLabel = Instance.new("TextLabel")
+unitPriceCoinsLabel.Name = "UnitPriceCoinsLabel"
+unitPriceCoinsLabel.Position = UDim2.fromOffset(278, 154)
+unitPriceCoinsLabel.Size = UDim2.fromOffset(58, 26)
+unitPriceCoinsLabel.BackgroundTransparency = 1
+unitPriceCoinsLabel.Text = "Coins"
+unitPriceCoinsLabel.TextColor3 = Color3.fromRGB(80, 80, 80)
+unitPriceCoinsLabel.TextSize = 13
+unitPriceCoinsLabel.TextXAlignment = Enum.TextXAlignment.Left
+unitPriceCoinsLabel.Font = Enum.Font.Gotham
+unitPriceCoinsLabel.ZIndex = 102
+unitPriceCoinsLabel.Parent = marketplaceModalWindow
+
+local listingTotalPriceLabel = Instance.new("TextLabel")
+listingTotalPriceLabel.Name = "ListingTotalPriceLabel"
+listingTotalPriceLabel.Position = UDim2.fromOffset(18, 198)
+listingTotalPriceLabel.Size = UDim2.new(1, -36, 0, 24)
+listingTotalPriceLabel.BackgroundTransparency = 1
+listingTotalPriceLabel.Text = "Total: 1 Coins"
+listingTotalPriceLabel.TextColor3 = Color3.fromRGB(50, 90, 60)
+listingTotalPriceLabel.TextSize = 14
+listingTotalPriceLabel.TextXAlignment = Enum.TextXAlignment.Left
+listingTotalPriceLabel.Font = Enum.Font.GothamBold
+listingTotalPriceLabel.ZIndex = 102
+listingTotalPriceLabel.Parent = marketplaceModalWindow
+
+local listingModalMessageLabel = Instance.new("TextLabel")
+listingModalMessageLabel.Name = "ListingModalMessage"
+listingModalMessageLabel.Position = UDim2.fromOffset(18, 226)
+listingModalMessageLabel.Size = UDim2.new(1, -36, 0, 26)
+listingModalMessageLabel.BackgroundTransparency = 1
+listingModalMessageLabel.Text = ""
+listingModalMessageLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
+listingModalMessageLabel.TextSize = 12
+listingModalMessageLabel.TextWrapped = true
+listingModalMessageLabel.TextXAlignment = Enum.TextXAlignment.Left
+listingModalMessageLabel.Font = Enum.Font.Gotham
+listingModalMessageLabel.ZIndex = 102
+listingModalMessageLabel.Parent = marketplaceModalWindow
+
+local listingCancelButton = Instance.new("TextButton")
+listingCancelButton.Name = "CancelListingModalButton"
+listingCancelButton.Position = UDim2.fromOffset(18, 264)
+listingCancelButton.Size = UDim2.fromOffset(142, 34)
+listingCancelButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+listingCancelButton.BorderSizePixel = 0
+listingCancelButton.Text = "Cancel"
+listingCancelButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+listingCancelButton.TextSize = 14
+listingCancelButton.Font = Enum.Font.GothamBold
+listingCancelButton.ZIndex = 102
+listingCancelButton.Parent = marketplaceModalWindow
+
+createCorner(listingCancelButton, 8)
+
+local listingConfirmButton = Instance.new("TextButton")
+listingConfirmButton.Name = "ConfirmListingButton"
+listingConfirmButton.Position = UDim2.fromOffset(176, 264)
+listingConfirmButton.Size = UDim2.fromOffset(166, 34)
+listingConfirmButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+listingConfirmButton.BorderSizePixel = 0
+listingConfirmButton.Text = "Confirm"
+listingConfirmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+listingConfirmButton.TextSize = 14
+listingConfirmButton.Font = Enum.Font.GothamBold
+listingConfirmButton.ZIndex = 102
+listingConfirmButton.Parent = marketplaceModalWindow
+
+createCorner(listingConfirmButton, 8)
 
 local function shouldShowInventoryButton()
 	return player:GetAttribute("OnboardingStep") == "Complete"
@@ -478,6 +825,18 @@ local function setStatus(text, success)
 		statusLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
 	else
 		statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
+	end
+end
+
+local function setMyListingsStatus(text, success)
+	myListingsStatusLabel.Text = tostring(text or "")
+
+	if success == true then
+		myListingsStatusLabel.TextColor3 = Color3.fromRGB(50, 110, 60)
+	elseif success == false then
+		myListingsStatusLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
+	else
+		myListingsStatusLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
 	end
 end
 
@@ -600,9 +959,26 @@ local function setDropdownOpen(isOpen)
 
 	if dropdownOpen then
 		local dropdownHeight = math.min(#currentInventoryCategories * 30 + 8, 156)
-		categoryDropdown.Size = UDim2.fromOffset(300, dropdownHeight)
+		categoryDropdown.Size = UDim2.fromOffset(184, dropdownHeight)
 	else
-		categoryDropdown.Size = UDim2.fromOffset(300, 0)
+		categoryDropdown.Size = UDim2.fromOffset(184, 0)
+	end
+end
+
+local function updateInventoryViewMode()
+	local showingMyListings = inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS
+
+	detailsPanel.Visible = not showingMyListings
+	myListingsPanel.Visible = showingMyListings
+	myListingsButton.BackgroundColor3 = showingMyListings
+		and Color3.fromRGB(70, 150, 210)
+		or Color3.fromRGB(235, 238, 242)
+	myListingsButton.TextColor3 = showingMyListings
+		and Color3.fromRGB(255, 255, 255)
+		or Color3.fromRGB(45, 45, 45)
+
+	if showingMyListings then
+		setDropdownOpen(false)
 	end
 end
 
@@ -892,6 +1268,16 @@ local function getInventoryCounts(templateId)
 	local count = 0
 	local details = nil
 
+	if typeof(templateId) ~= "string" or templateId == "" then
+		return {
+			Total = 0,
+			Tradable = 0,
+			Untradable = 0,
+			Sellable = 0,
+			Unsellable = 0,
+		}
+	end
+
 	if typeof(latestInventory) == "table" and isNonNegativeCount(latestInventory[templateId]) then
 		count = math.floor(latestInventory[templateId])
 	end
@@ -995,6 +1381,12 @@ local function setButtonEnabled(button, isEnabled, enabledColor)
 end
 
 local function updateSelectedItemDetails()
+	updateInventoryViewMode()
+
+	if inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS then
+		return
+	end
+
 	local entry = getSelectedInventoryEntry()
 
 	if not entry then
@@ -1067,7 +1459,8 @@ local function updateSelectedItemDetails()
 	sellButton.Text = sellRequestInFlight and "Selling..." or "Sell for Dollars"
 
 	marketplaceButton.Visible = counts.Tradable > 0
-	marketplaceButton.Text = counts.Tradable > 0 and "Marketplace Soon" or "Untradable"
+	setButtonEnabled(marketplaceButton, counts.Tradable > 0 and not marketplaceCreateInFlight, Color3.fromRGB(70, 120, 170))
+	marketplaceButton.Text = marketplaceCreateInFlight and "Listing..." or "Sell in Marketplace"
 end
 
 local function createInventoryCard(entry, layoutOrder)
@@ -1146,6 +1539,7 @@ local function createInventoryCard(entry, layoutOrder)
 	card.MouseButton1Click:Connect(function()
 		selectedInventoryTemplateId = templateId
 		selectedSellQuantity = 1
+		inventoryViewMode = INVENTORY_VIEW_ITEMS
 		setStatus("", nil)
 
 		if renderInventory then
@@ -1313,6 +1707,495 @@ local function applyInventoryLocalDelta(payload)
 	if panel.Visible then
 		renderInventory(latestInventory, latestInventoryDetails)
 	end
+end
+
+local function normalizeIntegerText(text, minValue, maxValue, emptyMessage)
+	if typeof(text) ~= "string" then
+		return nil, emptyMessage
+	end
+
+	local trimmed = text:match("^%s*(.-)%s*$") or ""
+
+	if trimmed == "" then
+		return nil, emptyMessage
+	end
+
+	if not trimmed:match("^%d+$") then
+		return nil, "Use whole Coins only."
+	end
+
+	local value = tonumber(trimmed)
+
+	if not value or value ~= value or value < minValue or value > maxValue then
+		return nil, "Price must be 1 to 999999 Coins."
+	end
+
+	value = math.floor(value)
+
+	if value < minValue or value > maxValue then
+		return nil, "Price must be 1 to 999999 Coins."
+	end
+
+	return value, nil
+end
+
+local function parseListingUnitPrice()
+	return normalizeIntegerText(
+		unitPriceTextBox.Text,
+		MARKETPLACE_MIN_UNIT_PRICE_COINS,
+		MARKETPLACE_MAX_UNIT_PRICE_COINS,
+		"Enter a Coin price."
+	)
+end
+
+local function getMarketplaceListingMaxQuantity(templateId)
+	local counts = getInventoryCounts(templateId)
+
+	return math.min(counts.Tradable, MARKETPLACE_MAX_LISTING_QUANTITY)
+end
+
+local function setListingModalMessage(message, success)
+	listingModalMessageLabel.Text = tostring(message or "")
+
+	if success == true then
+		listingModalMessageLabel.TextColor3 = Color3.fromRGB(50, 110, 60)
+	else
+		listingModalMessageLabel.TextColor3 = Color3.fromRGB(150, 60, 60)
+	end
+end
+
+local function updateListingModal()
+	if not marketplaceModalOverlay.Visible then
+		return
+	end
+
+	local templateId = marketplaceListingTemplateId
+	local maxQuantity = getMarketplaceListingMaxQuantity(templateId)
+	local counts = getInventoryCounts(templateId)
+	local unitPrice, priceMessage = parseListingUnitPrice()
+
+	if maxQuantity <= 0 then
+		marketplaceListingQuantity = 1
+	else
+		marketplaceListingQuantity = math.clamp(
+			math.floor(marketplaceListingQuantity),
+			1,
+			maxQuantity
+		)
+	end
+
+	listingModalItemLabel.Text = getInventoryDisplayName(templateId)
+	listingModalAvailableLabel.Text = "Tradable available: " .. tostring(counts.Tradable)
+	listingQuantityValueLabel.Text = tostring(marketplaceListingQuantity)
+
+	if unitPrice then
+		listingTotalPriceLabel.Text = "Total: "
+			.. tostring(marketplaceListingQuantity * unitPrice)
+			.. " Coins"
+
+		if not marketplaceCreateInFlight then
+			setListingModalMessage("", nil)
+		end
+	else
+		listingTotalPriceLabel.Text = "Total: -"
+
+		if not marketplaceCreateInFlight then
+			setListingModalMessage(priceMessage, false)
+		end
+	end
+
+	setButtonEnabled(
+		listingQuantityDecreaseButton,
+		not marketplaceCreateInFlight and marketplaceListingQuantity > 1,
+		Color3.fromRGB(230, 235, 240)
+	)
+	setButtonEnabled(
+		listingQuantityIncreaseButton,
+		not marketplaceCreateInFlight and maxQuantity > 0 and marketplaceListingQuantity < maxQuantity,
+		Color3.fromRGB(230, 235, 240)
+	)
+	setButtonEnabled(listingCancelButton, not marketplaceCreateInFlight, Color3.fromRGB(235, 238, 242))
+	setButtonEnabled(
+		listingConfirmButton,
+		not marketplaceCreateInFlight and maxQuantity > 0 and unitPrice ~= nil,
+		Color3.fromRGB(70, 135, 90)
+	)
+
+	listingConfirmButton.Text = marketplaceCreateInFlight and "Listing..." or "Confirm"
+	unitPriceTextBox.TextEditable = not marketplaceCreateInFlight
+end
+
+local function closeMarketplaceListingModal()
+	if marketplaceCreateInFlight then
+		return
+	end
+
+	marketplaceModalOverlay.Visible = false
+	marketplaceListingTemplateId = nil
+	marketplaceListingQuantity = 1
+	setListingModalMessage("", nil)
+	updateSelectedItemDetails()
+end
+
+local function openMarketplaceListingModal()
+	local entry = getSelectedInventoryEntry()
+
+	if not entry then
+		setStatus("Select an item first.", false)
+		return
+	end
+
+	local counts = getInventoryCounts(entry.TemplateId)
+	local maxQuantity = math.min(counts.Tradable, MARKETPLACE_MAX_LISTING_QUANTITY)
+
+	if maxQuantity <= 0 then
+		setStatus("This item is untradable.", false)
+		return
+	end
+
+	marketplaceListingTemplateId = entry.TemplateId
+	marketplaceListingQuantity = 1
+	unitPriceTextBox.Text = tostring(MARKETPLACE_MIN_UNIT_PRICE_COINS)
+	setListingModalMessage("", nil)
+	marketplaceModalOverlay.Visible = true
+	updateListingModal()
+end
+
+local function updateMarketplaceListingQuantity(delta)
+	if marketplaceCreateInFlight or not marketplaceModalOverlay.Visible then
+		return
+	end
+
+	local maxQuantity = getMarketplaceListingMaxQuantity(marketplaceListingTemplateId)
+
+	if maxQuantity <= 0 then
+		marketplaceListingQuantity = 1
+	else
+		marketplaceListingQuantity = math.clamp(
+			marketplaceListingQuantity + delta,
+			1,
+			maxQuantity
+		)
+	end
+
+	updateListingModal()
+end
+
+local function applyMarketplaceInventoryDetails(templateId, details)
+	if typeof(templateId) ~= "string" or templateId == "" or typeof(details) ~= "table" then
+		return
+	end
+
+	applyInventoryLocalDelta({
+		TemplateId = templateId,
+		Total = details.Total,
+		Tradable = details.Tradable,
+		Untradable = details.Untradable,
+		Sellable = details.Sellable,
+		Unsellable = details.Unsellable,
+	})
+end
+
+local requestMyListings = nil
+local cancelMarketplaceListing = nil
+
+local function clearMyListingRows()
+	for _, child in ipairs(myListingsListFrame:GetChildren()) do
+		if child:IsA("Frame") or child:IsA("TextLabel") then
+			child:Destroy()
+		end
+	end
+end
+
+local function formatListingCreatedAt(createdAt)
+	if typeof(createdAt) ~= "number" or createdAt <= 0 then
+		return ""
+	end
+
+	local ok, formatted = pcall(os.date, "%m/%d %H:%M", math.floor(createdAt))
+
+	if ok and typeof(formatted) == "string" then
+		return formatted
+	end
+
+	return ""
+end
+
+local function createMyListingsEmptyState(message)
+	local emptyLabel = Instance.new("TextLabel")
+	emptyLabel.Name = "EmptyMyListingsLabel"
+	emptyLabel.Size = UDim2.new(1, -16, 0, 52)
+	emptyLabel.BackgroundTransparency = 1
+	emptyLabel.Text = tostring(message or "No marketplace listings yet.")
+	emptyLabel.TextColor3 = Color3.fromRGB(95, 95, 95)
+	emptyLabel.TextSize = 14
+	emptyLabel.TextWrapped = true
+	emptyLabel.Font = Enum.Font.Gotham
+	emptyLabel.Parent = myListingsListFrame
+end
+
+local function upsertMarketplaceListing(listing)
+	if typeof(listing) ~= "table"
+		or typeof(listing.ListingId) ~= "string"
+		or listing.ListingId == "" then
+
+		return
+	end
+
+	local replaced = false
+
+	for index, existingListing in ipairs(latestMarketplaceListings) do
+		if typeof(existingListing) == "table" and existingListing.ListingId == listing.ListingId then
+			latestMarketplaceListings[index] = listing
+			replaced = true
+			break
+		end
+	end
+
+	if not replaced then
+		table.insert(latestMarketplaceListings, listing)
+	end
+end
+
+local function renderMyListingsPanel()
+	updateInventoryViewMode()
+	clearMyListingRows()
+
+	setButtonEnabled(myListingsRefreshButton, not marketplaceMyListingsInFlight, Color3.fromRGB(70, 135, 90))
+	myListingsRefreshButton.Text = marketplaceMyListingsInFlight and "Loading..." or "Refresh"
+
+	local listings = {}
+
+	if typeof(latestMarketplaceListings) == "table" then
+		for _, listing in ipairs(latestMarketplaceListings) do
+			if typeof(listing) == "table" then
+				table.insert(listings, listing)
+			end
+		end
+	end
+
+	table.sort(listings, function(a, b)
+		local aActiveRank = a.Status == "Active" and 0 or 1
+		local bActiveRank = b.Status == "Active" and 0 or 1
+
+		if aActiveRank ~= bActiveRank then
+			return aActiveRank < bActiveRank
+		end
+
+		return (a.CreatedAt or 0) > (b.CreatedAt or 0)
+	end)
+
+	if #listings == 0 then
+		createMyListingsEmptyState(marketplaceMyListingsInFlight and "Loading listings..." or "No marketplace listings yet.")
+	else
+		for index, listing in ipairs(listings) do
+			local listingId = listing.ListingId
+			local templateId = listing.TemplateId
+			local quantity = listing.Quantity or 0
+			local unitPriceCoins = listing.UnitPriceCoins or 0
+			local status = tostring(listing.Status or "Unknown")
+			local isActive = status == "Active"
+			local isCancelInFlight = marketplaceCancelInFlightByListingId[listingId] == true
+
+			local row = Instance.new("Frame")
+			row.Name = "ListingRow"
+			row.LayoutOrder = index
+			row.Size = UDim2.new(1, -16, 0, 74)
+			row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			row.BorderSizePixel = 0
+			row.Parent = myListingsListFrame
+
+			createCorner(row, 8)
+			createStroke(row, Color3.fromRGB(225, 225, 225), 1, 0)
+
+			local nameLabel = Instance.new("TextLabel")
+			nameLabel.Name = "ListingName"
+			nameLabel.Position = UDim2.fromOffset(10, 8)
+			nameLabel.Size = UDim2.new(1, isActive and -104 or -20, 0, 20)
+			nameLabel.BackgroundTransparency = 1
+			nameLabel.Text = getInventoryDisplayName(templateId)
+			nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+			nameLabel.TextSize = 13
+			nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+			nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+			nameLabel.Font = Enum.Font.GothamBold
+			nameLabel.Parent = row
+
+			local priceLabel = Instance.new("TextLabel")
+			priceLabel.Name = "ListingPrice"
+			priceLabel.Position = UDim2.fromOffset(10, 30)
+			priceLabel.Size = UDim2.new(1, isActive and -104 or -20, 0, 18)
+			priceLabel.BackgroundTransparency = 1
+			priceLabel.Text = "x" .. tostring(quantity)
+				.. " @ " .. tostring(unitPriceCoins)
+				.. " Coins"
+			priceLabel.TextColor3 = Color3.fromRGB(70, 70, 70)
+			priceLabel.TextSize = 12
+			priceLabel.TextXAlignment = Enum.TextXAlignment.Left
+			priceLabel.TextTruncate = Enum.TextTruncate.AtEnd
+			priceLabel.Font = Enum.Font.Gotham
+			priceLabel.Parent = row
+
+			local createdText = formatListingCreatedAt(listing.CreatedAt)
+			local statusLabel = Instance.new("TextLabel")
+			statusLabel.Name = "ListingStatus"
+			statusLabel.Position = UDim2.fromOffset(10, 50)
+			statusLabel.Size = UDim2.new(1, isActive and -104 or -20, 0, 18)
+			statusLabel.BackgroundTransparency = 1
+			statusLabel.Text = createdText ~= ""
+				and (status .. "  -  " .. createdText)
+				or status
+			statusLabel.TextColor3 = isActive
+				and Color3.fromRGB(45, 110, 65)
+				or Color3.fromRGB(105, 105, 105)
+			statusLabel.TextSize = 12
+			statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+			statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+			statusLabel.Font = Enum.Font.GothamMedium
+			statusLabel.Parent = row
+
+			if isActive then
+				local cancelButton = Instance.new("TextButton")
+				cancelButton.Name = "CancelListingButton"
+				cancelButton.AnchorPoint = Vector2.new(1, 0.5)
+				cancelButton.Position = UDim2.new(1, -10, 0.5, 0)
+				cancelButton.Size = UDim2.fromOffset(82, 30)
+				cancelButton.BackgroundColor3 = Color3.fromRGB(160, 70, 70)
+				cancelButton.BorderSizePixel = 0
+				cancelButton.Text = isCancelInFlight and "Cancelling..." or "Cancel"
+				cancelButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+				cancelButton.TextSize = 12
+				cancelButton.Font = Enum.Font.GothamBold
+				cancelButton.Parent = row
+
+				createCorner(cancelButton, 7)
+				setButtonEnabled(cancelButton, not isCancelInFlight, Color3.fromRGB(160, 70, 70))
+
+				cancelButton.MouseButton1Click:Connect(function()
+					if cancelMarketplaceListing then
+						cancelMarketplaceListing(listingId)
+					end
+				end)
+			end
+		end
+	end
+
+	task.defer(function()
+		myListingsListFrame.CanvasSize = UDim2.fromOffset(
+			0,
+			myListingsListLayout.AbsoluteContentSize.Y + 16
+		)
+	end)
+end
+
+requestMyListings = function()
+	if marketplaceMyListingsInFlight then
+		return
+	end
+
+	marketplaceMyListingsInFlight = true
+	setMyListingsStatus("Loading listings...", nil)
+	renderMyListingsPanel()
+	marketplaceRequest:FireServer("GetMyListings")
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if marketplaceMyListingsInFlight then
+			marketplaceMyListingsInFlight = false
+			setMyListingsStatus("Marketplace listings request timed out.", false)
+			renderMyListingsPanel()
+		end
+	end)
+end
+
+local function openMyListingsPanel()
+	inventoryViewMode = INVENTORY_VIEW_MY_LISTINGS
+	setStatus("", nil)
+	renderMyListingsPanel()
+	requestMyListings()
+end
+
+local function showInventoryItemsPanel()
+	inventoryViewMode = INVENTORY_VIEW_ITEMS
+	setMyListingsStatus("", nil)
+	updateInventoryViewMode()
+	updateSelectedItemDetails()
+end
+
+cancelMarketplaceListing = function(listingId)
+	if typeof(listingId) ~= "string" or listingId == "" then
+		setMyListingsStatus("Invalid marketplace listing.", false)
+		return
+	end
+
+	if marketplaceCancelInFlightByListingId[listingId] then
+		return
+	end
+
+	marketplaceCancelInFlightByListingId[listingId] = true
+	setMyListingsStatus("", nil)
+	renderMyListingsPanel()
+	marketplaceRequest:FireServer("CancelListing", {
+		ListingId = listingId,
+	})
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if marketplaceCancelInFlightByListingId[listingId] then
+			marketplaceCancelInFlightByListingId[listingId] = nil
+			setMyListingsStatus("Cancel listing request timed out.", false)
+			renderMyListingsPanel()
+		end
+	end)
+end
+
+local function confirmMarketplaceListing()
+	if marketplaceCreateInFlight then
+		return
+	end
+
+	local templateId = marketplaceListingTemplateId
+	local maxQuantity = getMarketplaceListingMaxQuantity(templateId)
+	local unitPrice, priceMessage = parseListingUnitPrice()
+
+	if typeof(templateId) ~= "string" or templateId == "" then
+		setListingModalMessage("Select an item first.", false)
+		return
+	end
+
+	if maxQuantity <= 0 then
+		setListingModalMessage("You do not have enough tradable copies to list.", false)
+		return
+	end
+
+	if not unitPrice then
+		setListingModalMessage(priceMessage, false)
+		updateListingModal()
+		return
+	end
+
+	marketplaceListingQuantity = math.clamp(
+		math.floor(marketplaceListingQuantity),
+		1,
+		maxQuantity
+	)
+	marketplaceCreateInFlight = true
+	setListingModalMessage("", nil)
+	setStatus("", nil)
+	updateListingModal()
+	updateSelectedItemDetails()
+	marketplaceRequest:FireServer("CreateListing", {
+		TemplateId = templateId,
+		Quantity = marketplaceListingQuantity,
+		UnitPriceCoins = unitPrice,
+	})
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if marketplaceCreateInFlight and marketplaceListingTemplateId == templateId then
+			marketplaceCreateInFlight = false
+			setListingModalMessage("Marketplace listing request timed out.", false)
+			updateListingModal()
+			updateSelectedItemDetails()
+		end
+	end)
 end
 
 local function fireInventoryPlacement(templateId)
@@ -1499,6 +2382,7 @@ setPanelVisible = function(isVisible, options)
 	if isVisible then
 		if not wasVisible and not preserveInventoryView then
 			selectedInventoryCategory = INVENTORY_CATEGORY_ALL
+			inventoryViewMode = INVENTORY_VIEW_ITEMS
 			setDropdownOpen(false)
 		elseif not wasVisible then
 			setDropdownOpen(false)
@@ -1518,12 +2402,20 @@ setPanelVisible = function(isVisible, options)
 
 		if hasLoadedInventory then
 			renderInventory(latestInventory, latestInventoryDetails)
+		else
+			updateInventoryViewMode()
 		end
 
 		if not skipInventoryRefresh then
 			requestInventoryRefresh("open")
 		end
 	elseif wasVisible or openMajorMenuName == MENU_NAME then
+		if not marketplaceCreateInFlight then
+			marketplaceModalOverlay.Visible = false
+			marketplaceListingTemplateId = nil
+			marketplaceListingQuantity = 1
+		end
+
 		clearPendingPlacementState(false)
 		inventoryHideRequestedForPlacement = false
 		inventoryHiddenForPlacement = false
@@ -1594,6 +2486,35 @@ sellIncreaseButton.MouseButton1Click:Connect(function()
 end)
 
 sellButton.MouseButton1Click:Connect(sellSelectedItem)
+
+marketplaceButton.MouseButton1Click:Connect(openMarketplaceListingModal)
+
+myListingsButton.MouseButton1Click:Connect(openMyListingsPanel)
+
+myListingsBackButton.MouseButton1Click:Connect(showInventoryItemsPanel)
+
+myListingsRefreshButton.MouseButton1Click:Connect(function()
+	if inventoryViewMode ~= INVENTORY_VIEW_MY_LISTINGS then
+		inventoryViewMode = INVENTORY_VIEW_MY_LISTINGS
+		renderMyListingsPanel()
+	end
+
+	requestMyListings()
+end)
+
+listingQuantityDecreaseButton.MouseButton1Click:Connect(function()
+	updateMarketplaceListingQuantity(-1)
+end)
+
+listingQuantityIncreaseButton.MouseButton1Click:Connect(function()
+	updateMarketplaceListingQuantity(1)
+end)
+
+unitPriceTextBox:GetPropertyChangedSignal("Text"):Connect(updateListingModal)
+
+listingCancelButton.MouseButton1Click:Connect(closeMarketplaceListingModal)
+
+listingConfirmButton.MouseButton1Click:Connect(confirmMarketplaceListing)
 
 inventoryRefreshRequested.Event:Connect(function(options)
 	local reason = "event"
@@ -1694,6 +2615,143 @@ end)
 
 majorMenuStateChanged.Event:Connect(function(isOpen, menuName)
 	setLocalMajorMenuState(isOpen == true, menuName)
+end)
+
+marketplaceResult.OnClientEvent:Connect(function(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	local kind = response.Kind
+	local success = response.Success == true
+	local message = tostring(response.Message or "")
+
+	if kind == "CreateListing" then
+		local listing = response.Listing
+		local templateId = marketplaceListingTemplateId
+		local quantity = marketplaceListingQuantity
+		local unitPriceCoins = nil
+
+		if typeof(listing) == "table" then
+			if typeof(listing.TemplateId) == "string" and listing.TemplateId ~= "" then
+				templateId = listing.TemplateId
+			end
+
+			if typeof(listing.Quantity) == "number" then
+				quantity = math.floor(listing.Quantity)
+			end
+
+			if typeof(listing.UnitPriceCoins) == "number" then
+				unitPriceCoins = math.floor(listing.UnitPriceCoins)
+			end
+		end
+
+		if not unitPriceCoins then
+			unitPriceCoins = parseListingUnitPrice()
+		end
+
+		marketplaceCreateInFlight = false
+
+		if success then
+			applyMarketplaceInventoryDetails(templateId, response.InventoryDetails)
+			marketplaceModalOverlay.Visible = false
+			marketplaceListingTemplateId = nil
+			marketplaceListingQuantity = 1
+			setListingModalMessage("", nil)
+
+			if typeof(listing) == "table" then
+				upsertMarketplaceListing(listing)
+			end
+
+			local listedMessage = "Listed "
+				.. getInventoryDisplayName(templateId)
+				.. " x" .. tostring(quantity or 1)
+				.. " for " .. tostring(unitPriceCoins or 0)
+				.. " Coins."
+
+			setStatus(listedMessage, true)
+			inventoryRefreshRequested:Fire({
+				Reason = "CreateListing",
+				Force = true,
+			})
+
+			if inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS then
+				renderMyListingsPanel()
+				task.delay(0.6, function()
+					if inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS and requestMyListings then
+						requestMyListings()
+					end
+				end)
+			end
+		else
+			applyMarketplaceInventoryDetails(templateId, response.InventoryDetails)
+			setListingModalMessage(message ~= "" and message or "Could not create marketplace listing.", false)
+			setStatus(message ~= "" and message or "Could not create marketplace listing.", false)
+		end
+
+		updateListingModal()
+		updateSelectedItemDetails()
+		return
+	end
+
+	if kind == "MyListings" or kind == "GetMyListings" then
+		marketplaceMyListingsInFlight = false
+
+		if success then
+			latestMarketplaceListings = typeof(response.Listings) == "table"
+				and response.Listings
+				or {}
+			setMyListingsStatus("", nil)
+		else
+			setMyListingsStatus(message ~= "" and message or "Could not load marketplace listings.", false)
+
+			if message:find("Slow down", 1, true) then
+				task.delay(0.6, function()
+					if inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS and requestMyListings then
+						requestMyListings()
+					end
+				end)
+			end
+		end
+
+		renderMyListingsPanel()
+		return
+	end
+
+	if kind == "CancelListing" then
+		marketplaceCancelInFlightByListingId = {}
+
+		local listing = response.Listing
+		local templateId = nil
+
+		if typeof(listing) == "table" then
+			if typeof(listing.TemplateId) == "string" and listing.TemplateId ~= "" then
+				templateId = listing.TemplateId
+			end
+
+			upsertMarketplaceListing(listing)
+		end
+
+		if success then
+			applyMarketplaceInventoryDetails(templateId, response.InventoryDetails)
+			setMyListingsStatus("Listing cancelled.", true)
+			setStatus("Listing cancelled.", true)
+			inventoryRefreshRequested:Fire({
+				Reason = "CancelListing",
+				Force = true,
+			})
+
+			task.delay(0.6, function()
+				if inventoryViewMode == INVENTORY_VIEW_MY_LISTINGS and requestMyListings then
+					requestMyListings()
+				end
+			end)
+		else
+			setMyListingsStatus(message ~= "" and message or "Could not cancel listing.", false)
+		end
+
+		renderMyListingsPanel()
+	end
 end)
 
 inventoryResult.OnClientEvent:Connect(function(response)
