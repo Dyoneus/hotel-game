@@ -65,6 +65,7 @@ local function createDefaultProfile()
 			RoomActions = {},
 			FurniturePermissions = {},
 		},
+		MarketplaceListings = {},
 		Inventory = {},
 		InventoryUntradable = {},
 		InventoryUnsellable = {},
@@ -666,6 +667,79 @@ local function ensureRoomPermissions(profile)
 	return profile.RoomPermissions
 end
 
+local MARKETPLACE_LISTING_FIELDS = {
+	ListingId = true,
+	SellerUserId = true,
+	TemplateId = true,
+	Quantity = true,
+	UnitPriceCoins = true,
+	CurrencyKey = true,
+	Status = true,
+	CreatedAt = true,
+	UpdatedAt = true,
+	ExpiresAt = true,
+	BuyerUserId = true,
+	TransactionId = true,
+	ReturnSellable = true,
+}
+
+local function isValidListingRecord(listingRecord)
+	return typeof(listingRecord) == "table"
+		and typeof(listingRecord.ListingId) == "string"
+		and listingRecord.ListingId ~= ""
+		and isPositiveInteger(listingRecord.SellerUserId)
+		and isValidTemplateId(listingRecord.TemplateId)
+		and isPositiveInteger(listingRecord.Quantity)
+		and isPositiveInteger(listingRecord.UnitPriceCoins)
+		and typeof(listingRecord.CurrencyKey) == "string"
+		and listingRecord.CurrencyKey ~= ""
+		and typeof(listingRecord.Status) == "string"
+		and listingRecord.Status ~= ""
+end
+
+local function copyMarketplaceListing(listingRecord)
+	local copy = {}
+
+	for fieldName in pairs(MARKETPLACE_LISTING_FIELDS) do
+		local value = listingRecord[fieldName]
+
+		if value ~= nil then
+			copy[fieldName] = deepCopy(value)
+		end
+	end
+
+	return copy
+end
+
+local function ensureMarketplaceListings(profile)
+	local listings = {}
+
+	if typeof(profile.MarketplaceListings) == "table" then
+		for listingId, listingRecord in pairs(profile.MarketplaceListings) do
+			local normalizedListingId = nil
+
+			if typeof(listingId) == "string" and listingId ~= "" then
+				normalizedListingId = listingId
+			elseif typeof(listingRecord) == "table"
+				and typeof(listingRecord.ListingId) == "string"
+				and listingRecord.ListingId ~= "" then
+
+				normalizedListingId = listingRecord.ListingId
+			end
+
+			if normalizedListingId and isValidListingRecord(listingRecord) then
+				local copy = copyMarketplaceListing(listingRecord)
+				copy.ListingId = normalizedListingId
+				listings[normalizedListingId] = copy
+			end
+		end
+	end
+
+	profile.MarketplaceListings = listings
+
+	return profile.MarketplaceListings
+end
+
 local function fillDefaults(profile)
 	local defaults = createDefaultProfile()
 
@@ -685,6 +759,7 @@ local function fillDefaults(profile)
 	ensureRoomDirectory(profile)
 	ensureFavouriteRooms(profile)
 	ensureRoomPermissions(profile)
+	ensureMarketplaceListings(profile)
 
 	if profile.StarterDollarsGranted ~= true then
 		profile.StarterDollarsGranted = false
@@ -1000,6 +1075,144 @@ end
 
 function RoomPersistence.GetProfile(player)
 	return profilesByPlayer[player]
+end
+
+function RoomPersistence.GetMarketplaceListingsSnapshot(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return {}
+	end
+
+	return deepCopy(ensureMarketplaceListings(profile))
+end
+
+function RoomPersistence.GetMarketplaceListing(player, listingId)
+	if typeof(listingId) ~= "string" or listingId == "" then
+		return nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil
+	end
+
+	local listings = ensureMarketplaceListings(profile)
+	local listingRecord = listings[listingId]
+
+	if not listingRecord then
+		return nil
+	end
+
+	return deepCopy(listingRecord)
+end
+
+function RoomPersistence.AddMarketplaceListing(player, listingRecord)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded."
+	end
+
+	if not isValidListingRecord(listingRecord) then
+		return false, "Invalid marketplace listing."
+	end
+
+	local listings = ensureMarketplaceListings(profile)
+	local listingId = listingRecord.ListingId
+
+	if listings[listingId] ~= nil then
+		return false, "Marketplace listing already exists."
+	end
+
+	listings[listingId] = copyMarketplaceListing(listingRecord)
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Marketplace listing added."
+end
+
+function RoomPersistence.UpdateMarketplaceListing(player, listingId, updates)
+	if typeof(listingId) ~= "string" or listingId == "" then
+		return false, "Invalid marketplace listing."
+	end
+
+	if typeof(updates) ~= "table" then
+		return false, "Invalid marketplace listing updates."
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded."
+	end
+
+	local listings = ensureMarketplaceListings(profile)
+	local listingRecord = listings[listingId]
+
+	if not listingRecord then
+		return false, "Marketplace listing not found."
+	end
+
+	if updates.Status ~= nil then
+		if typeof(updates.Status) ~= "string" or updates.Status == "" then
+			return false, "Invalid marketplace listing status."
+		end
+
+		listingRecord.Status = updates.Status
+	end
+
+	if updates.ExpiresAt ~= nil then
+		if updates.ExpiresAt ~= false
+			and (typeof(updates.ExpiresAt) ~= "number"
+				or updates.ExpiresAt ~= updates.ExpiresAt
+				or updates.ExpiresAt < 0
+				or updates.ExpiresAt >= math.huge) then
+
+			return false, "Invalid marketplace listing expiration."
+		end
+
+		if updates.ExpiresAt == false then
+			listingRecord.ExpiresAt = nil
+		else
+			listingRecord.ExpiresAt = math.floor(updates.ExpiresAt)
+		end
+	end
+
+	if updates.BuyerUserId ~= nil then
+		if updates.BuyerUserId ~= false and not isPositiveInteger(updates.BuyerUserId) then
+			return false, "Invalid marketplace listing buyer."
+		end
+
+		if updates.BuyerUserId == false then
+			listingRecord.BuyerUserId = nil
+		else
+			listingRecord.BuyerUserId = math.floor(updates.BuyerUserId)
+		end
+	end
+
+	if updates.TransactionId ~= nil then
+		if updates.TransactionId ~= false
+			and (typeof(updates.TransactionId) ~= "string" or updates.TransactionId == "") then
+
+			return false, "Invalid marketplace transaction."
+		end
+
+		if updates.TransactionId == false then
+			listingRecord.TransactionId = nil
+		else
+			listingRecord.TransactionId = updates.TransactionId
+		end
+	end
+
+	listingRecord.UpdatedAt = os.time()
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Marketplace listing updated.", deepCopy(listingRecord)
 end
 
 function RoomPersistence.GetRoomDirectorySnapshot(player)
@@ -1776,6 +1989,83 @@ function RoomPersistence.RemoveInventoryItem(player, templateId, amount, options
 	RoomPersistence.QueueSave(player)
 
 	return true, "Inventory item removed.", newCount, details
+end
+
+function RoomPersistence.RemoveMarketplaceListableInventoryItem(player, templateId, amount)
+	if not isValidTemplateId(templateId) then
+		return false, "Invalid TemplateId.", nil
+	end
+
+	if not isPositiveInteger(amount) then
+		return false, "Amount must be a positive integer.", nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local inventory, untradable, unsellable = ensureInventory(profile)
+	local currentCount = inventory[templateId] or 0
+	local details = getInventoryCountDetails(profile, templateId)
+	local currentTradable = math.max(details.Tradable or 0, 0)
+
+	if currentTradable < amount then
+		return false, "You do not have enough tradable copies to list.", currentCount, details
+	end
+
+	local newCount = currentCount - amount
+	local currentUntradable = math.min(untradable[templateId] or 0, currentCount)
+	local currentUnsellable = math.min(unsellable[templateId] or 0, currentCount)
+
+	if newCount > 0 then
+		inventory[templateId] = newCount
+	else
+		inventory[templateId] = nil
+	end
+
+	if newCount <= 0 then
+		untradable[templateId] = nil
+		unsellable[templateId] = nil
+	else
+		local newUntradable = math.min(currentUntradable, newCount)
+		local newUnsellable = math.min(currentUnsellable, newCount)
+
+		if newUntradable > 0 then
+			untradable[templateId] = newUntradable
+		else
+			untradable[templateId] = nil
+		end
+
+		if newUnsellable > 0 then
+			unsellable[templateId] = newUnsellable
+		else
+			unsellable[templateId] = nil
+		end
+	end
+
+	local updatedDetails = getInventoryCountDetails(profile, templateId)
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Marketplace tradable inventory item removed.", newCount, updatedDetails
+end
+
+function RoomPersistence.ReturnMarketplaceListableInventoryItem(player, templateId, amount, options)
+	local returnSellable = true
+
+	-- Current marketplace escrow stores aggregate counts; future item-instance
+	-- tracking can set ReturnSellable to preserve the exact sellable state.
+	if typeof(options) == "table" and typeof(options.ReturnSellable) == "boolean" then
+		returnSellable = options.ReturnSellable
+	end
+
+	return RoomPersistence.AddInventoryItem(player, templateId, amount, {
+		Tradable = true,
+		Sellable = returnSellable,
+	})
 end
 
 function RoomPersistence.RemoveSellableInventoryItem(player, templateId, amount)

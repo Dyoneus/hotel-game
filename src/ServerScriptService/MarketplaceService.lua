@@ -1,7 +1,8 @@
 -- Server-side Marketplace foundation.
--- Patch 1B intentionally does not create DataStores, remotes, listings, inventory
--- escrow, or Coin transfers. Future patches must use idempotent transaction
--- records because listing purchase touches listing state, buyer inventory,
+-- Patch 1C supports seller-owned create/cancel/listing escrow only. Public
+-- browsing, purchases, Coins movement, and global marketplace DataStores are
+-- still intentionally deferred. Future purchase patches must use idempotent
+-- transaction records because buying touches listing state, buyer inventory,
 -- buyer Coins, and seller proceeds.
 
 local HttpService = game:GetService("HttpService")
@@ -125,6 +126,42 @@ local function playerIsValid(player)
 		and player.Parent == Players
 end
 
+local function getTradableCount(details)
+	if typeof(details) ~= "table" then
+		return 0
+	end
+
+	return typeof(details.Tradable) == "number"
+		and math.max(math.floor(details.Tradable), 0)
+		or 0
+end
+
+local function countActiveListings(listings)
+	local count = 0
+
+	if typeof(listings) ~= "table" then
+		return count
+	end
+
+	for _, listing in pairs(listings) do
+		if typeof(listing) == "table" and listing.Status == MarketplaceService.STATUS_ACTIVE then
+			count += 1
+		end
+	end
+
+	return count
+end
+
+local function normalizeListingId(listingId)
+	local normalized = trimString(listingId)
+
+	if not normalized or normalized == "" then
+		return nil
+	end
+
+	return normalized
+end
+
 function MarketplaceService.PlayerCanListItem(player, templateId, quantity)
 	if not playerIsValid(player) then
 		return false, "Invalid player.", nil
@@ -148,14 +185,10 @@ function MarketplaceService.PlayerCanListItem(player, templateId, quantity)
 
 	local detailsSnapshot = RoomPersistence.GetInventoryDetailsSnapshot(player)
 	local details = detailsSnapshot[normalizedTemplateId]
-	local tradableCount = 0
-
-	if typeof(details) == "table" and typeof(details.Tradable) == "number" then
-		tradableCount = math.max(math.floor(details.Tradable), 0)
-	end
+	local tradableCount = getTradableCount(details)
 
 	if tradableCount < normalizedQuantity then
-		return false, "Not enough tradable copies.", details
+		return false, "You do not have enough tradable copies to list.", details
 	end
 
 	return true, "Item can be listed.", details
@@ -313,21 +346,159 @@ function MarketplaceService.GetListingTotalPrice(listingOrQuantity, unitPriceCoi
 	return total
 end
 
--- Future patches should remove tradable items into listing escrow before a
--- listing becomes visible. Purchase flows must verify listing state on the
--- server and use idempotent transaction records before moving Coins/items.
--- Seller proceeds should be claim-based or otherwise idempotent so reconnects
--- and server retries cannot duplicate Coin payouts.
 function MarketplaceService.CreateListing(player, templateId, quantity, unitPriceCoins)
-	return false, LISTINGS_DISABLED_MESSAGE
+	local valid, validationMessage, listingData =
+		MarketplaceService.ValidateListingRequest(player, templateId, quantity, unitPriceCoins)
+
+	if not valid then
+		return false, validationMessage or "Invalid listing request."
+	end
+
+	local listings = RoomPersistence.GetMarketplaceListingsSnapshot(player)
+
+	if countActiveListings(listings) >= MarketplaceService.MAX_ACTIVE_LISTINGS_PER_PLAYER then
+		return false, "You have too many active marketplace listings."
+	end
+
+	local removed, removeMessage, _, inventoryDetails =
+		RoomPersistence.RemoveMarketplaceListableInventoryItem(
+			player,
+			listingData.TemplateId,
+			listingData.Quantity
+		)
+
+	if not removed then
+		return false, removeMessage or "Could not escrow item for listing.", nil, inventoryDetails
+	end
+
+	local listingRecord = MarketplaceService.BuildListingRecord(
+		player.UserId,
+		listingData.TemplateId,
+		listingData.Quantity,
+		listingData.UnitPriceCoins
+	)
+
+	if not listingRecord then
+		RoomPersistence.ReturnMarketplaceListableInventoryItem(
+			player,
+			listingData.TemplateId,
+			listingData.Quantity
+		)
+
+		return false, "Could not create marketplace listing.", nil, inventoryDetails
+	end
+
+	local added, addMessage = RoomPersistence.AddMarketplaceListing(player, listingRecord)
+
+	if not added then
+		local returned, _, _, returnDetails =
+			RoomPersistence.ReturnMarketplaceListableInventoryItem(
+				player,
+				listingData.TemplateId,
+				listingData.Quantity
+			)
+
+		return false,
+			addMessage or "Could not save marketplace listing.",
+			nil,
+			returned and returnDetails or inventoryDetails
+	end
+
+	return true,
+		"Marketplace listing created.",
+		MarketplaceService.GetPublicListingSnapshot(listingRecord),
+		inventoryDetails
 end
 
 function MarketplaceService.CancelListing(player, listingId)
-	return false, LISTINGS_DISABLED_MESSAGE
+	if not playerIsValid(player) then
+		return false, "Invalid player."
+	end
+
+	if not getLoadedProfile(player) then
+		return false, "Profile is not loaded."
+	end
+
+	local normalizedListingId = normalizeListingId(listingId)
+
+	if not normalizedListingId then
+		return false, "Invalid marketplace listing."
+	end
+
+	local listing = RoomPersistence.GetMarketplaceListing(player, normalizedListingId)
+
+	if not listing then
+		return false, "Marketplace listing not found."
+	end
+
+	if listing.SellerUserId ~= player.UserId then
+		return false, "Only the seller can cancel this listing."
+	end
+
+	if listing.Status ~= MarketplaceService.STATUS_ACTIVE then
+		return false, "This listing is no longer active."
+	end
+
+	local updated, updateMessage =
+		RoomPersistence.UpdateMarketplaceListing(player, normalizedListingId, {
+			Status = MarketplaceService.STATUS_CANCELLED,
+		})
+
+	if not updated then
+		return false, updateMessage or "Could not cancel marketplace listing."
+	end
+
+	local returned, returnMessage, _, inventoryDetails =
+		RoomPersistence.ReturnMarketplaceListableInventoryItem(
+			player,
+			listing.TemplateId,
+			listing.Quantity,
+			{
+				ReturnSellable = listing.ReturnSellable,
+			}
+		)
+
+	if not returned then
+		RoomPersistence.UpdateMarketplaceListing(player, normalizedListingId, {
+			Status = MarketplaceService.STATUS_ACTIVE,
+		})
+
+		return false, returnMessage or "Could not return listed item.", nil, inventoryDetails
+	end
+
+	local cancelledListing = RoomPersistence.GetMarketplaceListing(player, normalizedListingId) or listing
+
+	return true,
+		"Marketplace listing cancelled.",
+		MarketplaceService.GetPublicListingSnapshot(cancelledListing),
+		inventoryDetails
 end
 
 function MarketplaceService.GetMyListings(player)
-	return false, LISTINGS_DISABLED_MESSAGE, {}
+	if not playerIsValid(player) then
+		return false, "Invalid player.", {}
+	end
+
+	if not getLoadedProfile(player) then
+		return false, "Profile is not loaded.", {}
+	end
+
+	local listings = RoomPersistence.GetMarketplaceListingsSnapshot(player)
+	local snapshots = {}
+
+	for _, listing in pairs(listings) do
+		local snapshot = MarketplaceService.GetPublicListingSnapshot(listing)
+
+		if snapshot then
+			table.insert(snapshots, snapshot)
+		end
+	end
+
+	table.sort(snapshots, function(a, b)
+		return (a.CreatedAt or 0) > (b.CreatedAt or 0)
+	end)
+
+	return true, "Marketplace listings loaded.", snapshots
 end
 
 function MarketplaceService.GetPublicListings(player, filters)
@@ -335,7 +506,7 @@ function MarketplaceService.GetPublicListings(player, filters)
 end
 
 function MarketplaceService.PurchaseListing(player, listingId)
-	return false, LISTINGS_DISABLED_MESSAGE
+	return false, "Marketplace purchases are not enabled yet."
 end
 
 return MarketplaceService
