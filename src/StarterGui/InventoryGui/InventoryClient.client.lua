@@ -492,7 +492,7 @@ ui.marketplaceButton.Position = UDim2.new(0, 16, 0, 310)
 ui.marketplaceButton.Size = UDim2.new(1, -32, 0, 32)
 ui.marketplaceButton.BackgroundColor3 = Color3.fromRGB(70, 120, 170)
 ui.marketplaceButton.BorderSizePixel = 0
-ui.marketplaceButton.Text = "Sell in Marketplace"
+ui.marketplaceButton.Text = "List in Marketplace"
 ui.marketplaceButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 ui.marketplaceButton.TextSize = 14
 ui.marketplaceButton.Font = Enum.Font.GothamBold
@@ -722,7 +722,7 @@ ui.marketplaceModalWindow = Instance.new("Frame")
 ui.marketplaceModalWindow.Name = "MarketplaceListingModal"
 ui.marketplaceModalWindow.AnchorPoint = Vector2.new(0.5, 0.5)
 ui.marketplaceModalWindow.Position = UDim2.fromScale(0.5, 0.5)
-ui.marketplaceModalWindow.Size = UDim2.fromOffset(360, 314)
+ui.marketplaceModalWindow.Size = UDim2.fromOffset(360, 348)
 ui.marketplaceModalWindow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 ui.marketplaceModalWindow.BorderSizePixel = 0
 ui.marketplaceModalWindow.ZIndex = 101
@@ -771,9 +771,23 @@ ui.listingModalAvailableLabel.Font = Enum.Font.Gotham
 ui.listingModalAvailableLabel.ZIndex = 102
 ui.listingModalAvailableLabel.Parent = ui.marketplaceModalWindow
 
+ui.listingModalHelperLabel = Instance.new("TextLabel")
+ui.listingModalHelperLabel.Name = "ListingModalHelperLabel"
+ui.listingModalHelperLabel.Position = UDim2.fromOffset(18, 96)
+ui.listingModalHelperLabel.Size = UDim2.new(1, -36, 0, 30)
+ui.listingModalHelperLabel.BackgroundTransparency = 1
+ui.listingModalHelperLabel.Text = "You will receive Coins after another player buys your listing."
+ui.listingModalHelperLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
+ui.listingModalHelperLabel.TextSize = 12
+ui.listingModalHelperLabel.TextWrapped = true
+ui.listingModalHelperLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.listingModalHelperLabel.Font = Enum.Font.Gotham
+ui.listingModalHelperLabel.ZIndex = 102
+ui.listingModalHelperLabel.Parent = ui.marketplaceModalWindow
+
 ui.listingQuantityLabel = Instance.new("TextLabel")
 ui.listingQuantityLabel.Name = "ListingQuantityText"
-ui.listingQuantityLabel.Position = UDim2.fromOffset(18, 108)
+ui.listingQuantityLabel.Position = UDim2.fromOffset(18, 136)
 ui.listingQuantityLabel.Size = UDim2.fromOffset(96, 28)
 ui.listingQuantityLabel.BackgroundTransparency = 1
 ui.listingQuantityLabel.Text = "Quantity"
@@ -786,7 +800,7 @@ ui.listingQuantityLabel.Parent = ui.marketplaceModalWindow
 
 ui.listingQuantityDecreaseButton = Instance.new("TextButton")
 ui.listingQuantityDecreaseButton.Name = "DecreaseListingQuantityButton"
-ui.listingQuantityDecreaseButton.Position = UDim2.fromOffset(128, 104)
+ui.listingQuantityDecreaseButton.Position = UDim2.fromOffset(128, 132)
 ui.listingQuantityDecreaseButton.Size = UDim2.fromOffset(34, 34)
 ui.listingQuantityDecreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
 ui.listingQuantityDecreaseButton.BorderSizePixel = 0
@@ -801,7 +815,7 @@ createCorner(ui.listingQuantityDecreaseButton, 8)
 
 ui.listingQuantityValueLabel = Instance.new("TextLabel")
 ui.listingQuantityValueLabel.Name = "ListingQuantityValue"
-ui.listingQuantityValueLabel.Position = UDim2.fromOffset(168, 104)
+ui.listingQuantityValueLabel.Position = UDim2.fromOffset(168, 132)
 ui.listingQuantityValueLabel.Size = UDim2.fromOffset(48, 34)
 ui.listingQuantityValueLabel.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
 ui.listingQuantityValueLabel.BorderSizePixel = 0
@@ -816,7 +830,7 @@ createCorner(ui.listingQuantityValueLabel, 8)
 
 ui.listingQuantityIncreaseButton = Instance.new("TextButton")
 ui.listingQuantityIncreaseButton.Name = "IncreaseListingQuantityButton"
-ui.listingQuantityIncreaseButton.Position = UDim2.fromOffset(222, 104)
+ui.listingQuantityIncreaseButton.Position = UDim2.fromOffset(222, 132)
 ui.listingQuantityIncreaseButton.Size = UDim2.fromOffset(34, 34)
 ui.listingQuantityIncreaseButton.BackgroundColor3 = Color3.fromRGB(230, 235, 240)
 ui.listingQuantityIncreaseButton.BorderSizePixel = 0
@@ -831,7 +845,7 @@ createCorner(ui.listingQuantityIncreaseButton, 8)
 
 ui.unitPriceLabel = Instance.new("TextLabel")
 ui.unitPriceLabel.Name = "UnitPriceText"
-ui.unitPriceLabel.Position = UDim2.fromOffset(18, 154)
+ui.unitPriceLabel.Position = UDim2.fromOffset(18, 182)
 ui.unitPriceLabel.Size = UDim2.fromOffset(124, 28)
 ui.unitPriceLabel.BackgroundTransparency = 1
 ui.unitPriceLabel.Text = "Unit price"
@@ -844,7 +858,7 @@ ui.unitPriceLabel.Parent = ui.marketplaceModalWindow
 
 ui.unitPriceTextBox = Instance.new("TextBox")
 ui.unitPriceTextBox.Name = "UnitPriceCoinsTextBox"
-ui.unitPriceTextBox.Position = UDim2.fromOffset(128, 150)
+ui.unitPriceTextBox.Position = UDim2.fromOffset(128, 178)
 ui.unitPriceTextBox.Size = UDim2.fromOffset(144, 34)
 ui.unitPriceTextBox.BackgroundColor3 = Color3.fromRGB(245, 245, 245)
 ui.unitPriceTextBox.BorderSizePixel = 0
@@ -863,7 +877,7 @@ createCorner(ui.unitPriceTextBox, 8)
 
 ui.unitPriceCoinsLabel = Instance.new("TextLabel")
 ui.unitPriceCoinsLabel.Name = "UnitPriceCoinsLabel"
-ui.unitPriceCoinsLabel.Position = UDim2.fromOffset(278, 154)
+ui.unitPriceCoinsLabel.Position = UDim2.fromOffset(278, 182)
 ui.unitPriceCoinsLabel.Size = UDim2.fromOffset(58, 26)
 ui.unitPriceCoinsLabel.BackgroundTransparency = 1
 ui.unitPriceCoinsLabel.Text = "Coins"
@@ -876,7 +890,7 @@ ui.unitPriceCoinsLabel.Parent = ui.marketplaceModalWindow
 
 ui.listingTotalPriceLabel = Instance.new("TextLabel")
 ui.listingTotalPriceLabel.Name = "ListingTotalPriceLabel"
-ui.listingTotalPriceLabel.Position = UDim2.fromOffset(18, 198)
+ui.listingTotalPriceLabel.Position = UDim2.fromOffset(18, 226)
 ui.listingTotalPriceLabel.Size = UDim2.new(1, -36, 0, 24)
 ui.listingTotalPriceLabel.BackgroundTransparency = 1
 ui.listingTotalPriceLabel.Text = "Total: 1 Coins"
@@ -889,7 +903,7 @@ ui.listingTotalPriceLabel.Parent = ui.marketplaceModalWindow
 
 ui.listingModalMessageLabel = Instance.new("TextLabel")
 ui.listingModalMessageLabel.Name = "ListingModalMessage"
-ui.listingModalMessageLabel.Position = UDim2.fromOffset(18, 226)
+ui.listingModalMessageLabel.Position = UDim2.fromOffset(18, 254)
 ui.listingModalMessageLabel.Size = UDim2.new(1, -36, 0, 26)
 ui.listingModalMessageLabel.BackgroundTransparency = 1
 ui.listingModalMessageLabel.Text = ""
@@ -903,7 +917,7 @@ ui.listingModalMessageLabel.Parent = ui.marketplaceModalWindow
 
 ui.listingCancelButton = Instance.new("TextButton")
 ui.listingCancelButton.Name = "CancelListingModalButton"
-ui.listingCancelButton.Position = UDim2.fromOffset(18, 264)
+ui.listingCancelButton.Position = UDim2.fromOffset(18, 298)
 ui.listingCancelButton.Size = UDim2.fromOffset(142, 34)
 ui.listingCancelButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
 ui.listingCancelButton.BorderSizePixel = 0
@@ -918,7 +932,7 @@ createCorner(ui.listingCancelButton, 8)
 
 ui.listingConfirmButton = Instance.new("TextButton")
 ui.listingConfirmButton.Name = "ConfirmListingButton"
-ui.listingConfirmButton.Position = UDim2.fromOffset(176, 264)
+ui.listingConfirmButton.Position = UDim2.fromOffset(176, 298)
 ui.listingConfirmButton.Size = UDim2.fromOffset(166, 34)
 ui.listingConfirmButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
 ui.listingConfirmButton.BorderSizePixel = 0
@@ -1625,7 +1639,7 @@ local function updateSelectedItemDetails()
 
 	ui.marketplaceButton.Visible = counts.Tradable > 0
 	setButtonEnabled(ui.marketplaceButton, counts.Tradable > 0 and not marketplaceCreateInFlight, Color3.fromRGB(70, 120, 170))
-	ui.marketplaceButton.Text = marketplaceCreateInFlight and "Listing..." or "Sell in Marketplace"
+	ui.marketplaceButton.Text = marketplaceCreateInFlight and "Listing..." or "List in Marketplace"
 end
 
 local function createInventoryCard(entry, layoutOrder)
@@ -2029,7 +2043,7 @@ local function openMarketplaceListingModal()
 	local maxQuantity = math.min(counts.Tradable, MARKETPLACE_MAX_LISTING_QUANTITY)
 
 	if maxQuantity <= 0 then
-		setStatus("This item is untradable.", false)
+		setStatus("This item is untradable and cannot be listed.", false)
 		return
 	end
 
@@ -2623,7 +2637,7 @@ local function confirmMarketplaceListing()
 	end
 
 	if maxQuantity <= 0 then
-		setListingModalMessage("You do not have enough tradable copies to list.", false)
+		setListingModalMessage("This item is untradable and cannot be listed.", false)
 		return
 	end
 

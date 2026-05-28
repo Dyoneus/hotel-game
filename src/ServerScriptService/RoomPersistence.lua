@@ -124,6 +124,14 @@ local function isPositiveInteger(value)
 		and value == math.floor(value)
 end
 
+local function isFiniteInteger(value)
+	return typeof(value) == "number"
+		and value == value
+		and value > -math.huge
+		and value < math.huge
+		and value == math.floor(value)
+end
+
 local function isNonNegativeInteger(value)
 	return typeof(value) == "number"
 		and value == value
@@ -695,6 +703,7 @@ local MARKETPLACE_LISTING_FIELDS = {
 	CreatedAt = true,
 	UpdatedAt = true,
 	ExpiresAt = true,
+	SoldAt = true,
 	BuyerUserId = true,
 	TransactionId = true,
 	Escrowed = true,
@@ -707,7 +716,7 @@ local function isValidListingRecord(listingRecord)
 	return typeof(listingRecord) == "table"
 		and typeof(listingRecord.ListingId) == "string"
 		and listingRecord.ListingId ~= ""
-		and isPositiveInteger(listingRecord.SellerUserId)
+		and isFiniteInteger(listingRecord.SellerUserId)
 		and isValidTemplateId(listingRecord.TemplateId)
 		and isPositiveInteger(listingRecord.Quantity)
 		and isPositiveInteger(listingRecord.UnitPriceCoins)
@@ -1205,8 +1214,25 @@ function RoomPersistence.UpdateMarketplaceListing(player, listingId, updates)
 		end
 	end
 
+	if updates.SoldAt ~= nil then
+		if updates.SoldAt ~= false
+			and (typeof(updates.SoldAt) ~= "number"
+				or updates.SoldAt ~= updates.SoldAt
+				or updates.SoldAt < 0
+				or updates.SoldAt >= math.huge) then
+
+			return false, "Invalid marketplace listing sale time."
+		end
+
+		if updates.SoldAt == false then
+			listingRecord.SoldAt = nil
+		else
+			listingRecord.SoldAt = math.floor(updates.SoldAt)
+		end
+	end
+
 	if updates.BuyerUserId ~= nil then
-		if updates.BuyerUserId ~= false and not isPositiveInteger(updates.BuyerUserId) then
+		if updates.BuyerUserId ~= false and not isFiniteInteger(updates.BuyerUserId) then
 			return false, "Invalid marketplace listing buyer."
 		end
 
@@ -1276,7 +1302,7 @@ function RoomPersistence.CancelMarketplaceListingWithEscrowReturn(player, listin
 		return false, "Invalid marketplace listing.", nil, nil
 	end
 
-	if not isPositiveInteger(sellerUserId) then
+	if not isFiniteInteger(sellerUserId) then
 		return false, "Invalid marketplace seller.", nil, nil
 	end
 
@@ -1336,7 +1362,7 @@ function RoomPersistence.CancelLegacyMarketplaceListingWithoutEscrowReturn(playe
 		return false, "Invalid marketplace listing.", nil
 	end
 
-	if not isPositiveInteger(sellerUserId) then
+	if not isFiniteInteger(sellerUserId) then
 		return false, "Invalid marketplace seller.", nil
 	end
 

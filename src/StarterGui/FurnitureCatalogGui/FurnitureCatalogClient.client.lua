@@ -42,6 +42,12 @@ local latestMySalesListings = {}
 local marketplacePublicListingsInFlight = false
 local marketplaceMySalesInFlight = false
 local marketplaceCancelInFlightByListingId = {}
+local marketplacePurchaseInFlightByListingId = {}
+local marketplacePurchaseListing = nil
+local marketplacePurchaseRequestInFlight = false
+local marketplacePurchaseRequestSerial = 0
+local pendingPurchaseRequestId = nil
+local pendingPurchaseListingId = nil
 local marketplaceLastRequestAt = -math.huge
 local publicMarketplaceLastRequestAt = -math.huge
 local mySalesLastRequestAt = -math.huge
@@ -72,6 +78,7 @@ local renderMarketplace = nil
 local requestMarketplaceOffers = nil
 local requestMarketplaceMySales = nil
 local cancelMarketplaceSale = nil
+local requestMarketplacePurchase = nil
 
 local placingItemData = nil
 local placementPreview = nil
@@ -618,6 +625,101 @@ listPadding.PaddingBottom = UDim.new(0, 10)
 listPadding.PaddingLeft = UDim.new(0, 10)
 listPadding.PaddingRight = UDim.new(0, 10)
 listPadding.Parent = itemList
+
+local marketplacePurchaseOverlay = Instance.new("Frame")
+marketplacePurchaseOverlay.Name = "MarketplacePurchaseOverlay"
+marketplacePurchaseOverlay.Position = UDim2.fromOffset(0, 0)
+marketplacePurchaseOverlay.Size = UDim2.fromScale(1, 1)
+marketplacePurchaseOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+marketplacePurchaseOverlay.BackgroundTransparency = 0.45
+marketplacePurchaseOverlay.BorderSizePixel = 0
+marketplacePurchaseOverlay.Visible = false
+marketplacePurchaseOverlay.ZIndex = 80
+marketplacePurchaseOverlay.Parent = panel
+
+local marketplacePurchaseWindow = Instance.new("Frame")
+marketplacePurchaseWindow.Name = "MarketplacePurchaseConfirm"
+marketplacePurchaseWindow.AnchorPoint = Vector2.new(0.5, 0.5)
+marketplacePurchaseWindow.Position = UDim2.fromScale(0.5, 0.5)
+marketplacePurchaseWindow.Size = UDim2.fromOffset(322, 188)
+marketplacePurchaseWindow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+marketplacePurchaseWindow.BorderSizePixel = 0
+marketplacePurchaseWindow.ZIndex = 81
+marketplacePurchaseWindow.Parent = marketplacePurchaseOverlay
+
+createCorner(marketplacePurchaseWindow, 12)
+createStroke(marketplacePurchaseWindow, Color3.fromRGB(210, 215, 220), 1, 0)
+
+local marketplacePurchaseTitle = Instance.new("TextLabel")
+marketplacePurchaseTitle.Name = "PurchaseTitle"
+marketplacePurchaseTitle.Position = UDim2.fromOffset(16, 14)
+marketplacePurchaseTitle.Size = UDim2.new(1, -32, 0, 26)
+marketplacePurchaseTitle.BackgroundTransparency = 1
+marketplacePurchaseTitle.Text = "Buy Marketplace Item"
+marketplacePurchaseTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
+marketplacePurchaseTitle.TextSize = 18
+marketplacePurchaseTitle.TextXAlignment = Enum.TextXAlignment.Left
+marketplacePurchaseTitle.Font = Enum.Font.GothamBold
+marketplacePurchaseTitle.ZIndex = 82
+marketplacePurchaseTitle.Parent = marketplacePurchaseWindow
+
+local marketplacePurchaseMessage = Instance.new("TextLabel")
+marketplacePurchaseMessage.Name = "PurchaseMessage"
+marketplacePurchaseMessage.Position = UDim2.fromOffset(16, 48)
+marketplacePurchaseMessage.Size = UDim2.new(1, -32, 0, 54)
+marketplacePurchaseMessage.BackgroundTransparency = 1
+marketplacePurchaseMessage.Text = ""
+marketplacePurchaseMessage.TextColor3 = Color3.fromRGB(70, 70, 70)
+marketplacePurchaseMessage.TextSize = 14
+marketplacePurchaseMessage.TextWrapped = true
+marketplacePurchaseMessage.TextXAlignment = Enum.TextXAlignment.Left
+marketplacePurchaseMessage.Font = Enum.Font.Gotham
+marketplacePurchaseMessage.ZIndex = 82
+marketplacePurchaseMessage.Parent = marketplacePurchaseWindow
+
+local marketplacePurchaseStatus = Instance.new("TextLabel")
+marketplacePurchaseStatus.Name = "PurchaseStatus"
+marketplacePurchaseStatus.Position = UDim2.fromOffset(16, 106)
+marketplacePurchaseStatus.Size = UDim2.new(1, -32, 0, 24)
+marketplacePurchaseStatus.BackgroundTransparency = 1
+marketplacePurchaseStatus.Text = ""
+marketplacePurchaseStatus.TextColor3 = Color3.fromRGB(85, 85, 85)
+marketplacePurchaseStatus.TextSize = 12
+marketplacePurchaseStatus.TextXAlignment = Enum.TextXAlignment.Left
+marketplacePurchaseStatus.TextTruncate = Enum.TextTruncate.AtEnd
+marketplacePurchaseStatus.Font = Enum.Font.Gotham
+marketplacePurchaseStatus.ZIndex = 82
+marketplacePurchaseStatus.Parent = marketplacePurchaseWindow
+
+local marketplacePurchaseCancelButton = Instance.new("TextButton")
+marketplacePurchaseCancelButton.Name = "PurchaseCancelButton"
+marketplacePurchaseCancelButton.Position = UDim2.new(1, -160, 1, -44)
+marketplacePurchaseCancelButton.Size = UDim2.fromOffset(64, 30)
+marketplacePurchaseCancelButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+marketplacePurchaseCancelButton.BorderSizePixel = 0
+marketplacePurchaseCancelButton.Text = "Cancel"
+marketplacePurchaseCancelButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+marketplacePurchaseCancelButton.TextSize = 12
+marketplacePurchaseCancelButton.Font = Enum.Font.GothamBold
+marketplacePurchaseCancelButton.ZIndex = 82
+marketplacePurchaseCancelButton.Parent = marketplacePurchaseWindow
+
+createCorner(marketplacePurchaseCancelButton, 7)
+
+local marketplacePurchaseConfirmButton = Instance.new("TextButton")
+marketplacePurchaseConfirmButton.Name = "PurchaseConfirmButton"
+marketplacePurchaseConfirmButton.Position = UDim2.new(1, -88, 1, -44)
+marketplacePurchaseConfirmButton.Size = UDim2.fromOffset(72, 30)
+marketplacePurchaseConfirmButton.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
+marketplacePurchaseConfirmButton.BorderSizePixel = 0
+marketplacePurchaseConfirmButton.Text = "Confirm"
+marketplacePurchaseConfirmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+marketplacePurchaseConfirmButton.TextSize = 12
+marketplacePurchaseConfirmButton.Font = Enum.Font.GothamBold
+marketplacePurchaseConfirmButton.ZIndex = 82
+marketplacePurchaseConfirmButton.Parent = marketplacePurchaseWindow
+
+createCorner(marketplacePurchaseConfirmButton, 7)
 
 local function setPanelVisible(isVisible)
 	local wasVisible = panel.Visible
@@ -1597,6 +1699,100 @@ local function fireInventoryLocalDeltaFromMarketplaceDetails(templateId, details
 	})
 end
 
+local function getMarketplaceListingTotalPrice(listing)
+	if typeof(listing) ~= "table" then
+		return 0
+	end
+
+	local quantity = listing.Quantity
+	local unitPriceCoins = listing.UnitPriceCoins
+
+	if typeof(quantity) ~= "number"
+		or typeof(unitPriceCoins) ~= "number"
+		or quantity <= 0
+		or unitPriceCoins <= 0 then
+
+		return 0
+	end
+
+	return math.floor(quantity) * math.floor(unitPriceCoins)
+end
+
+local function setMarketplacePurchaseStatus(text, isError)
+	marketplacePurchaseStatus.Text = tostring(text or "")
+	marketplacePurchaseStatus.TextColor3 = isError == true
+		and Color3.fromRGB(150, 60, 60)
+		or Color3.fromRGB(85, 85, 85)
+end
+
+local function closeMarketplacePurchaseModal()
+	if marketplacePurchaseRequestInFlight then
+		return
+	end
+
+	marketplacePurchaseOverlay.Visible = false
+	marketplacePurchaseListing = nil
+	setMarketplacePurchaseStatus("", false)
+end
+
+local function updateMarketplacePurchaseModal()
+	local listing = marketplacePurchaseListing
+	local isInFlight = marketplacePurchaseRequestInFlight
+	local itemName = getMarketplaceListingDisplayName(listing)
+	local quantity = typeof(listing) == "table" and listing.Quantity or 0
+	local totalPrice = getMarketplaceListingTotalPrice(listing)
+
+	marketplacePurchaseMessage.Text = "Buy "
+		.. itemName
+		.. " x" .. tostring(quantity)
+		.. " for " .. tostring(totalPrice)
+		.. " Coins?"
+	marketplacePurchaseConfirmButton.Text = isInFlight and "Buying..." or "Confirm"
+	marketplacePurchaseConfirmButton.Active = not isInFlight
+	marketplacePurchaseConfirmButton.AutoButtonColor = not isInFlight
+	marketplacePurchaseConfirmButton.BackgroundColor3 = isInFlight
+		and Color3.fromRGB(155, 160, 155)
+		or Color3.fromRGB(70, 150, 255)
+	marketplacePurchaseCancelButton.Active = not isInFlight
+	marketplacePurchaseCancelButton.AutoButtonColor = not isInFlight
+end
+
+local function openMarketplacePurchaseModal(listing)
+	if typeof(listing) ~= "table" or typeof(listing.ListingId) ~= "string" or listing.ListingId == "" then
+		setStatus("Invalid marketplace listing.")
+		return
+	end
+
+	if listing.IsOwnListing == true then
+		setStatus("You cannot buy your own listing.")
+		return
+	end
+
+	if tostring(listing.Status or "") ~= "Active" then
+		setStatus("This listing is no longer available.")
+		return
+	end
+
+	marketplacePurchaseListing = listing
+	marketplacePurchaseOverlay.Visible = true
+	setMarketplacePurchaseStatus("", false)
+	updateMarketplacePurchaseModal()
+end
+
+local function removePublicMarketplaceListing(listingId)
+	if typeof(listingId) ~= "string" or listingId == "" then
+		return
+	end
+
+	for index = #latestPublicMarketplaceListings, 1, -1 do
+		local listing = latestPublicMarketplaceListings[index]
+
+		if typeof(listing) == "table" and listing.ListingId == listingId then
+			table.remove(latestPublicMarketplaceListings, index)
+		end
+	end
+end
+
 local function createItemRow(itemData, layoutOrder)
 	local price = 0
 
@@ -1814,6 +2010,10 @@ local function createMarketplaceOfferRow(listing, layoutOrder)
 	local unitPriceCoins = listing.UnitPriceCoins or 0
 	local status = tostring(listing.Status or "Unknown")
 	local createdText = formatListingCreatedAt(listing.CreatedAt)
+	local listingId = listing.ListingId
+	local isOwnListing = listing.IsOwnListing == true
+	local isActive = status == "Active"
+	local isPurchaseInFlight = marketplacePurchaseInFlightByListingId[listingId] == true
 
 	local row = Instance.new("Frame")
 	row.Name = "MarketplaceOfferRow"
@@ -1880,22 +2080,45 @@ local function createMarketplaceOfferRow(listing, layoutOrder)
 	listingStatusLabel.Font = Enum.Font.GothamMedium
 	listingStatusLabel.Parent = row
 
-	local buyingSoonButton = Instance.new("TextButton")
-	buyingSoonButton.Name = "BuyingSoonButton"
-	buyingSoonButton.AnchorPoint = Vector2.new(1, 0.5)
-	buyingSoonButton.Position = UDim2.new(1, -12, 0.5, 0)
-	buyingSoonButton.Size = UDim2.fromOffset(92, 30)
-	buyingSoonButton.BackgroundColor3 = Color3.fromRGB(155, 160, 155)
-	buyingSoonButton.BorderSizePixel = 0
-	buyingSoonButton.Text = "Buying Soon"
-	buyingSoonButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	buyingSoonButton.TextSize = 11
-	buyingSoonButton.Font = Enum.Font.GothamBold
-	buyingSoonButton.Active = false
-	buyingSoonButton.AutoButtonColor = false
-	buyingSoonButton.Parent = row
+	local actionButton = Instance.new("TextButton")
+	actionButton.Name = isOwnListing and "OwnListingButton" or "BuyMarketplaceListingButton"
+	actionButton.AnchorPoint = Vector2.new(1, 0.5)
+	actionButton.Position = UDim2.new(1, -12, 0.5, 0)
+	actionButton.Size = UDim2.fromOffset(92, 30)
+	actionButton.BorderSizePixel = 0
+	actionButton.TextSize = 12
+	actionButton.Font = Enum.Font.GothamBold
+	actionButton.Parent = row
 
-	createCorner(buyingSoonButton, 7)
+	if isOwnListing then
+		actionButton.BackgroundColor3 = Color3.fromRGB(155, 160, 155)
+		actionButton.Text = "Your Listing"
+		actionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		actionButton.Active = false
+		actionButton.AutoButtonColor = false
+	elseif isActive then
+		actionButton.BackgroundColor3 = isPurchaseInFlight
+			and Color3.fromRGB(155, 160, 155)
+			or Color3.fromRGB(70, 150, 255)
+		actionButton.Text = isPurchaseInFlight and "Buying..." or "Buy"
+		actionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		actionButton.Active = not isPurchaseInFlight
+		actionButton.AutoButtonColor = not isPurchaseInFlight
+
+		actionButton.MouseButton1Click:Connect(function()
+			if not isPurchaseInFlight then
+				openMarketplacePurchaseModal(listing)
+			end
+		end)
+	else
+		actionButton.BackgroundColor3 = Color3.fromRGB(155, 160, 155)
+		actionButton.Text = status
+		actionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		actionButton.Active = false
+		actionButton.AutoButtonColor = false
+	end
+
+	createCorner(actionButton, 7)
 end
 
 local function createMarketplaceSaleRow(listing, layoutOrder)
@@ -2012,7 +2235,7 @@ renderMarketplace = function()
 			setStatus("No active marketplace offers.")
 			createEmptyCatalogState("No active marketplace offers.")
 		else
-			setStatus("Browse marketplace offers. Buying is coming later.")
+			setStatus("Browse marketplace offers.")
 		end
 
 		for index, listing in ipairs(latestPublicMarketplaceListings) do
@@ -2247,6 +2470,75 @@ cancelMarketplaceSale = function(listingId)
 	end)
 end
 
+requestMarketplacePurchase = function()
+	if marketplacePurchaseRequestInFlight then
+		return
+	end
+
+	local listing = marketplacePurchaseListing
+
+	if typeof(listing) ~= "table" or typeof(listing.ListingId) ~= "string" or listing.ListingId == "" then
+		setMarketplacePurchaseStatus("Invalid marketplace listing.", true)
+		return
+	end
+
+	if listing.IsOwnListing == true then
+		setMarketplacePurchaseStatus("You cannot buy your own listing.", true)
+		return
+	end
+
+	if tostring(listing.Status or "") ~= "Active" then
+		setMarketplacePurchaseStatus("This listing is no longer available.", true)
+		return
+	end
+
+	local listingId = listing.ListingId
+
+	if marketplacePurchaseInFlightByListingId[listingId] then
+		return
+	end
+
+	local now = os.clock()
+	local cooldownRemaining = MARKETPLACE_REQUEST_COOLDOWN_SECONDS - (now - marketplaceLastRequestAt)
+
+	if cooldownRemaining > 0 then
+		setMarketplacePurchaseStatus("Please wait a moment.", true)
+		return
+	end
+
+	marketplacePurchaseRequestSerial += 1
+	pendingPurchaseRequestId = tostring(marketplacePurchaseRequestSerial)
+	pendingPurchaseListingId = listingId
+	marketplacePurchaseRequestInFlight = true
+	marketplacePurchaseInFlightByListingId[listingId] = true
+	marketplaceLastRequestAt = now
+	setMarketplacePurchaseStatus("Purchasing...", false)
+	updateMarketplacePurchaseModal()
+	renderMarketplace()
+	marketplaceRequest:FireServer("PurchaseListing", {
+		ListingId = listingId,
+		RequestId = pendingPurchaseRequestId,
+	})
+
+	local requestId = pendingPurchaseRequestId
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if marketplacePurchaseRequestInFlight and pendingPurchaseRequestId == requestId then
+			marketplacePurchaseRequestInFlight = false
+
+			if pendingPurchaseListingId then
+				marketplacePurchaseInFlightByListingId[pendingPurchaseListingId] = nil
+			end
+
+			pendingPurchaseRequestId = nil
+			pendingPurchaseListingId = nil
+			setMarketplacePurchaseStatus("Purchase request timed out.", true)
+			updateMarketplacePurchaseModal()
+			renderMarketplace()
+		end
+	end)
+end
+
 updateOpenButton = function()
 	if placingItemData then
 		openButton.Visible = false
@@ -2332,6 +2624,14 @@ marketplaceSearchBox.FocusLost:Connect(function(enterPressed)
 		requestMarketplaceOffers({
 			Queue = true,
 		})
+	end
+end)
+
+marketplacePurchaseCancelButton.MouseButton1Click:Connect(closeMarketplacePurchaseModal)
+
+marketplacePurchaseConfirmButton.MouseButton1Click:Connect(function()
+	if requestMarketplacePurchase then
+		requestMarketplacePurchase()
 	end
 end)
 
@@ -2487,6 +2787,84 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			scheduleQueuedMySalesRefresh(
 				MARKETPLACE_REQUEST_COOLDOWN_SECONDS - (os.clock() - mySalesLastRequestAt)
 			)
+		end
+
+		return
+	end
+
+	if kind == "PurchaseListing" then
+		local responseRequestId = response.RequestId
+
+		if pendingPurchaseRequestId
+			and responseRequestId ~= nil
+			and tostring(responseRequestId) ~= pendingPurchaseRequestId then
+
+			return
+		end
+
+		local listing = response.Listing
+		local listingId = pendingPurchaseListingId
+		local templateId = nil
+
+		if typeof(listing) == "table" then
+			listingId = listing.ListingId or listingId
+			templateId = listing.TemplateId
+		elseif typeof(marketplacePurchaseListing) == "table" then
+			templateId = marketplacePurchaseListing.TemplateId
+		end
+
+		marketplacePurchaseRequestInFlight = false
+
+		if typeof(listingId) == "string" then
+			marketplacePurchaseInFlightByListingId[listingId] = nil
+		end
+
+		pendingPurchaseRequestId = nil
+		pendingPurchaseListingId = nil
+
+		if success then
+			if typeof(listingId) == "string" then
+				removePublicMarketplaceListing(listingId)
+			end
+
+			fireInventoryLocalDeltaFromMarketplaceDetails(templateId, response.InventoryDetails)
+
+			if typeof(response.NewCoinBalance) == "number" then
+				currencyLocalDelta:Fire({
+					CurrencyKey = response.CurrencyKey or "Coins",
+					Balance = response.NewCoinBalance,
+				})
+			end
+
+			inventoryRefreshRequested:Fire({
+				Reason = "MarketplacePurchase",
+				Force = true,
+			})
+			currencyRefreshRequested:Fire()
+			marketplacePurchaseOverlay.Visible = false
+			marketplacePurchaseListing = nil
+			setMarketplacePurchaseStatus("", false)
+			renderMarketplace()
+			setStatus("Purchase complete.")
+
+			if requestMarketplaceOffers then
+				task.delay(0.5, function()
+					requestMarketplaceOffers({
+						Queue = true,
+					})
+				end)
+			end
+		else
+			local errorMessage = message ~= "" and message or "Could not complete purchase."
+
+			if marketplacePurchaseOverlay.Visible then
+				setMarketplacePurchaseStatus(errorMessage, true)
+				updateMarketplacePurchaseModal()
+				renderMarketplace()
+			else
+				renderMarketplace()
+				setStatus(errorMessage)
+			end
 		end
 
 		return

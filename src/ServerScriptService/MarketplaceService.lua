@@ -1,10 +1,8 @@
 -- Server-side Marketplace foundation.
--- Patch 1E supports seller-owned listing escrow plus read-only public browsing
--- from currently loaded player profiles. Purchases, Coins movement, buyer
--- inventory transfer, seller proceeds, and global marketplace DataStores are
--- intentionally deferred. Future purchase patches must use idempotent
--- transaction records because buying touches listing state, buyer inventory,
--- buyer Coins, and seller proceeds.
+-- Patch 1F supports seller-owned listing escrow, read-only public browsing,
+-- and same-server purchases while buyer and seller profiles are loaded.
+-- Global marketplace DataStores, cross-server/offline seller purchases, taxes,
+-- and claim/proceeds flows are intentionally deferred.
 
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
@@ -28,7 +26,6 @@ MarketplaceService.STATUS_SOLD = "Sold"
 MarketplaceService.STATUS_CANCELLED = "Cancelled"
 MarketplaceService.STATUS_EXPIRED = "Expired"
 
-local PURCHASES_DISABLED_MESSAGE = "Marketplace purchases are not enabled yet."
 local marketplaceMutationLocksByUserId = {}
 
 local function trimString(value)
@@ -43,6 +40,14 @@ local function isPositiveInteger(value)
 	return typeof(value) == "number"
 		and value == value
 		and value > 0
+		and value < math.huge
+		and value == math.floor(value)
+end
+
+local function isFiniteInteger(value)
+	return typeof(value) == "number"
+		and value == value
+		and value > -math.huge
 		and value < math.huge
 		and value == math.floor(value)
 end
@@ -63,6 +68,24 @@ local function normalizePositiveInteger(value)
 	end
 
 	return math.floor(value)
+end
+
+local function normalizeUserId(userId)
+	if typeof(userId) == "string" then
+		local trimmed = trimString(userId)
+
+		if not trimmed or trimmed == "" then
+			return nil
+		end
+
+		userId = tonumber(trimmed)
+	end
+
+	if not isFiniteInteger(userId) then
+		return nil
+	end
+
+	return math.floor(userId)
 end
 
 local function normalizeTemplateId(templateId)
@@ -222,6 +245,78 @@ local function runMarketplaceMutation(player, callback)
 	return resultSuccess, resultMessage, resultListing, resultInventoryDetails
 end
 
+local function beginMarketplaceMutations(playersToLock)
+	local uniqueByUserId = {}
+	local lockList = {}
+
+	for _, player in ipairs(playersToLock) do
+		if not playerIsValid(player) then
+			return false, "Invalid player.", nil
+		end
+
+		if not uniqueByUserId[player.UserId] then
+			uniqueByUserId[player.UserId] = player
+			table.insert(lockList, player)
+		end
+	end
+
+	table.sort(lockList, function(a, b)
+		return a.UserId < b.UserId
+	end)
+
+	local lockedPlayers = {}
+
+	for _, player in ipairs(lockList) do
+		local locked, lockMessage = beginMarketplaceMutation(player)
+
+		if not locked then
+			for _, lockedPlayer in ipairs(lockedPlayers) do
+				finishMarketplaceMutation(lockedPlayer)
+			end
+
+			return false, lockMessage or "Marketplace is busy. Please try again.", nil
+		end
+
+		table.insert(lockedPlayers, player)
+	end
+
+	return true, nil, lockedPlayers
+end
+
+local function finishMarketplaceMutations(lockedPlayers)
+	if typeof(lockedPlayers) ~= "table" then
+		return
+	end
+
+	for _, player in ipairs(lockedPlayers) do
+		finishMarketplaceMutation(player)
+	end
+end
+
+local function findLoadedSellerListing(listingId)
+	for _, sellerPlayer in ipairs(Players:GetPlayers()) do
+		if getLoadedProfile(sellerPlayer) then
+			local listing = RoomPersistence.GetMarketplaceListing(sellerPlayer, listingId)
+
+			if typeof(listing) == "table" then
+				return sellerPlayer, listing
+			end
+		end
+	end
+
+	return nil, nil
+end
+
+local function generateTransactionId(sellerUserId, buyerUserId)
+	return tostring(sellerUserId)
+		.. "-"
+		.. tostring(buyerUserId)
+		.. "-"
+		.. tostring(os.time())
+		.. "-"
+		.. HttpService:GenerateGUID(false)
+end
+
 function MarketplaceService.PlayerCanListItem(player, templateId, quantity)
 	if not playerIsValid(player) then
 		return false, "Invalid player.", nil
@@ -246,6 +341,14 @@ function MarketplaceService.PlayerCanListItem(player, templateId, quantity)
 	local detailsSnapshot = RoomPersistence.GetInventoryDetailsSnapshot(player)
 	local details = detailsSnapshot[normalizedTemplateId]
 	local tradableCount = getTradableCount(details)
+
+	if tradableCount <= 0
+		and typeof(details) == "table"
+		and typeof(details.Total) == "number"
+		and details.Total > 0 then
+
+		return false, "This item is untradable and cannot be listed.", details
+	end
 
 	if tradableCount < normalizedQuantity then
 		return false, "You do not have enough tradable copies to list.", details
@@ -321,7 +424,7 @@ function MarketplaceService.ValidateListingRequest(player, templateId, quantity,
 end
 
 function MarketplaceService.GenerateListingId(sellerUserId)
-	local normalizedSellerUserId = normalizePositiveInteger(sellerUserId) or 0
+	local normalizedSellerUserId = normalizeUserId(sellerUserId) or 0
 	local guid = HttpService:GenerateGUID(false)
 
 	return tostring(normalizedSellerUserId)
@@ -332,7 +435,7 @@ function MarketplaceService.GenerateListingId(sellerUserId)
 end
 
 function MarketplaceService.BuildListingRecord(sellerUserId, templateId, quantity, unitPriceCoins)
-	local normalizedSellerUserId = normalizePositiveInteger(sellerUserId)
+	local normalizedSellerUserId = normalizeUserId(sellerUserId)
 	local normalizedTemplateId = normalizeTemplateId(templateId)
 	local normalizedQuantity = normalizeListingQuantity(quantity)
 	local normalizedUnitPriceCoins = normalizeUnitPriceCoins(unitPriceCoins)
@@ -360,9 +463,6 @@ function MarketplaceService.BuildListingRecord(sellerUserId, templateId, quantit
 		ExpiresAt = nil,
 		BuyerUserId = nil,
 		TransactionId = nil,
-		Escrowed = true,
-		ReturnTradable = true,
-		ReturnSellable = true,
 	}
 end
 
@@ -380,7 +480,9 @@ function MarketplaceService.GetPublicListingSnapshot(listing)
 		CurrencyKey = listing.CurrencyKey or MarketplaceService.MARKETPLACE_CURRENCY_KEY,
 		Status = listing.Status,
 		CreatedAt = listing.CreatedAt,
+		SoldAt = listing.SoldAt,
 		ExpiresAt = listing.ExpiresAt,
+		BuyerUserId = listing.BuyerUserId,
 		Escrowed = listing.Escrowed == true,
 		LegacyNoEscrow = listing.LegacyNoEscrow == true,
 	}
@@ -413,24 +515,60 @@ end
 
 function MarketplaceService.CreateListing(player, templateId, quantity, unitPriceCoins)
 	return runMarketplaceMutation(player, function()
+		local function failCreateListing(stage, reason, inventoryDetails)
+			local failureReason = tostring(reason or "Unknown error.")
+
+			warn("[MarketplaceService] CreateListing failed stage=" .. stage .. " reason=" .. failureReason)
+
+			return false,
+				"CreateListing failed at " .. stage .. ": " .. failureReason,
+				nil,
+				inventoryDetails
+		end
+
 		local valid, validationMessage, listingData =
 			MarketplaceService.ValidateListingRequest(player, templateId, quantity, unitPriceCoins)
 
 		if not valid then
-			return false, validationMessage or "Invalid listing request."
+			local validationDetails = typeof(listingData) == "table"
+				and listingData.InventoryDetails
+				or nil
+
+			return failCreateListing(
+				"ValidateListingRequest",
+				validationMessage or "Invalid listing request.",
+				validationDetails
+			)
 		end
 
 		local listings = RoomPersistence.GetMarketplaceListingsSnapshot(player)
 
 		if countActiveListings(listings) >= MarketplaceService.MAX_ACTIVE_LISTINGS_PER_PLAYER then
-			return false, "You have too many active marketplace listings."
+			return failCreateListing(
+				"ActiveListingCountCheck",
+				"You have too many active marketplace listings.",
+				listingData.InventoryDetails
+			)
 		end
 
 		local beforeDetails = getInventoryDetailsForTemplate(player, listingData.TemplateId)
 		local beforeTradable = getTradableCount(beforeDetails)
 
 		if beforeTradable < listingData.Quantity then
-			return false, "You do not have enough tradable copies to list."
+			local notEnoughMessage = "You do not have enough tradable copies to list."
+
+			if beforeTradable <= 0
+				and typeof(beforeDetails.Total) == "number"
+				and beforeDetails.Total > 0 then
+
+				notEnoughMessage = "This item is untradable and cannot be listed."
+			end
+
+			return failCreateListing(
+				"ActiveListingCountCheck",
+				notEnoughMessage,
+				beforeDetails
+			)
 		end
 
 		local removed, removeMessage, _, inventoryDetails =
@@ -441,7 +579,11 @@ function MarketplaceService.CreateListing(player, templateId, quantity, unitPric
 			)
 
 		if not removed then
-			return false, removeMessage or "Could not escrow item for listing.", nil, inventoryDetails
+			return failCreateListing(
+				"RemoveEscrowInventory",
+				removeMessage or "Could not escrow item for listing.",
+				inventoryDetails
+			)
 		end
 
 		local afterDetails = typeof(inventoryDetails) == "table"
@@ -473,10 +615,11 @@ function MarketplaceService.CreateListing(player, templateId, quantity, unitPric
 					}
 				)
 
-			return false,
+			return failCreateListing(
+				"RemoveEscrowInventory",
 				"Marketplace escrow failed. Please try again.",
-				nil,
 				returned and returnDetails or afterDetails
+			)
 		end
 
 		inventoryDetails = afterDetails
@@ -500,11 +643,16 @@ function MarketplaceService.CreateListing(player, templateId, quantity, unitPric
 					}
 				)
 
-			return false,
-				"Could not create marketplace listing.",
-				nil,
+			return failCreateListing(
+				"BuildListingRecord",
+				"Could not build marketplace listing record.",
 				returned and returnDetails or inventoryDetails
+			)
 		end
+
+		listingRecord.Escrowed = true
+		listingRecord.ReturnTradable = true
+		listingRecord.ReturnSellable = true
 
 		local added, addMessage = RoomPersistence.AddMarketplaceListing(player, listingRecord)
 
@@ -529,15 +677,33 @@ function MarketplaceService.CreateListing(player, templateId, quantity, unitPric
 				)
 			end
 
-			return false,
+			return failCreateListing(
+				"AddMarketplaceListing",
 				addMessage or "Could not save marketplace listing.",
-				nil,
 				returned and returnDetails or restoredDetails
+			)
+		end
+
+		local listingSnapshot = MarketplaceService.GetPublicListingSnapshot(listingRecord)
+
+		if not listingSnapshot then
+			local cancelled, _, _, returnDetails =
+				RoomPersistence.CancelMarketplaceListingWithEscrowReturn(
+					player,
+					listingRecord.ListingId,
+					player.UserId
+				)
+
+			return failCreateListing(
+				"BuildPublicSnapshot",
+				"Could not build marketplace listing snapshot.",
+				cancelled and returnDetails or inventoryDetails
+			)
 		end
 
 		return true,
 			"Marketplace listing created.",
-			MarketplaceService.GetPublicListingSnapshot(listingRecord),
+			listingSnapshot,
 			inventoryDetails
 	end)
 end
@@ -736,7 +902,7 @@ function MarketplaceService.GetPublicListings(player, filters)
 	local categoryFilterLower = categoryFilter and string.lower(categoryFilter) or nil
 	local listings = {}
 
-	-- Patch 1E reads active listings from currently loaded profiles only.
+	-- Patch 1F still reads active listings from currently loaded profiles only.
 	-- A true global/cross-server marketplace index belongs in a later patch.
 	for _, sellerPlayer in ipairs(Players:GetPlayers()) do
 		if getLoadedProfile(sellerPlayer) then
@@ -768,7 +934,219 @@ function MarketplaceService.GetPublicListings(player, filters)
 end
 
 function MarketplaceService.PurchaseListing(player, listingId)
-	return false, PURCHASES_DISABLED_MESSAGE
+	if not playerIsValid(player) then
+		return false, "Invalid player."
+	end
+
+	if not getLoadedProfile(player) then
+		return false, "Profile is not loaded."
+	end
+
+	local normalizedListingId = normalizeListingId(listingId)
+
+	if not normalizedListingId then
+		return false, "Invalid marketplace listing."
+	end
+
+	local sellerPlayer, listing = findLoadedSellerListing(normalizedListingId)
+
+	if not sellerPlayer or not listing then
+		return false, "This listing is not available right now."
+	end
+
+	if listing.SellerUserId ~= sellerPlayer.UserId then
+		return false, "This listing is not available right now."
+	end
+
+	if listing.SellerUserId == player.UserId then
+		return false, "You cannot buy your own listing."
+	end
+
+	local locked, lockMessage, lockedPlayers = beginMarketplaceMutations({
+		player,
+		sellerPlayer,
+	})
+
+	if not locked then
+		return false, lockMessage or "Marketplace is busy. Please try again."
+	end
+
+	local ok, resultSuccess, resultMessage, resultListing, resultInventoryDetails, resultCoinBalance =
+		pcall(function()
+			if not getLoadedProfile(player) or not getLoadedProfile(sellerPlayer) then
+				return false, "This listing is not available right now."
+			end
+
+			local currentListing = RoomPersistence.GetMarketplaceListing(sellerPlayer, normalizedListingId)
+
+			if not currentListing or currentListing.SellerUserId ~= sellerPlayer.UserId then
+				return false, "This listing is not available right now."
+			end
+
+			if currentListing.SellerUserId == player.UserId then
+				return false, "You cannot buy your own listing."
+			end
+
+			if currentListing.Status ~= MarketplaceService.STATUS_ACTIVE
+				or currentListing.Escrowed ~= true then
+
+				return false, "This listing is no longer available."
+			end
+
+			if currentListing.CurrencyKey ~= MarketplaceService.MARKETPLACE_CURRENCY_KEY then
+				return false, "This listing is not available right now."
+			end
+
+			local totalPrice = MarketplaceService.GetListingTotalPrice(currentListing)
+
+			if not totalPrice then
+				return false, "This listing is not available right now."
+			end
+
+			local currentBuyerCoins = RoomPersistence.GetCurrency(
+				player,
+				MarketplaceService.MARKETPLACE_CURRENCY_KEY
+			)
+
+			if typeof(currentBuyerCoins) ~= "number" then
+				return false, "Profile is not loaded."
+			end
+
+			if currentBuyerCoins < totalPrice then
+				return false, "You do not have enough Coins."
+			end
+
+			local removedCoins, removeCoinsMessage, buyerCoinBalance =
+				RoomPersistence.RemoveCurrency(
+					player,
+					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+					totalPrice,
+					"MarketplacePurchase"
+				)
+
+			if not removedCoins then
+				if removeCoinsMessage == "Not enough currency." then
+					return false, "You do not have enough Coins."
+				end
+
+				return false, removeCoinsMessage or "Could not complete purchase."
+			end
+
+			local addedInventory, addInventoryMessage, _, inventoryDetails =
+				RoomPersistence.AddInventoryItem(
+					player,
+					currentListing.TemplateId,
+					currentListing.Quantity,
+					{
+						Tradable = true,
+						Sellable = true,
+					}
+				)
+
+			if not addedInventory then
+				local refunded = RoomPersistence.AddCurrency(
+					player,
+					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+					totalPrice,
+					"MarketplacePurchaseInventoryRollback"
+				)
+
+				if not refunded then
+					warn("Marketplace purchase failed to refund buyer after inventory add failure", player.UserId, normalizedListingId)
+				end
+
+				return false, addInventoryMessage or "Could not deliver purchased item."
+			end
+
+			local addedSellerCoins, addSellerCoinsMessage =
+				RoomPersistence.AddCurrency(
+					sellerPlayer,
+					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+					totalPrice,
+					"MarketplaceSale"
+				)
+
+			if not addedSellerCoins then
+				local removedInventory = RoomPersistence.RemoveInventoryItem(
+					player,
+					currentListing.TemplateId,
+					currentListing.Quantity,
+					{
+						ConsumeTradableFirst = true,
+					}
+				)
+				local refunded = RoomPersistence.AddCurrency(
+					player,
+					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+					totalPrice,
+					"MarketplacePurchaseSellerRollback"
+				)
+
+				if not removedInventory or not refunded then
+					warn("Marketplace purchase rollback failed after seller currency add failure", player.UserId, normalizedListingId)
+				end
+
+				return false, addSellerCoinsMessage or "Could not complete purchase."
+			end
+
+			local now = os.time()
+			local sold, soldMessage, soldListing =
+				RoomPersistence.UpdateMarketplaceListing(
+					sellerPlayer,
+					normalizedListingId,
+					{
+						Status = MarketplaceService.STATUS_SOLD,
+						Escrowed = false,
+						BuyerUserId = player.UserId,
+						SoldAt = now,
+						TransactionId = generateTransactionId(sellerPlayer.UserId, player.UserId),
+					}
+				)
+
+			if not sold then
+				local removedSellerCoins = RoomPersistence.RemoveCurrency(
+					sellerPlayer,
+					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+					totalPrice,
+					"MarketplacePurchaseListingRollback"
+				)
+				local removedInventory = RoomPersistence.RemoveInventoryItem(
+					player,
+					currentListing.TemplateId,
+					currentListing.Quantity,
+					{
+						ConsumeTradableFirst = true,
+					}
+				)
+				local refunded = RoomPersistence.AddCurrency(
+					player,
+					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+					totalPrice,
+					"MarketplacePurchaseListingRollback"
+				)
+
+				if not removedSellerCoins or not removedInventory or not refunded then
+					warn("Marketplace purchase rollback failed after listing sale update failure", player.UserId, normalizedListingId)
+				end
+
+				return false, soldMessage or "Could not complete purchase."
+			end
+
+			return true,
+				"Purchase complete.",
+				MarketplaceService.GetPublicListingSnapshot(soldListing),
+				inventoryDetails,
+				buyerCoinBalance
+		end)
+
+	finishMarketplaceMutations(lockedPlayers)
+
+	if not ok then
+		warn("Marketplace purchase failed:", resultSuccess)
+		return false, "Marketplace request failed."
+	end
+
+	return resultSuccess, resultMessage, resultListing, resultInventoryDetails, resultCoinBalance
 end
 
 Players.PlayerRemoving:Connect(function(player)

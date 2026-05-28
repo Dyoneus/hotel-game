@@ -150,7 +150,7 @@ local panel = Instance.new("Frame")
 panel.Name = "AdminPanel"
 panel.AnchorPoint = Vector2.new(0.5, 0.5)
 panel.Position = UDim2.fromScale(0.5, 0.5)
-panel.Size = UDim2.fromOffset(620, 540)
+panel.Size = UDim2.fromOffset(620, 600)
 panel.BackgroundColor3 = Color3.fromRGB(245, 245, 238)
 panel.BorderSizePixel = 0
 panel.Parent = dimBackground
@@ -288,10 +288,36 @@ local unbanButton = createButton(
 	Color3.fromRGB(85, 150, 90)
 )
 
+createLabel(
+	panel,
+	"CommandLabel",
+	"Test command",
+	UDim2.fromOffset(24, 432),
+	UDim2.fromOffset(180, 22),
+	15
+)
+
+local commandBox = createTextBox(
+	panel,
+	"AdminCommandBox",
+	"Admin command...",
+	UDim2.fromOffset(24, 456),
+	UDim2.new(1, -138, 0, 40)
+)
+
+local runCommandButton = createButton(
+	panel,
+	"RunCommandButton",
+	"Run",
+	UDim2.new(1, -100, 0, 456),
+	UDim2.fromOffset(76, 40),
+	Color3.fromRGB(70, 120, 190)
+)
+
 local warningLabel = Instance.new("TextLabel")
 warningLabel.Name = "WarningLabel"
-warningLabel.Position = UDim2.fromOffset(24, 438)
-warningLabel.Size = UDim2.new(1, -48, 0, 78)
+warningLabel.Position = UDim2.fromOffset(24, 512)
+warningLabel.Size = UDim2.new(1, -48, 0, 64)
 warningLabel.BackgroundTransparency = 1
 warningLabel.TextColor3 = Color3.fromRGB(110, 70, 70)
 warningLabel.TextSize = 14
@@ -355,6 +381,36 @@ local function sendCommand(actionName)
 	end)
 end
 
+local function sendCommandText()
+	if not accessGranted then
+		setStatus("No admin access.", false)
+		return
+	end
+
+	if requestInFlight then
+		setStatus("A command is already running.", false)
+		return
+	end
+
+	local commandText = tostring(commandBox.Text or "")
+
+	if commandText:match("^%s*$") then
+		setStatus("Enter an admin command.", false)
+		return
+	end
+
+	requestInFlight = true
+	setStatus("Running admin command...", nil)
+	adminCommandRequest:FireServer(commandText)
+
+	task.delay(10, function()
+		if requestInFlight then
+			requestInFlight = false
+			setStatus("Command timed out locally. Check server Output.", false)
+		end
+	end)
+end
+
 openButton.MouseButton1Click:Connect(function()
 	setPanelVisible(true)
 end)
@@ -397,6 +453,14 @@ unbanButton.MouseButton1Click:Connect(function()
 	end
 
 	sendCommand("Unban")
+end)
+
+runCommandButton.MouseButton1Click:Connect(sendCommandText)
+
+commandBox.FocusLost:Connect(function(enterPressed)
+	if enterPressed then
+		sendCommandText()
+	end
 end)
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
