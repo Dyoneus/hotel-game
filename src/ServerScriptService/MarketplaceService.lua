@@ -971,7 +971,13 @@ function MarketplaceService.PurchaseListing(player, listingId)
 		return false, lockMessage or "Marketplace is busy. Please try again."
 	end
 
-	local ok, resultSuccess, resultMessage, resultListing, resultInventoryDetails, resultCoinBalance =
+	local ok,
+		resultSuccess,
+		resultMessage,
+		resultListing,
+		resultInventoryDetails,
+		resultCoinBalance,
+		resultSaleInfo =
 		pcall(function()
 			if not getLoadedProfile(player) or not getLoadedProfile(sellerPlayer) then
 				return false, "This listing is not available right now."
@@ -1021,7 +1027,7 @@ function MarketplaceService.PurchaseListing(player, listingId)
 					player,
 					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
 					totalPrice,
-					"MarketplacePurchase"
+					"MarketplacePurchase:" .. normalizedListingId
 				)
 
 			if not removedCoins then
@@ -1048,7 +1054,7 @@ function MarketplaceService.PurchaseListing(player, listingId)
 					player,
 					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
 					totalPrice,
-					"MarketplacePurchaseInventoryRollback"
+					"MarketplacePurchaseInventoryRollback:" .. normalizedListingId
 				)
 
 				if not refunded then
@@ -1058,12 +1064,12 @@ function MarketplaceService.PurchaseListing(player, listingId)
 				return false, addInventoryMessage or "Could not deliver purchased item."
 			end
 
-			local addedSellerCoins, addSellerCoinsMessage =
+			local addedSellerCoins, addSellerCoinsMessage, sellerCoinBalance =
 				RoomPersistence.AddCurrency(
 					sellerPlayer,
 					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
 					totalPrice,
-					"MarketplaceSale"
+					"MarketplaceSale:" .. normalizedListingId
 				)
 
 			if not addedSellerCoins then
@@ -1079,7 +1085,7 @@ function MarketplaceService.PurchaseListing(player, listingId)
 					player,
 					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
 					totalPrice,
-					"MarketplacePurchaseSellerRollback"
+					"MarketplacePurchaseSellerRollback:" .. normalizedListingId
 				)
 
 				if not removedInventory or not refunded then
@@ -1108,7 +1114,7 @@ function MarketplaceService.PurchaseListing(player, listingId)
 					sellerPlayer,
 					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
 					totalPrice,
-					"MarketplacePurchaseListingRollback"
+					"MarketplacePurchaseListingRollback:" .. normalizedListingId
 				)
 				local removedInventory = RoomPersistence.RemoveInventoryItem(
 					player,
@@ -1122,7 +1128,7 @@ function MarketplaceService.PurchaseListing(player, listingId)
 					player,
 					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
 					totalPrice,
-					"MarketplacePurchaseListingRollback"
+					"MarketplacePurchaseListingRollback:" .. normalizedListingId
 				)
 
 				if not removedSellerCoins or not removedInventory or not refunded then
@@ -1136,7 +1142,15 @@ function MarketplaceService.PurchaseListing(player, listingId)
 				"Purchase complete.",
 				MarketplaceService.GetPublicListingSnapshot(soldListing),
 				inventoryDetails,
-				buyerCoinBalance
+				buyerCoinBalance,
+				{
+					SellerPlayer = sellerPlayer,
+					SellerUserId = sellerPlayer.UserId,
+					SellerNewCoinBalance = sellerCoinBalance,
+					TotalCoins = totalPrice,
+					TemplateId = currentListing.TemplateId,
+					Quantity = currentListing.Quantity,
+				}
 		end)
 
 	finishMarketplaceMutations(lockedPlayers)
@@ -1146,7 +1160,12 @@ function MarketplaceService.PurchaseListing(player, listingId)
 		return false, "Marketplace request failed."
 	end
 
-	return resultSuccess, resultMessage, resultListing, resultInventoryDetails, resultCoinBalance
+	return resultSuccess,
+		resultMessage,
+		resultListing,
+		resultInventoryDetails,
+		resultCoinBalance,
+		resultSaleInfo
 end
 
 Players.PlayerRemoving:Connect(function(player)

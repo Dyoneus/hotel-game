@@ -38,6 +38,7 @@ end
 
 local marketplaceRequest = getOrCreateRemoteEvent("MarketplaceRequest")
 local marketplaceResult = getOrCreateRemoteEvent("MarketplaceResult")
+local currencyResult = getOrCreateRemoteEvent("CurrencyResult")
 
 local REQUEST_COOLDOWN_SECONDS = 0.5
 local lastRequestAtByUserId = {}
@@ -151,7 +152,7 @@ local function handlePurchaseListing(player, payload)
 		return
 	end
 
-	local success, message, listing, inventoryDetails, newCoinBalance =
+	local success, message, listing, inventoryDetails, newCoinBalance, saleInfo =
 		MarketplaceService.PurchaseListing(player, payload.ListingId)
 
 	sendResult(player, {
@@ -164,6 +165,39 @@ local function handlePurchaseListing(player, payload)
 		CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
 		RequestId = payload.RequestId,
 	})
+
+	if not success or typeof(saleInfo) ~= "table" then
+		return
+	end
+
+	local sellerPlayer = saleInfo.SellerPlayer
+
+	if sellerPlayer and sellerPlayer.Parent == Players then
+		local sellerNewCoinBalance = saleInfo.SellerNewCoinBalance
+
+		sendResult(sellerPlayer, {
+			Kind = "ListingSold",
+			Success = true,
+			Message = "Your listing sold.",
+			Listing = listing,
+			TemplateId = saleInfo.TemplateId or (typeof(listing) == "table" and listing.TemplateId or nil),
+			Quantity = saleInfo.Quantity or (typeof(listing) == "table" and listing.Quantity or nil),
+			TotalCoins = saleInfo.TotalCoins,
+			CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+			NewCoinBalance = sellerNewCoinBalance,
+			BuyerUserId = player.UserId,
+		})
+
+		if typeof(sellerNewCoinBalance) == "number" then
+			currencyResult:FireClient(sellerPlayer, {
+				Kind = "Currency",
+				Success = true,
+				CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+				Balance = sellerNewCoinBalance,
+				Message = "Coins updated.",
+			})
+		end
+	end
 end
 
 marketplaceRequest.OnServerEvent:Connect(function(player, actionName, payload)

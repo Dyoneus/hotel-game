@@ -1,6 +1,7 @@
 -- StarterGui/CurrencyGui/CurrencyClient.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -8,6 +9,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local currencyRequest = remoteEvents:WaitForChild("CurrencyRequest")
 local currencyResult = remoteEvents:WaitForChild("CurrencyResult")
+local marketplaceResult = remoteEvents:WaitForChild("MarketplaceResult")
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -22,6 +24,7 @@ end
 
 local LOCAL_REQUEST_COOLDOWN_SECONDS = 0.6
 local REQUEST_TIMEOUT_SECONDS = 6
+local MARKETPLACE_SALE_TOAST_SECONDS = 2
 local DAILY_DOLLAR_ICON = ""
 
 local DEFAULT_DAILY_REWARDS = {
@@ -51,6 +54,7 @@ local dailyMessageText = ""
 local dailyTimerRunning = false
 local dailyAutoShownStatusKey = nil
 local dailyHideSerial = 0
+local marketplaceSaleToastSerial = 0
 
 local balances = {
 	Coins = 0,
@@ -175,6 +179,40 @@ dailyOpenButton.Parent = gui
 
 createCorner(dailyOpenButton, 8)
 createStroke(dailyOpenButton, Color3.fromRGB(255, 255, 255), 1, 0.55)
+
+local marketplaceSaleToast = Instance.new("Frame")
+marketplaceSaleToast.Name = "MarketplaceSaleToast"
+marketplaceSaleToast.AnchorPoint = Vector2.new(1, 0)
+marketplaceSaleToast.Position = UDim2.new(1, -16, 0, 62)
+marketplaceSaleToast.Size = UDim2.fromOffset(320, 58)
+marketplaceSaleToast.BackgroundColor3 = Color3.fromRGB(35, 48, 42)
+marketplaceSaleToast.BackgroundTransparency = 1
+marketplaceSaleToast.BorderSizePixel = 0
+marketplaceSaleToast.Visible = false
+marketplaceSaleToast.Parent = gui
+
+createCorner(marketplaceSaleToast, 10)
+local marketplaceSaleToastStroke = createStroke(
+	marketplaceSaleToast,
+	Color3.fromRGB(185, 235, 190),
+	1,
+	1
+)
+
+local marketplaceSaleToastLabel = Instance.new("TextLabel")
+marketplaceSaleToastLabel.Name = "Message"
+marketplaceSaleToastLabel.Position = UDim2.fromOffset(14, 8)
+marketplaceSaleToastLabel.Size = UDim2.new(1, -28, 1, -16)
+marketplaceSaleToastLabel.BackgroundTransparency = 1
+marketplaceSaleToastLabel.Text = ""
+marketplaceSaleToastLabel.TextColor3 = Color3.fromRGB(235, 255, 235)
+marketplaceSaleToastLabel.TextTransparency = 1
+marketplaceSaleToastLabel.TextSize = 14
+marketplaceSaleToastLabel.TextWrapped = true
+marketplaceSaleToastLabel.TextXAlignment = Enum.TextXAlignment.Left
+marketplaceSaleToastLabel.TextYAlignment = Enum.TextYAlignment.Center
+marketplaceSaleToastLabel.Font = Enum.Font.GothamBold
+marketplaceSaleToastLabel.Parent = marketplaceSaleToast
 
 local modalOverlay = Instance.new("Frame")
 modalOverlay.Name = "DailyRewardOverlay"
@@ -805,6 +843,94 @@ local function applyCurrencyLocalDelta(payload)
 	renderBalances()
 end
 
+local function showMarketplaceSaleToast(message)
+	marketplaceSaleToastSerial += 1
+	local toastSerial = marketplaceSaleToastSerial
+
+	marketplaceSaleToastLabel.Text = tostring(message or "")
+	marketplaceSaleToast.Visible = true
+	marketplaceSaleToast.BackgroundTransparency = 1
+	marketplaceSaleToastStroke.Transparency = 1
+	marketplaceSaleToastLabel.TextTransparency = 1
+
+	TweenService:Create(
+		marketplaceSaleToast,
+		TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{
+			BackgroundTransparency = 0.08,
+		}
+	):Play()
+
+	TweenService:Create(
+		marketplaceSaleToastStroke,
+		TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{
+			Transparency = 0.25,
+		}
+	):Play()
+
+	TweenService:Create(
+		marketplaceSaleToastLabel,
+		TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{
+			TextTransparency = 0,
+		}
+	):Play()
+
+	task.delay(MARKETPLACE_SALE_TOAST_SECONDS, function()
+		if marketplaceSaleToastSerial ~= toastSerial then
+			return
+		end
+
+		TweenService:Create(
+			marketplaceSaleToast,
+			TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			{
+				BackgroundTransparency = 1,
+			}
+		):Play()
+
+		TweenService:Create(
+			marketplaceSaleToastStroke,
+			TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			{
+				Transparency = 1,
+			}
+		):Play()
+
+		TweenService:Create(
+			marketplaceSaleToastLabel,
+			TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			{
+				TextTransparency = 1,
+			}
+		):Play()
+
+		task.delay(0.36, function()
+			if marketplaceSaleToastSerial == toastSerial then
+				marketplaceSaleToast.Visible = false
+			end
+		end)
+	end)
+end
+
+local function handleMarketplaceListingSold(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	if isNonNegativeNumber(response.NewCoinBalance) then
+		applyCurrencyLocalDelta({
+			CurrencyKey = response.CurrencyKey or "Coins",
+			Balance = response.NewCoinBalance,
+		})
+	else
+		requestCurrencyRefresh("marketplaceListingSold", true)
+	end
+
+	showMarketplaceSaleToast("One of your listings has been sold.")
+end
+
 local function setRequestInFlight(isInFlight)
 	requestInFlight = isInFlight
 end
@@ -946,6 +1072,16 @@ end)
 
 currencyLocalDelta.Event:Connect(function(payload)
 	applyCurrencyLocalDelta(payload)
+end)
+
+marketplaceResult.OnClientEvent:Connect(function(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	if response.Success == true and response.Kind == "ListingSold" then
+		handleMarketplaceListingSold(response)
+	end
 end)
 
 dailyOpenButton.MouseButton1Click:Connect(function()

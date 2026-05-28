@@ -2792,6 +2792,37 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 		return
 	end
 
+	if kind == "ListingSold" then
+		local listing = response.Listing
+		local listingId = nil
+
+		if typeof(listing) == "table" then
+			listingId = listing.ListingId
+			upsertMySaleListing(listing)
+		end
+
+		if typeof(listingId) == "string" then
+			removePublicMarketplaceListing(listingId)
+		end
+
+		if catalogViewMode == CATALOG_VIEW_MARKETPLACE then
+			renderMarketplace()
+			setStatus(message ~= "" and message or "Your listing sold.")
+		else
+			updateCatalogChrome()
+		end
+
+		if requestMarketplaceMySales then
+			task.delay(0.5, function()
+				requestMarketplaceMySales({
+					Queue = true,
+				})
+			end)
+		end
+
+		return
+	end
+
 	if kind == "PurchaseListing" then
 		local responseRequestId = response.RequestId
 
@@ -2850,6 +2881,17 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			if requestMarketplaceOffers then
 				task.delay(0.5, function()
 					requestMarketplaceOffers({
+						Queue = true,
+					})
+				end)
+			end
+
+			if requestMarketplaceMySales
+				and catalogViewMode == CATALOG_VIEW_MARKETPLACE
+				and marketplaceViewMode == MARKETPLACE_VIEW_MY_SALES then
+
+				task.delay(0.5, function()
+					requestMarketplaceMySales({
 						Queue = true,
 					})
 				end)
