@@ -5,70 +5,138 @@ local PublicRoomConfig = {}
 local PUBLIC_ROOMS = {
 	WelcomeLounge = {
 		Id = "WelcomeLounge",
+		PublicRoomId = "WelcomeLounge",
 		DisplayName = "Welcome Lounge",
-		Category = "Welcome Lounge",
+		ShortLabel = "Lounge",
+		Category = "Social",
 		TemplateName = "Public_WelcomeLounge",
 		MaxOccupancy = 50,
-		Description = "Meet other players in the hotel lobby.",
+		Description = "Meet other players, relax, and start your hotel adventure.",
 		SortOrder = 1,
+		IsOpen = true,
+		Tags = { "Social", "New Players", "Featured" },
+		Theme = "Lounge",
+		IconImageId = "",
+		ThumbnailImageId = "",
 		WorldPosition = Vector3.new(100000, 0, 0),
 		FootprintRadius = 4000,
 	},
 
 	GameHall = {
 		Id = "GameHall",
+		PublicRoomId = "GameHall",
 		DisplayName = "Game Hall",
-		Category = "Gamehall",
+		ShortLabel = "Games",
+		Category = "Games",
 		TemplateName = "Public_GameHall",
 		MaxOccupancy = 40,
-		Description = "Find games, races, and hotel activities.",
+		Description = "Find mini-games, activities, and future competitions.",
 		SortOrder = 2,
+		IsOpen = true,
+		Tags = { "Games", "Activities" },
+		Theme = "Games",
+		IconImageId = "",
+		ThumbnailImageId = "",
 		WorldPosition = Vector3.new(110000, 0, 0),
 		FootprintRadius = 4000,
 	},
 
 	Cafe = {
 		Id = "Cafe",
+		PublicRoomId = "Cafe",
 		DisplayName = "Cafe",
-		Category = "Cafes",
+		ShortLabel = "Cafe",
+		Category = "Food",
 		TemplateName = "Public_Cafe",
 		MaxOccupancy = 30,
-		Description = "Hang out with friends over a quick drink.",
+		Description = "Hang out with friends in a cozy cafe space.",
 		SortOrder = 3,
+		IsOpen = true,
+		Tags = { "Cafe", "Social" },
+		Theme = "Cafe",
+		IconImageId = "",
+		ThumbnailImageId = "",
 		WorldPosition = Vector3.new(120000, 0, 0),
 		FootprintRadius = 4000,
 	},
 }
 
 local CATEGORIES = {
-	"Welcome Lounge",
+	"Social",
+	"Games",
+	"Food",
 	"Entertainment",
 	"Outside Spaces",
-	"Gamehall",
-	"Cafes",
 	"Restaurants",
 	"Dance Clubs",
+	"Trading",
+	"Help",
 }
 
 PublicRoomConfig.PublicRooms = PUBLIC_ROOMS
 PublicRoomConfig.Categories = CATEGORIES
 
+local function copyStringArray(values)
+	local copy = {}
+
+	if typeof(values) ~= "table" then
+		return copy
+	end
+
+	for _, value in ipairs(values) do
+		if typeof(value) == "string" and value ~= "" and value:match("%S") ~= nil then
+			table.insert(copy, value)
+		end
+	end
+
+	return copy
+end
+
 local function copyPublicRoom(room)
+	local publicRoomId = room.PublicRoomId or room.Id
+
 	return {
-		Id = room.Id,
+		Id = publicRoomId,
+		PublicRoomId = publicRoomId,
 		DisplayName = room.DisplayName,
+		ShortLabel = room.ShortLabel,
 		Category = room.Category,
 		TemplateName = room.TemplateName,
 		MaxOccupancy = room.MaxOccupancy,
 		Description = room.Description,
 		SortOrder = room.SortOrder,
+		IsOpen = room.IsOpen ~= false,
+		Tags = copyStringArray(room.Tags),
+		Theme = room.Theme,
+		IconImageId = room.IconImageId,
+		ThumbnailImageId = room.ThumbnailImageId,
 		WorldPosition = room.WorldPosition,
 		FootprintRadius = room.FootprintRadius,
 	}
 end
 
+local function findPublicRoom(publicRoomId)
+	if typeof(publicRoomId) ~= "string" or publicRoomId == "" then
+		return nil
+	end
+
+	local directRoom = PUBLIC_ROOMS[publicRoomId]
+
+	if directRoom then
+		return directRoom
+	end
+
+	for _, room in pairs(PUBLIC_ROOMS) do
+		if room.PublicRoomId == publicRoomId or room.Id == publicRoomId then
+			return room
+		end
+	end
+
+	return nil
+end
+
 function PublicRoomConfig.GetPublicRoom(publicRoomId)
-	local room = PUBLIC_ROOMS[publicRoomId]
+	local room = findPublicRoom(publicRoomId)
 
 	if not room then
 		return nil
@@ -77,7 +145,7 @@ function PublicRoomConfig.GetPublicRoom(publicRoomId)
 	return copyPublicRoom(room)
 end
 
-function PublicRoomConfig.GetPublicRoomsArray()
+function PublicRoomConfig.GetAllPublicRooms()
 	local rooms = {}
 
 	for _, room in pairs(PUBLIC_ROOMS) do
@@ -94,6 +162,22 @@ function PublicRoomConfig.GetPublicRoomsArray()
 
 		return aOrder < bOrder
 	end)
+
+	return rooms
+end
+
+function PublicRoomConfig.GetPublicRoomsArray()
+	return PublicRoomConfig.GetAllPublicRooms()
+end
+
+function PublicRoomConfig.GetOpenPublicRooms()
+	local rooms = {}
+
+	for _, room in ipairs(PublicRoomConfig.GetAllPublicRooms()) do
+		if room.IsOpen ~= false then
+			table.insert(rooms, room)
+		end
+	end
 
 	return rooms
 end

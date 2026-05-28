@@ -17,6 +17,7 @@ local anyMajorMenuOpen = false
 local openMajorMenuName = nil
 local hoverPart = nil
 local renderConnection = nil
+local hoverRefreshToken = 0
 
 local function getOrCreateClientEvent(name)
 	local clientEvents = playerGui:FindFirstChild("ClientEvents")
@@ -87,6 +88,13 @@ local function hideHover()
 	end
 end
 
+local updateHover = nil
+
+local function refreshHoverNow()
+	hideHover()
+	updateHover()
+end
+
 local function showHover(cframe, tileSize)
 	local part = getHoverPart()
 	part.CFrame = cframe
@@ -155,7 +163,7 @@ local function getMouseFloorHit(floor)
 	return nil
 end
 
-local function updateHover()
+updateHover = function()
 	if shouldHideHover() then
 		hideHover()
 		return
@@ -220,7 +228,43 @@ local function updateHover()
 	showHover(CFrame.new(worldPosition) * floorRotation, tileSize)
 end
 
+local function scheduleHoverRefresh()
+	hoverRefreshToken += 1
+	local token = hoverRefreshToken
+
+	hideHover()
+	task.defer(function()
+		if token == hoverRefreshToken then
+			updateHover()
+		end
+	end)
+
+	task.delay(0.25, function()
+		if token == hoverRefreshToken then
+			updateHover()
+		end
+	end)
+
+	task.delay(1, function()
+		if token == hoverRefreshToken then
+			updateHover()
+		end
+	end)
+end
+
 renderConnection = RunService.RenderStepped:Connect(updateHover)
+
+player:GetAttributeChangedSignal("CurrentRoomName"):Connect(scheduleHoverRefresh)
+player:GetAttributeChangedSignal("ControlMode"):Connect(scheduleHoverRefresh)
+player.CharacterAdded:Connect(scheduleHoverRefresh)
+
+activeRooms.ChildAdded:Connect(function()
+	task.defer(refreshHoverNow)
+end)
+
+activeRooms.ChildRemoved:Connect(function()
+	task.defer(refreshHoverNow)
+end)
 
 script.Destroying:Connect(function()
 	if renderConnection then

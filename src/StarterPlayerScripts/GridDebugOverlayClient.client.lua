@@ -27,6 +27,7 @@ local overlayFolder = nil
 local lastRenderSignature = nil
 local lastDebugSignature = nil
 local lastWarningSignature = nil
+local refreshToken = 0
 
 local function debugPrint(signature, ...)
 	if not DEBUG_GRID_LINES or lastDebugSignature == signature then
@@ -47,11 +48,15 @@ local function debugWarn(signature, ...)
 end
 
 local function destroyFolderByName(folderName)
-	local existingFolder = Workspace:FindFirstChild(folderName)
-
-	if existingFolder then
-		existingFolder:Destroy()
+	for _, child in ipairs(Workspace:GetChildren()) do
+		if child.Name == folderName then
+			child:Destroy()
+		end
 	end
+end
+
+local function resetRenderState()
+	lastRenderSignature = nil
 end
 
 local function clearOverlay()
@@ -60,8 +65,9 @@ local function clearOverlay()
 		overlayFolder = nil
 	end
 
-	lastRenderSignature = nil
+	resetRenderState()
 	destroyFolderByName(OLD_DEBUG_OVERLAY_FOLDER_NAME)
+	destroyFolderByName(OVERLAY_FOLDER_NAME)
 end
 
 local function getOverlayFolder()
@@ -279,15 +285,53 @@ local function refreshOverlay()
 	)
 end
 
-player:GetAttributeChangedSignal("CurrentRoomName"):Connect(refreshOverlay)
-player:GetAttributeChangedSignal("ControlMode"):Connect(refreshOverlay)
+local function scheduleOverlayRefresh(clearFirst)
+	refreshToken += 1
+	local token = refreshToken
+
+	if clearFirst then
+		clearOverlay()
+	else
+		resetRenderState()
+	end
+
+	task.defer(function()
+		if token == refreshToken then
+			refreshOverlay()
+		end
+	end)
+
+	task.delay(0.25, function()
+		if token == refreshToken then
+			refreshOverlay()
+		end
+	end)
+
+	task.delay(1, function()
+		if token == refreshToken then
+			refreshOverlay()
+		end
+	end)
+end
+
+player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
+	scheduleOverlayRefresh(true)
+end)
+
+player:GetAttributeChangedSignal("ControlMode"):Connect(function()
+	scheduleOverlayRefresh(true)
+end)
+
+player.CharacterAdded:Connect(function()
+	scheduleOverlayRefresh(true)
+end)
 
 activeRooms.ChildAdded:Connect(function()
-	task.defer(refreshOverlay)
+	scheduleOverlayRefresh(false)
 end)
 
 activeRooms.ChildRemoved:Connect(function()
-	task.defer(refreshOverlay)
+	scheduleOverlayRefresh(true)
 end)
 
 script.Destroying:Connect(clearOverlay)

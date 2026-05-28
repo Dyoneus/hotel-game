@@ -859,13 +859,20 @@ local function getPublicRoomEntry(player, publicRoomId, config)
 		PublicRoomId = publicRoomId,
 		ActiveRoomName = activeRoomName,
 		DisplayName = config.DisplayName or publicRoomId,
+		TemplateName = config.TemplateName,
 		Category = config.Category or "Public Spaces",
 		Description = config.Description or "",
+		ShortLabel = config.ShortLabel,
+		Theme = config.Theme,
+		Tags = copyRoomTags(config.Tags),
+		IconImageId = config.IconImageId,
+		ThumbnailImageId = config.ThumbnailImageId,
 		Occupancy = occupancy,
 		PlayerCount = occupancy,
 		MaxOccupancy = maxOccupancy,
 		IsFavourite = player and RoomPersistence.IsRoomFavourite(player, roomKey) == true or false,
-		IsAvailable = true,
+		IsOpen = config.IsOpen ~= false,
+		IsAvailable = config.IsOpen ~= false,
 		IsCurrentRoom = player and player:GetAttribute("CurrentRoomName") == activeRoomName or false,
 		SortOrder = config.SortOrder,
 		PublicRoomActive = activeRoom ~= nil,
@@ -939,6 +946,15 @@ local function buildRoomList(viewerPlayer)
 	table.sort(roomList, function(a, b)
 		return tostring(a.DisplayName or a.OwnerDisplayName) < tostring(b.DisplayName or b.OwnerDisplayName)
 	end)
+
+	for _, config in ipairs(PublicRoomConfig.GetAllPublicRooms()) do
+		local publicRoomId = config.PublicRoomId or config.Id
+		local publicRoomEntry = getPublicRoomEntry(viewerPlayer, publicRoomId, config)
+
+		if publicRoomEntry then
+			table.insert(roomList, publicRoomEntry)
+		end
+	end
 
 	return roomList
 end
@@ -1388,8 +1404,12 @@ local function applyPublicRoomAttributes(roomModel, publicRoomId, config)
 	roomModel:SetAttribute("RoomType", "PublicSpace")
 	roomModel:SetAttribute("PublicRoomId", publicRoomId)
 	roomModel:SetAttribute("DisplayName", config.DisplayName)
+	roomModel:SetAttribute("ShortLabel", config.ShortLabel)
 	roomModel:SetAttribute("MaxOccupancy", getPublicRoomMaxOccupancy(config))
 	roomModel:SetAttribute("Category", config.Category)
+	roomModel:SetAttribute("Description", config.Description)
+	roomModel:SetAttribute("Theme", config.Theme)
+	roomModel:SetAttribute("IsOpen", config.IsOpen ~= false)
 	roomModel:SetAttribute("OwnerUserId", 0)
 end
 
@@ -1446,6 +1466,11 @@ local function joinPublicRoom(player, publicRoomId)
 
 	if typeof(config) ~= "table" then
 		joinRoomResult:FireClient(player, false, "Public room not found.")
+		return
+	end
+
+	if config.IsOpen == false then
+		joinRoomResult:FireClient(player, false, "This public room is currently closed.")
 		return
 	end
 
