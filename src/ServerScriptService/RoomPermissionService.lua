@@ -206,6 +206,10 @@ function RoomPermissionService.IsPlayerRoom(roomModel)
 	return tostring(roomModel.Name):match("^Room_%d+$") ~= nil
 end
 
+function RoomPermissionService.IsPublicRoom(roomModel)
+	return isModel(roomModel) and roomModel:GetAttribute("RoomType") == "PublicSpace"
+end
+
 function RoomPermissionService.GetRoomOwnerPlayer(roomModel)
 	local ownerUserId = RoomPermissionService.GetRoomOwnerUserId(roomModel)
 
@@ -325,6 +329,40 @@ function RoomPermissionService.FurnitureSupportsPermission(furnitureModel, actio
 	return false
 end
 
+function RoomPermissionService.FurnitureAllowsPublicUse(furnitureModel, actionName)
+	if not isModel(furnitureModel) then
+		return false
+	end
+
+	local normalizedActionName = normalizeActionName(actionName)
+
+	if normalizedActionName == "OpenClose" then
+		return furnitureModel:GetAttribute("PublicUse") == true
+			or furnitureModel:GetAttribute("PublicOpenClose") == true
+			or furnitureModel:GetAttribute("AllowPublicOpenClose") == true
+	end
+
+	return furnitureModel:GetAttribute("PublicUse") == true
+end
+
+function RoomPermissionService.FurnitureSupportsPublicSit(furnitureModel)
+	if not isModel(furnitureModel) then
+		return false
+	end
+
+	if furnitureModel:GetAttribute("DefaultAction") == "Sit" then
+		return true
+	end
+
+	local seat = furnitureModel:FindFirstChild("Seat", true)
+	local sitPoint = furnitureModel:FindFirstChild("SitPoint", true)
+
+	return seat ~= nil
+		and seat:IsA("Seat")
+		and sitPoint ~= nil
+		and (sitPoint:IsA("BasePart") or sitPoint:IsA("Attachment"))
+end
+
 function RoomPermissionService.GetSupportedFurniturePermissionSummary(furnitureModel)
 	local actions = RoomPermissionService.GetFurniturePermissionActions(furnitureModel)
 
@@ -378,8 +416,6 @@ function RoomPermissionService.CanPickUpFurniture(actorPlayer, furnitureModel)
 end
 
 function RoomPermissionService.CanOpenCloseFurniture(actorPlayer, furnitureModel)
-	-- Patch 10F foundation only. Patch 10G should call this from the actual
-	-- Open/Close/Toggle action handler for opt-in door/gate furniture.
 	if not isPlayerInstance(actorPlayer) or not isModel(furnitureModel) then
 		return false
 	end
@@ -392,6 +428,10 @@ function RoomPermissionService.CanOpenCloseFurniture(actorPlayer, furnitureModel
 
 	if not roomModel then
 		return false
+	end
+
+	if RoomPermissionService.IsPublicRoom(roomModel) then
+		return RoomPermissionService.FurnitureAllowsPublicUse(furnitureModel, "OpenClose")
 	end
 
 	if RoomPermissionService.IsRoomOwner(actorPlayer, roomModel) then
@@ -418,8 +458,6 @@ function RoomPermissionService.CanOpenCloseFurniture(actorPlayer, furnitureModel
 end
 
 function RoomPermissionService.CanUseFurniture(actorPlayer, furnitureModel, actionName)
-	-- Current behavior remains broad use for furniture in the actor's current room.
-	-- Future patches can add furniture opt-in attributes and per-action enforcement.
 	if not isPlayerInstance(actorPlayer) or not isModel(furnitureModel) then
 		return false
 	end
@@ -431,7 +469,25 @@ function RoomPermissionService.CanUseFurniture(actorPlayer, furnitureModel, acti
 		return false
 	end
 
-	return roomModel.Name == currentRoomName
+	if roomModel.Name ~= currentRoomName then
+		return false
+	end
+
+	if RoomPermissionService.IsPublicRoom(roomModel) then
+		local normalizedActionName = normalizeActionName(actionName)
+
+		if normalizedActionName == "Sit" then
+			return RoomPermissionService.FurnitureSupportsPublicSit(furnitureModel)
+		end
+
+		if normalizedActionName == "OpenClose" then
+			return RoomPermissionService.CanOpenCloseFurniture(actorPlayer, furnitureModel)
+		end
+
+		return RoomPermissionService.FurnitureAllowsPublicUse(furnitureModel, normalizedActionName)
+	end
+
+	return true
 end
 
 return RoomPermissionService

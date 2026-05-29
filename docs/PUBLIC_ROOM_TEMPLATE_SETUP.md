@@ -140,6 +140,23 @@ Use invisible, non-blocking marker parts unless actively debugging.
 - Sitting and public furniture interactions should be tested per furniture type.
 - Public room state is not saved to player profiles.
 
+## Public Furniture Interactions
+
+Public room furniture is server-authoritative. Normal players cannot move, rotate, pick up, or place furniture in public rooms.
+
+Sitting is allowed for public furniture that is actually sit-capable:
+
+- `DefaultAction = "Sit"`
+- or a Roblox `Seat` named `Seat` plus a `SitPoint` part or attachment inside the furniture model
+
+Open/Close is not public by default. A public door, gate, or similar object must both support Open/Close and opt in with one of these attributes on the furniture model:
+
+- `PublicUse = true`
+- `PublicOpenClose = true`
+- `AllowPublicOpenClose = true`
+
+Do not add those public-use attributes to decorative props unless they are meant to be clicked by every player.
+
 ## Validator
 
 Run this Studio Command Bar helper after creating or changing templates:

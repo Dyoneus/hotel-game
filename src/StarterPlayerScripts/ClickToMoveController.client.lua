@@ -565,6 +565,14 @@ local function isEditMode()
 	return player:GetAttribute("RoomMode") == "Edit"
 end
 
+local publicFurnitureRules = {}
+
+function publicFurnitureRules.isCurrentRoomPublicSpace()
+	local roomModel = getCurrentRoomModel()
+
+	return roomModel ~= nil and roomModel:GetAttribute("RoomType") == "PublicSpace"
+end
+
 local function getDefaultFurnitureAction(furnitureModel)
 	local defaultAction = furnitureModel:GetAttribute("DefaultAction")
 
@@ -625,6 +633,40 @@ local function furnitureSupportsOpenCloseBestEffort(furnitureModel)
 	end
 
 	return furnitureHasOpenCloseTarget(furnitureModel)
+end
+
+function publicFurnitureRules.allowsOpenClose(furnitureModel)
+	if typeof(furnitureModel) ~= "Instance" or not furnitureModel:IsA("Model") then
+		return false
+	end
+
+	return furnitureModel:GetAttribute("PublicUse") == true
+		or furnitureModel:GetAttribute("PublicOpenClose") == true
+		or furnitureModel:GetAttribute("AllowPublicOpenClose") == true
+end
+
+function publicFurnitureRules.hasSitPoint(furnitureModel)
+	if typeof(furnitureModel) ~= "Instance" or not furnitureModel:IsA("Model") then
+		return false
+	end
+
+	local seat = furnitureModel:FindFirstChild("Seat", true)
+	local sitPoint = furnitureModel:FindFirstChild("SitPoint", true)
+
+	return seat ~= nil
+		and seat:IsA("Seat")
+		and sitPoint ~= nil
+		and (sitPoint:IsA("BasePart") or sitPoint:IsA("Attachment"))
+end
+
+function publicFurnitureRules.supportsSit(furnitureModel)
+	return getDefaultFurnitureAction(furnitureModel) == "Sit"
+		or publicFurnitureRules.hasSitPoint(furnitureModel)
+end
+
+function publicFurnitureRules.supportsOpenClose(furnitureModel)
+	return publicFurnitureRules.allowsOpenClose(furnitureModel)
+		and furnitureSupportsOpenCloseBestEffort(furnitureModel)
 end
 
 local function updateOpenCloseButtonText(furnitureModel, isOpenOverride)
@@ -3304,8 +3346,18 @@ local function openFurnitureMenu(furnitureModel)
 	local editing = isEditMode()
 	local occupied = isFurnitureOccupiedLocally(furnitureModel)
 	local defaultAction = getDefaultFurnitureAction(furnitureModel)
+	local inPublicRoom = publicFurnitureRules.isCurrentRoomPublicSpace()
 	local potentialOpenClose = furnitureSupportsOpenCloseBestEffort(furnitureModel)
-	local showSit = not editing and defaultAction ~= nil
+
+	if inPublicRoom then
+		potentialOpenClose = publicFurnitureRules.supportsOpenClose(furnitureModel)
+	end
+
+	local showSit = not editing
+		and (
+			(inPublicRoom and publicFurnitureRules.supportsSit(furnitureModel))
+			or (not inPublicRoom and defaultAction ~= nil)
+		)
 	local showMove = false
 	local showRotate = false
 	local showPickUp = false
@@ -3960,6 +4012,18 @@ end)
 
 function furnitureInteraction.handleClickInPlayMode(furnitureModel)
 	if roomMovementState.caveTransitionActive then
+		return
+	end
+
+	if publicFurnitureRules.isCurrentRoomPublicSpace() then
+		if publicFurnitureRules.supportsSit(furnitureModel)
+			or publicFurnitureRules.supportsOpenClose(furnitureModel) then
+
+			openFurnitureMenu(furnitureModel)
+		else
+			closeFurnitureMenu()
+		end
+
 		return
 	end
 

@@ -1250,6 +1250,11 @@ local function sitPlayerOnChair(player, furnitureModel)
 		return
 	end
 
+	if not RoomPermissionService.CanUseFurniture(player, furnitureModel, "Sit") then
+		warn("Sit denied: furniture is not usable by this player")
+		return
+	end
+
 	anchorFurnitureParts(furnitureModel)
 
 	local seat = furnitureModel:FindFirstChild("Seat", true)
