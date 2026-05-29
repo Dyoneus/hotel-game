@@ -150,21 +150,23 @@ docs/tools/ValidatePublicRoomTemplates.lua
 
 It reads `PublicRoomConfig`, checks each configured public template, and prints `[OK]`, `[WARN]`, or `[ERROR]` rows. The tool does not modify templates.
 
-## Generating A Placeholder Welcome Lounge
+## Generating Placeholder Public Rooms
 
-Run this Studio Command Bar helper to create a simple grid-based Welcome Lounge template:
+Run these Studio Command Bar helpers to create functional blockout public room templates:
 
 ```text
 docs/tools/CreateWelcomeLoungeTemplate.lua
+docs/tools/CreateCafeTemplate.lua
+docs/tools/CreateGameHallTemplate.lua
 ```
 
-The helper creates `ReplicatedStorage.PublicRoomTemplates` if needed, reads the configured `WelcomeLounge.TemplateName`, and creates or replaces that template model. After running it, run:
+Each helper creates `ReplicatedStorage.PublicRoomTemplates` if needed, reads the configured `TemplateName`, and creates or replaces that template model. After running a generator, run:
 
 ```text
 docs/tools/ValidatePublicRoomTemplates.lua
 ```
 
-Then press Play and join Welcome Lounge from the Room Navigator.
+Then press Play and join the generated public room from the Room Navigator.
 
 Placeholder generators are blockout/detail tools. Final art can replace the visual walls, props, signs, and decorative parts later, but keep `RoomAnchor`, `DoorSpawn`, `EntryWalkTarget`, `RoomExitZone`, `Room.WalkableFloor`, and the grid attributes intact.
 
