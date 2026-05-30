@@ -1172,13 +1172,17 @@ end
 
 local function isMainMenuIntroBlockingNavigator()
 	return isMainMenuActive()
-		and player:GetAttribute("MainMenuIntroComplete") ~= true
+		and (
+			player:GetAttribute("MainMenuIntroComplete") ~= true
+			or player:GetAttribute("MainMenuView") == "Work"
+		)
 end
 
 local function shouldUseMainMenuPaperLayout()
 	return isMainMenuActive()
 		and player:GetAttribute("MainMenuCameraActive") == true
 		and player:GetAttribute("MainMenuIntroComplete") == true
+		and player:GetAttribute("MainMenuView") ~= "Work"
 end
 
 local function getMainMenuPanelLayout()
@@ -3586,6 +3590,7 @@ player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(syncMainMenuNavigato
 player:GetAttributeChangedSignal("MainMenuCameraActive"):Connect(syncMainMenuNavigatorState)
 player:GetAttributeChangedSignal("MainMenuIntroPlaying"):Connect(syncMainMenuNavigatorState)
 player:GetAttributeChangedSignal("MainMenuIntroComplete"):Connect(syncMainMenuNavigatorState)
+player:GetAttributeChangedSignal("MainMenuView"):Connect(syncMainMenuNavigatorState)
 
 renderNavigator()
 syncMainMenuNavigatorState()

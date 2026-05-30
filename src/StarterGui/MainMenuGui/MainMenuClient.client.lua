@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -49,6 +50,7 @@ local function getOrCreateClientEvent(name)
 end
 
 local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
+local mainMenuCameraViewRequest = getOrCreateClientEvent("MainMenuCameraViewRequest")
 local currencyRefreshRequested = getOrCreateClientEvent("CurrencyRefreshRequested")
 local currencyLocalDelta = getOrCreateClientEvent("CurrencyLocalDelta")
 
@@ -80,6 +82,8 @@ local cooldownToken = 0
 local rewardFeedbackSerial = 0
 local lastWorkStatusMessage = "Choose a job to begin."
 local lastWorkStatusIsError = false
+local VIEW_NAVIGATOR = "Navigator"
+local VIEW_WORK = "Work"
 
 local function disableDecorativeInput(guiObject)
 	if not guiObject:IsA("GuiObject") then
@@ -556,6 +560,78 @@ worldInputBlocker.Visible = false
 worldInputBlocker.ZIndex = 100
 worldInputBlocker.Parent = gui
 
+local function createViewArrowButton(name, text, position)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.AnchorPoint = Vector2.new(0.5, 0.5)
+	button.Position = position
+	button.Size = UDim2.fromOffset(58, 58)
+	button.BackgroundColor3 = Color3.fromRGB(246, 236, 207)
+	button.BackgroundTransparency = 0.06
+	button.BorderSizePixel = 0
+	button.Text = text
+	button.TextColor3 = Color3.fromRGB(78, 58, 35)
+	button.TextSize = 38
+	button.Font = Enum.Font.GothamBlack
+	button.Visible = false
+	button.Active = true
+	button.AutoButtonColor = false
+	button.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 20
+	button.Parent = background
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(1, 0)
+	corner.Parent = button
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(158, 126, 76)
+	stroke.Thickness = 2
+	stroke.Transparency = 0.08
+	stroke.Parent = button
+
+	local shadow = Instance.new("Frame")
+	shadow.Name = "Shadow"
+	shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+	shadow.Position = UDim2.fromScale(0.5, 0.56)
+	shadow.Size = UDim2.fromScale(0.88, 0.22)
+	shadow.BackgroundColor3 = Color3.fromRGB(49, 38, 26)
+	shadow.BackgroundTransparency = 0.74
+	shadow.BorderSizePixel = 0
+	shadow.ZIndex = button.ZIndex - 1
+	shadow.Parent = button
+
+	local shadowCorner = Instance.new("UICorner")
+	shadowCorner.CornerRadius = UDim.new(1, 0)
+	shadowCorner.Parent = shadow
+
+	button.MouseEnter:Connect(function()
+		TweenService:Create(
+			button,
+			TweenInfo.new(0.12, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+			{
+				Size = UDim2.fromOffset(66, 66),
+				BackgroundTransparency = 0,
+			}
+		):Play()
+	end)
+
+	button.MouseLeave:Connect(function()
+		TweenService:Create(
+			button,
+			TweenInfo.new(0.12, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+			{
+				Size = UDim2.fromOffset(58, 58),
+				BackgroundTransparency = 0.06,
+			}
+		):Play()
+	end)
+
+	return button
+end
+
+local workViewArrow = createViewArrowButton("WorkViewArrow", "<", UDim2.new(0, 76, 0.54, 0))
+local navigatorViewArrow = createViewArrowButton("NavigatorViewArrow", ">", UDim2.new(1, -76, 0.54, 0))
+
 disableDecorativeInput(background)
 
 for _, descendant in ipairs(background:GetDescendants()) do
@@ -578,6 +654,23 @@ local function isCinematicMenuCameraActive()
 	return player:GetAttribute("MainMenuCameraActive") == true
 end
 
+local function getMainMenuView()
+	return player:GetAttribute("MainMenuView") == VIEW_WORK and VIEW_WORK or VIEW_NAVIGATOR
+end
+
+local function isCinematicMenuReady()
+	return player:GetAttribute("OnboardingStep") == "Complete"
+		and player:GetAttribute("CurrentRoomName") == nil
+		and player:GetAttribute("MainMenuCameraActive") == true
+		and player:GetAttribute("MainMenuIntroComplete") == true
+end
+
+local function shouldShowCinematicWorkPanel()
+	return background.Visible == true
+		and isCinematicMenuReady()
+		and getMainMenuView() == VIEW_WORK
+end
+
 local function shouldHideLegacyPanelForCinematic()
 	return player:GetAttribute("OnboardingStep") == "Complete"
 		and player:GetAttribute("CurrentRoomName") == nil
@@ -588,63 +681,93 @@ local function shouldHideLegacyPanelForCinematic()
 end
 
 local function shouldShowLegacyMenuPanel()
-	return background.Visible == true and not shouldHideLegacyPanelForCinematic()
+	return background.Visible == true
+		and (
+			shouldShowCinematicWorkPanel()
+			or not shouldHideLegacyPanelForCinematic()
+		)
+end
+
+local function startWorkPanelSession()
+	cooldownToken += 1
+
+	if requestWorkActivities then
+		requestWorkActivities()
+	end
+
+	local currentCooldownToken = cooldownToken
+
+	task.spawn(function()
+		while isWorkPanelOpen and cooldownToken == currentCooldownToken do
+			if renderWorkPanel then
+				renderWorkPanel()
+			end
+
+			task.wait(1)
+		end
+	end)
+end
+
+local function stopWorkPanelSession()
+	cooldownToken += 1
+
+	if stopLocalWorkProgress then
+		stopLocalWorkProgress()
+	end
+
+	if renderWorkPanel then
+		rewardFeedbackSerial += 1
+		rewardFeedbackLabel.Visible = false
+		renderWorkPanel()
+	end
 end
 
 local function syncLegacyMenuPanelVisibility()
 	local showLegacyPanel = shouldShowLegacyMenuPanel()
+	local showCinematicWorkPanel = shouldShowCinematicWorkPanel()
+	local wasWorkPanelOpen = isWorkPanelOpen
 
-	if not showLegacyPanel and isWorkPanelOpen then
+	if showCinematicWorkPanel then
+		isWorkPanelOpen = true
+	elseif not showLegacyPanel and isWorkPanelOpen then
 		isWorkPanelOpen = false
-
-		if stopLocalWorkProgress then
-			stopLocalWorkProgress()
-		end
 	end
 
 	leftPanel.Visible = showLegacyPanel
 
 	for _, guiObject in ipairs(welcomePanelObjects) do
-		guiObject.Visible = showLegacyPanel and not isWorkPanelOpen
+		guiObject.Visible = showLegacyPanel and not isWorkPanelOpen and not isCinematicMenuCameraActive()
 	end
 
 	workPanel.Visible = showLegacyPanel and isWorkPanelOpen
-	workButton.Visible = showLegacyPanel
-	workButton.Active = showLegacyPanel and not isWorkPanelOpen
-	workButton.AutoButtonColor = showLegacyPanel and not isWorkPanelOpen
+	workButton.Visible = showLegacyPanel and not isCinematicMenuCameraActive()
+	workButton.Active = workButton.Visible and not isWorkPanelOpen
+	workButton.AutoButtonColor = workButton.Visible and not isWorkPanelOpen
+
+	local showArrows = background.Visible == true and isCinematicMenuReady()
+	local view = getMainMenuView()
+	workViewArrow.Visible = showArrows and view == VIEW_NAVIGATOR
+	workViewArrow.Active = workViewArrow.Visible
+	navigatorViewArrow.Visible = showArrows and view == VIEW_WORK
+	navigatorViewArrow.Active = navigatorViewArrow.Visible
+
+	if isWorkPanelOpen and not wasWorkPanelOpen then
+		startWorkPanelSession()
+	elseif not isWorkPanelOpen and wasWorkPanelOpen then
+		stopWorkPanelSession()
+	end
 end
 
 local function setWorkPanelOpen(isOpen)
+	local wasWorkPanelOpen = isWorkPanelOpen
 	isWorkPanelOpen = isOpen == true and shouldShowLegacyMenuPanel()
-
-	if not isWorkPanelOpen and stopLocalWorkProgress then
-		stopLocalWorkProgress()
-	end
 
 	syncLegacyMenuPanelVisibility()
 
-	cooldownToken += 1
-
-	if isWorkPanelOpen then
-		if requestWorkActivities then
-			requestWorkActivities()
-		end
-
-		local currentCooldownToken = cooldownToken
-
-		task.spawn(function()
-			while isWorkPanelOpen and cooldownToken == currentCooldownToken do
-				if renderWorkPanel then
-					renderWorkPanel()
-				end
-
-				task.wait(1)
-			end
-		end)
-	elseif renderWorkPanel then
-		rewardFeedbackSerial += 1
-		rewardFeedbackLabel.Visible = false
-		renderWorkPanel()
+	if isWorkPanelOpen and not wasWorkPanelOpen then
+		startWorkPanelSession()
+	elseif not isWorkPanelOpen and wasWorkPanelOpen then
+		stopWorkPanelSession()
 	end
 end
 
@@ -1011,6 +1134,24 @@ local function updateMainMenu()
 	end
 end
 
+local function requestMainMenuView(viewName)
+	if not isCinematicMenuReady() then
+		return
+	end
+
+	mainMenuCameraViewRequest:Fire({
+		View = viewName,
+	})
+end
+
+workViewArrow.MouseButton1Click:Connect(function()
+	requestMainMenuView(VIEW_WORK)
+end)
+
+navigatorViewArrow.MouseButton1Click:Connect(function()
+	requestMainMenuView(VIEW_NAVIGATOR)
+end)
+
 workButton.MouseButton1Click:Connect(function()
 	if not shouldShowMainMenu() or isCinematicMenuCameraActive() then
 		return
@@ -1020,6 +1161,11 @@ workButton.MouseButton1Click:Connect(function()
 end)
 
 workBackButton.MouseButton1Click:Connect(function()
+	if isCinematicMenuReady() then
+		requestMainMenuView(VIEW_NAVIGATOR)
+		return
+	end
+
 	setWorkPanelOpen(false)
 end)
 
@@ -1181,5 +1327,6 @@ player:GetAttributeChangedSignal("OnboardingStep"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("MainMenuCameraActive"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("MainMenuIntroPlaying"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("MainMenuIntroComplete"):Connect(updateMainMenu)
+player:GetAttributeChangedSignal("MainMenuView"):Connect(updateMainMenu)
 
 task.defer(updateMainMenu)

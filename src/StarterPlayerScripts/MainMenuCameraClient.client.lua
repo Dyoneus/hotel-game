@@ -5,6 +5,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 
 local DEBUG_MAIN_MENU_CAMERA = true
 local SCENE_FOLDER_NAME = "MainMenuScenes"
@@ -15,6 +16,10 @@ local MAIN_MENU_SCENE_WORLD_CFRAME = CFrame.new(100000, 5000, 100000)
 local CAMERA_FIELD_OF_VIEW = 50
 local CAMERA_CONCIERGE_TWEEN_SECONDS = 2.5
 local CAMERA_NAVIGATOR_TWEEN_SECONDS = 1.5
+local CAMERA_VIEW_TWEEN_SECONDS = 0.85
+
+local VIEW_NAVIGATOR = "Navigator"
+local VIEW_WORK = "Work"
 
 local FALLBACK_CFRAMES = {
 	CameraStart = MAIN_MENU_SCENE_WORLD_CFRAME
@@ -23,11 +28,14 @@ local FALLBACK_CFRAMES = {
 		* CFrame.lookAt(Vector3.new(0, 6.6, 12), Vector3.new(0, 4.2, -22.2)),
 	CameraNavigatorDesk = MAIN_MENU_SCENE_WORLD_CFRAME
 		* CFrame.lookAt(Vector3.new(13.5, 7.25, -11.5), Vector3.new(10.5, 4.25, -21.6)),
+	CameraWorkDesk = MAIN_MENU_SCENE_WORLD_CFRAME
+		* CFrame.lookAt(Vector3.new(-13.5, 7.25, -11.5), Vector3.new(-10.5, 4.25, -21.6)),
 }
 
 local camera = Workspace.CurrentCamera
 local sceneClone = nil
 local activeTween = nil
+local activeTweenSerial = 0
 local refreshQueued = false
 local isActive = false
 local isTweening = false
@@ -35,6 +43,38 @@ local activationSerial = 0
 local holdCameraCFrame = nil
 local missingSceneWarned = false
 local missingMarkerWarned = {}
+
+local function getOrCreateClientEvent(name)
+	local clientEvents = playerGui:FindFirstChild("ClientEvents")
+
+	if clientEvents then
+		if not clientEvents:IsA("Folder") then
+			error("PlayerGui.ClientEvents exists but is not a Folder.")
+		end
+	else
+		clientEvents = Instance.new("Folder")
+		clientEvents.Name = "ClientEvents"
+		clientEvents.Parent = playerGui
+	end
+
+	local existing = clientEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("BindableEvent") then
+			error(name .. " exists but is not a BindableEvent.")
+		end
+
+		return existing
+	end
+
+	local bindableEvent = Instance.new("BindableEvent")
+	bindableEvent.Name = name
+	bindableEvent.Parent = clientEvents
+
+	return bindableEvent
+end
+
+local mainMenuCameraViewRequest = getOrCreateClientEvent("MainMenuCameraViewRequest")
 
 local function debugPrint(...)
 	if DEBUG_MAIN_MENU_CAMERA then
@@ -68,6 +108,18 @@ end
 local function setMainMenuIntroState(playing, complete)
 	setMainMenuIntroPlaying(playing == true)
 	setMainMenuIntroComplete(complete == true)
+end
+
+local function setMainMenuView(viewName)
+	if player:GetAttribute("MainMenuView") ~= viewName then
+		player:SetAttribute("MainMenuView", viewName)
+	end
+end
+
+local function clearMainMenuView()
+	if player:GetAttribute("MainMenuView") ~= nil then
+		player:SetAttribute("MainMenuView", nil)
+	end
 end
 
 local function applyCameraOwnership()
@@ -263,6 +315,7 @@ local function tweenCameraTo(targetCFrame, durationSeconds, serial)
 	end)
 
 	activeTween = tween
+	activeTweenSerial = serial
 	isTweening = true
 	tween:Play()
 
@@ -281,7 +334,9 @@ local function tweenCameraTo(targetCFrame, durationSeconds, serial)
 		activeTween = nil
 	end
 
-	isTweening = false
+	if activeTweenSerial == serial then
+		isTweening = false
+	end
 
 	if isCurrentActivation(serial) then
 		holdCameraCFrame = targetCFrame
@@ -327,6 +382,7 @@ local function playIntro(serial)
 	if tweenCameraTo(navigatorCFrame, CAMERA_NAVIGATOR_TWEEN_SECONDS, serial) then
 		holdCameraCFrame = navigatorCFrame
 		applyCameraOwnership()
+		setMainMenuView(VIEW_NAVIGATOR)
 		setMainMenuIntroState(false, true)
 		debugPrint("Intro complete at CameraNavigatorDesk")
 	elseif isCurrentActivation(serial) then
@@ -339,7 +395,8 @@ local function deactivate()
 		and not sceneClone
 		and player:GetAttribute("MainMenuCameraActive") ~= true
 		and player:GetAttribute("MainMenuIntroPlaying") ~= true
-		and player:GetAttribute("MainMenuIntroComplete") ~= true then
+		and player:GetAttribute("MainMenuIntroComplete") ~= true
+		and player:GetAttribute("MainMenuView") == nil then
 
 		return
 	end
@@ -352,6 +409,7 @@ local function deactivate()
 	destroyLocalScenes()
 	setMainMenuCameraActive(false)
 	setMainMenuIntroState(false, false)
+	clearMainMenuView()
 	debugPrint("Cinematic deactivates")
 
 	local currentCamera = getCamera()
@@ -381,10 +439,60 @@ local function activate()
 	isActive = true
 	setMainMenuCameraActive(true)
 	setMainMenuIntroState(true, false)
+	clearMainMenuView()
 	debugPrint("Cinematic activates")
 
 	task.spawn(function()
 		playIntro(serial)
+	end)
+end
+
+local function getViewMarkerName(viewName)
+	if viewName == VIEW_WORK then
+		return "CameraWorkDesk"
+	end
+
+	if viewName == VIEW_NAVIGATOR then
+		return "CameraNavigatorDesk"
+	end
+
+	return nil
+end
+
+local function requestView(viewName)
+	local markerName = getViewMarkerName(viewName)
+
+	if not markerName then
+		return
+	end
+
+	if not isActive
+		or not sceneClone
+		or not shouldUseMainMenuCamera()
+		or player:GetAttribute("MainMenuIntroPlaying") == true
+		or player:GetAttribute("MainMenuIntroComplete") ~= true then
+
+		return
+	end
+
+	activationSerial += 1
+	local serial = activationSerial
+	local markerCFrame = getMarkerCFrame(markerName)
+
+	if not markerCFrame then
+		return
+	end
+
+	setMainMenuView(viewName)
+	debugPrint("View switch requested", viewName)
+
+	task.spawn(function()
+		if tweenCameraTo(markerCFrame, CAMERA_VIEW_TWEEN_SECONDS, serial) then
+			holdCameraCFrame = markerCFrame
+			applyCameraOwnership()
+			setMainMenuView(viewName)
+			debugPrint("View switch complete", viewName)
+		end
 	end)
 end
 
@@ -409,6 +517,7 @@ end
 
 setMainMenuCameraActive(false)
 setMainMenuIntroState(false, false)
+clearMainMenuView()
 
 RunService:BindToRenderStep(
 	"MainMenuCameraClient",
@@ -424,6 +533,14 @@ player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(scheduleRefresh)
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(scheduleRefresh)
 player:GetAttributeChangedSignal("OnboardingStep"):Connect(scheduleRefresh)
 player:GetAttributeChangedSignal("ControlMode"):Connect(scheduleRefresh)
+
+mainMenuCameraViewRequest.Event:Connect(function(payload)
+	if typeof(payload) ~= "table" then
+		return
+	end
+
+	requestView(payload.View)
+end)
 
 local function observeSceneFolder(sceneFolder)
 	if not sceneFolder or not sceneFolder:IsA("Folder") then
