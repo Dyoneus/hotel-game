@@ -18,11 +18,11 @@ local CAMERA_NAVIGATOR_TWEEN_SECONDS = 1.5
 
 local FALLBACK_CFRAMES = {
 	CameraStart = MAIN_MENU_SCENE_WORLD_CFRAME
-		* CFrame.lookAt(Vector3.new(0, 7.2, 45), Vector3.new(0, 4, -24)),
+		* CFrame.lookAt(Vector3.new(0, 7.2, 45), Vector3.new(0, 4.1, -24)),
 	CameraConcierge = MAIN_MENU_SCENE_WORLD_CFRAME
-		* CFrame.lookAt(Vector3.new(0, 6.3, 17), Vector3.new(0, 3.5, -25)),
+		* CFrame.lookAt(Vector3.new(0, 6.6, 12), Vector3.new(0, 4.2, -22.2)),
 	CameraNavigatorDesk = MAIN_MENU_SCENE_WORLD_CFRAME
-		* CFrame.lookAt(Vector3.new(12, 6, 4), Vector3.new(12, 3.1, -21)),
+		* CFrame.lookAt(Vector3.new(13.5, 7.25, -11.5), Vector3.new(10.5, 4.25, -21.6)),
 }
 
 local camera = Workspace.CurrentCamera
@@ -51,6 +51,23 @@ local function setMainMenuCameraActive(active)
 	if player:GetAttribute("MainMenuCameraActive") ~= active then
 		player:SetAttribute("MainMenuCameraActive", active)
 	end
+end
+
+local function setMainMenuIntroPlaying(playing)
+	if player:GetAttribute("MainMenuIntroPlaying") ~= playing then
+		player:SetAttribute("MainMenuIntroPlaying", playing)
+	end
+end
+
+local function setMainMenuIntroComplete(complete)
+	if player:GetAttribute("MainMenuIntroComplete") ~= complete then
+		player:SetAttribute("MainMenuIntroComplete", complete)
+	end
+end
+
+local function setMainMenuIntroState(playing, complete)
+	setMainMenuIntroPlaying(playing == true)
+	setMainMenuIntroComplete(complete == true)
 end
 
 local function applyCameraOwnership()
@@ -101,6 +118,12 @@ local function makeSceneClientSafe(model)
 			descendant.CanCollide = false
 			descendant.CanTouch = false
 			descendant.CanQuery = false
+
+			if descendant:GetAttribute("MainMenuSceneMarker") == true then
+				descendant.Transparency = 1
+			end
+		elseif descendant:IsA("BillboardGui") and descendant.Name == "MarkerLabel" then
+			descendant.Enabled = false
 		end
 	end
 end
@@ -276,8 +299,14 @@ local function playIntro(serial)
 	local currentCamera = getCamera()
 
 	if not currentCamera or not sceneClone or not isCurrentActivation(serial) then
+		if isCurrentActivation(serial) then
+			setMainMenuIntroState(false, false)
+		end
+
 		return
 	end
+
+	setMainMenuIntroState(true, false)
 
 	local startCFrame = getMarkerCFrame("CameraStart")
 	local conciergeCFrame = getMarkerCFrame("CameraConcierge")
@@ -288,17 +317,30 @@ local function playIntro(serial)
 	currentCamera.CFrame = startCFrame
 
 	if not tweenCameraTo(conciergeCFrame, CAMERA_CONCIERGE_TWEEN_SECONDS, serial) then
+		if isCurrentActivation(serial) then
+			setMainMenuIntroState(false, false)
+		end
+
 		return
 	end
 
 	if tweenCameraTo(navigatorCFrame, CAMERA_NAVIGATOR_TWEEN_SECONDS, serial) then
 		holdCameraCFrame = navigatorCFrame
 		applyCameraOwnership()
+		setMainMenuIntroState(false, true)
+		debugPrint("Intro complete at CameraNavigatorDesk")
+	elseif isCurrentActivation(serial) then
+		setMainMenuIntroState(false, false)
 	end
 end
 
 local function deactivate()
-	if not isActive and not sceneClone and player:GetAttribute("MainMenuCameraActive") ~= true then
+	if not isActive
+		and not sceneClone
+		and player:GetAttribute("MainMenuCameraActive") ~= true
+		and player:GetAttribute("MainMenuIntroPlaying") ~= true
+		and player:GetAttribute("MainMenuIntroComplete") ~= true then
+
 		return
 	end
 
@@ -309,6 +351,7 @@ local function deactivate()
 	cancelTween()
 	destroyLocalScenes()
 	setMainMenuCameraActive(false)
+	setMainMenuIntroState(false, false)
 	debugPrint("Cinematic deactivates")
 
 	local currentCamera = getCamera()
@@ -337,6 +380,7 @@ local function activate()
 	local serial = activationSerial
 	isActive = true
 	setMainMenuCameraActive(true)
+	setMainMenuIntroState(true, false)
 	debugPrint("Cinematic activates")
 
 	task.spawn(function()
@@ -364,6 +408,7 @@ local function scheduleRefresh()
 end
 
 setMainMenuCameraActive(false)
+setMainMenuIntroState(false, false)
 
 RunService:BindToRenderStep(
 	"MainMenuCameraClient",

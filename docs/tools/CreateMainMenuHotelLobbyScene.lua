@@ -36,7 +36,12 @@ local COLORS = {
 	MarkerConcierge = Color3.fromRGB(255, 198, 78),
 	MarkerNavigator = Color3.fromRGB(95, 220, 140),
 	MarkerWork = Color3.fromRGB(210, 120, 255),
+	MarkerTarget = Color3.fromRGB(255, 245, 120),
 }
+
+local function cframeLookAt(position, target)
+	return CFrame.lookAt(position, target)
+end
 
 local function setDecorativeDefaults(instance)
 	if not instance:IsA("BasePart") then
@@ -130,6 +135,22 @@ local function createMarker(parent, name, cframe, color)
 	)
 	marker:SetAttribute("MainMenuSceneMarker", true)
 	marker:SetAttribute("MarkerCFrame", tostring(cframe))
+	addBillboardLabel(marker, name)
+	return marker
+end
+
+local function createTargetMarker(parent, name, position)
+	local marker = createPart(
+		parent,
+		name,
+		Vector3.new(0.7, 0.7, 0.7),
+		CFrame.new(position),
+		COLORS.MarkerTarget,
+		Enum.Material.Neon,
+		0.45
+	)
+	marker:SetAttribute("MainMenuSceneMarker", true)
+	marker:SetAttribute("DeskPaperTarget", true)
 	addBillboardLabel(marker, name)
 	return marker
 end
@@ -316,12 +337,38 @@ scene.Parent = sceneFolder
 local mainMenuAnchor = createMarker(scene, "MainMenuAnchor", CFrame.new(0, 1.2, 0), COLORS.MarkerAnchor)
 scene.PrimaryPart = mainMenuAnchor
 
+local navigatorPaperTargetPosition = Vector3.new(10.5, 4.25, -21.6)
+local workPaperTargetPosition = Vector3.new(-10.5, 4.25, -21.6)
+
 -- Camera markers use full CFrame orientation. Move and rotate these markers manually
--- after generation to tune the future cinematic camera path.
-createMarker(scene, "CameraStart", CFrame.lookAt(Vector3.new(0, 7.2, 45), Vector3.new(0, 4, -24)), COLORS.MarkerStart)
-createMarker(scene, "CameraConcierge", CFrame.lookAt(Vector3.new(0, 6.3, 17), Vector3.new(0, 3.5, -25)), COLORS.MarkerConcierge)
-createMarker(scene, "CameraNavigatorDesk", CFrame.lookAt(Vector3.new(12, 6, 4), Vector3.new(12, 3.1, -21)), COLORS.MarkerNavigator)
-createMarker(scene, "CameraWorkDesk", CFrame.lookAt(Vector3.new(-12, 6, 4), Vector3.new(-12, 3.1, -21)), COLORS.MarkerWork)
+-- after generation to tune the cinematic camera path. The desk views are in front of
+-- the concierge desk and look down at the paper targets, not at the concierge NPC.
+local cameraStart = createMarker(
+	scene,
+	"CameraStart",
+	cframeLookAt(Vector3.new(0, 7.2, 45), Vector3.new(0, 4.1, -24)),
+	COLORS.MarkerStart
+)
+local cameraConcierge = createMarker(
+	scene,
+	"CameraConcierge",
+	cframeLookAt(Vector3.new(0, 6.6, 12), Vector3.new(0, 4.2, -22.2)),
+	COLORS.MarkerConcierge
+)
+local cameraNavigatorDesk = createMarker(
+	scene,
+	"CameraNavigatorDesk",
+	cframeLookAt(Vector3.new(13.5, 7.25, -11.5), navigatorPaperTargetPosition),
+	COLORS.MarkerNavigator
+)
+local cameraWorkDesk = createMarker(
+	scene,
+	"CameraWorkDesk",
+	cframeLookAt(Vector3.new(-13.5, 7.25, -11.5), workPaperTargetPosition),
+	COLORS.MarkerWork
+)
+local navigatorPaperTarget = createTargetMarker(scene, "NavigatorPaperTarget", navigatorPaperTargetPosition)
+local workPaperTarget = createTargetMarker(scene, "WorkPaperTarget", workPaperTargetPosition)
 
 local floorModel = Instance.new("Model")
 floorModel.Name = "Floor"
@@ -460,4 +507,9 @@ end
 
 print(TOOL_PREFIX .. " Created ReplicatedStorage." .. SCENE_FOLDER_NAME .. "." .. SCENE_NAME)
 print(TOOL_PREFIX .. " Markers: MainMenuAnchor, CameraStart, CameraConcierge, CameraNavigatorDesk, CameraWorkDesk")
-print(TOOL_PREFIX .. " Runtime cinematic camera is not implemented yet. This scene is a template only.")
+print(TOOL_PREFIX .. " Desk targets: NavigatorPaperTarget=" .. tostring(navigatorPaperTarget.Position) .. ", WorkPaperTarget=" .. tostring(workPaperTarget.Position))
+print(TOOL_PREFIX .. " CameraStart=" .. tostring(cameraStart.Position))
+print(TOOL_PREFIX .. " CameraConcierge=" .. tostring(cameraConcierge.Position))
+print(TOOL_PREFIX .. " CameraNavigatorDesk=" .. tostring(cameraNavigatorDesk.Position))
+print(TOOL_PREFIX .. " CameraWorkDesk=" .. tostring(cameraWorkDesk.Position))
+print(TOOL_PREFIX .. " Runtime cinematic camera uses these markers when the template is cloned locally.")

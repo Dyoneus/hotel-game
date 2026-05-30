@@ -420,14 +420,26 @@ createStroke(ui.panel, Color3.fromRGB(180, 188, 176), 1, 0)
 
 local PANEL_LAYOUT_NORMAL = "Normal"
 local PANEL_LAYOUT_MAIN_MENU_DOCKED = "MainMenuDocked"
+local PANEL_LAYOUT_MAIN_MENU_PAPER = "MainMenuPaper"
 local currentPanelLayout = PANEL_LAYOUT_NORMAL
+local applyNavigatorStyle = nil
 
 local function applyPanelLayout(layoutMode)
-	currentPanelLayout = layoutMode == PANEL_LAYOUT_MAIN_MENU_DOCKED
-		and PANEL_LAYOUT_MAIN_MENU_DOCKED
-		or PANEL_LAYOUT_NORMAL
+	if layoutMode == PANEL_LAYOUT_MAIN_MENU_PAPER then
+		currentPanelLayout = PANEL_LAYOUT_MAIN_MENU_PAPER
+	elseif layoutMode == PANEL_LAYOUT_MAIN_MENU_DOCKED then
+		currentPanelLayout = PANEL_LAYOUT_MAIN_MENU_DOCKED
+	else
+		currentPanelLayout = PANEL_LAYOUT_NORMAL
+	end
 
-	if currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_DOCKED then
+	if currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_PAPER then
+		ui.panel.AnchorPoint = Vector2.new(1, 0.5)
+		ui.panel.Position = UDim2.new(1, -34, 0.53, 0)
+		ui.panel.Size = UDim2.new(0.42, 0, 0.74, 0)
+		ui.panelSize.MaxSize = Vector2.new(540, 620)
+		ui.panelSize.MinSize = Vector2.new(330, 360)
+	elseif currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_DOCKED then
 		ui.panel.AnchorPoint = Vector2.new(1, 0.5)
 		ui.panel.Position = UDim2.new(1, -24, 0.5, 0)
 		ui.panel.Size = UDim2.new(0.48, 0, 0.82, 0)
@@ -439,6 +451,10 @@ local function applyPanelLayout(layoutMode)
 		ui.panel.Size = UDim2.new(0.88, 0, 0.82, 0)
 		ui.panelSize.MaxSize = Vector2.new(920, 680)
 		ui.panelSize.MinSize = Vector2.new(360, 360)
+	end
+
+	if applyNavigatorStyle then
+		applyNavigatorStyle()
 	end
 end
 
@@ -1030,6 +1046,112 @@ ui.settingsCategoryDropdownPadding.Parent = ui.settingsCategoryDropdown
 
 local categoryButtons = {}
 
+local function setFirstStroke(instance, color, thickness, transparency)
+	local stroke = instance and instance:FindFirstChildOfClass("UIStroke")
+
+	if not stroke then
+		return
+	end
+
+	stroke.Color = color
+	stroke.Thickness = thickness
+	stroke.Transparency = transparency or 0
+end
+
+local function isPaperLayout()
+	return currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_PAPER
+end
+
+applyNavigatorStyle = function()
+	local paper = isPaperLayout()
+
+	ui.panel.BackgroundColor3 = paper
+		and Color3.fromRGB(246, 236, 207)
+		or Color3.fromRGB(238, 240, 232)
+	setFirstStroke(
+		ui.panel,
+		paper and Color3.fromRGB(145, 126, 94) or Color3.fromRGB(180, 188, 176),
+		paper and 2 or 1,
+		paper and 0.08 or 0
+	)
+
+	ui.titleBar.BackgroundColor3 = paper
+		and Color3.fromRGB(246, 236, 207)
+		or Color3.fromRGB(42, 67, 83)
+	ui.titleBar.BackgroundTransparency = paper and 1 or 0
+	ui.titleCover.BackgroundColor3 = ui.titleBar.BackgroundColor3
+	ui.titleCover.BackgroundTransparency = paper and 1 or 0
+	ui.titleLabel.TextColor3 = paper
+		and Color3.fromRGB(67, 55, 42)
+		or Color3.fromRGB(255, 255, 255)
+	ui.titleLabel.TextSize = paper and 23 or 24
+	ui.titleLabel.Font = paper and Enum.Font.GothamBold or Enum.Font.GothamBold
+
+	ui.roomsNav.BackgroundColor3 = paper
+		and Color3.fromRGB(235, 222, 190)
+		or Color3.fromRGB(229, 232, 224)
+	setFirstStroke(
+		ui.roomsNav,
+		paper and Color3.fromRGB(181, 157, 113) or Color3.fromRGB(205, 212, 200),
+		1,
+		paper and 0.12 or 0
+	)
+
+	ui.contentFrame.BackgroundColor3 = paper
+		and Color3.fromRGB(253, 245, 224)
+		or Color3.fromRGB(249, 250, 247)
+	setFirstStroke(
+		ui.contentFrame,
+		paper and Color3.fromRGB(196, 173, 130) or Color3.fromRGB(205, 212, 200),
+		1,
+		paper and 0.1 or 0
+	)
+
+	ui.detailPanel.BackgroundColor3 = paper
+		and Color3.fromRGB(239, 226, 195)
+		or Color3.fromRGB(224, 230, 220)
+	setFirstStroke(
+		ui.detailPanel,
+		paper and Color3.fromRGB(176, 151, 107) or Color3.fromRGB(190, 200, 186),
+		1,
+		paper and 0.08 or 0
+	)
+
+	ui.searchBox.BackgroundColor3 = paper
+		and Color3.fromRGB(255, 250, 236)
+		or Color3.fromRGB(255, 255, 255)
+	ui.searchBox.TextColor3 = paper
+		and Color3.fromRGB(58, 50, 40)
+		or Color3.fromRGB(40, 40, 40)
+	ui.searchBox.PlaceholderColor3 = paper
+		and Color3.fromRGB(126, 109, 82)
+		or Color3.fromRGB(130, 130, 130)
+	setFirstStroke(
+		ui.searchBox,
+		paper and Color3.fromRGB(199, 177, 135) or Color3.fromRGB(215, 220, 214),
+		1,
+		0
+	)
+
+	ui.sectionTitle.TextColor3 = paper
+		and Color3.fromRGB(67, 55, 42)
+		or Color3.fromRGB(48, 54, 48)
+	ui.detailTitle.TextColor3 = paper
+		and Color3.fromRGB(61, 52, 41)
+		or Color3.fromRGB(42, 48, 42)
+	ui.detailOwner.TextColor3 = paper
+		and Color3.fromRGB(93, 77, 56)
+		or Color3.fromRGB(82, 88, 82)
+	ui.detailMeta.TextColor3 = ui.detailOwner.TextColor3
+	ui.detailDescription.TextColor3 = ui.detailOwner.TextColor3
+	ui.detailStatus.TextColor3 = paper
+		and Color3.fromRGB(115, 85, 43)
+		or Color3.fromRGB(105, 90, 55)
+	ui.statusLabel.TextColor3 = paper
+		and Color3.fromRGB(92, 73, 48)
+		or Color3.fromRGB(90, 90, 90)
+end
+
 local function shouldShowRoomsButton()
 	return player:GetAttribute("OnboardingStep") == "Complete"
 		and player:GetAttribute("ControlMode") == "Hotel"
@@ -1046,6 +1168,23 @@ local function isMainMenuActive()
 
 	return player:GetAttribute("InHotelMainMenu") == true
 		or player:GetAttribute("CurrentRoomName") == nil
+end
+
+local function isMainMenuIntroBlockingNavigator()
+	return isMainMenuActive()
+		and player:GetAttribute("MainMenuIntroComplete") ~= true
+end
+
+local function shouldUseMainMenuPaperLayout()
+	return isMainMenuActive()
+		and player:GetAttribute("MainMenuCameraActive") == true
+		and player:GetAttribute("MainMenuIntroComplete") == true
+end
+
+local function getMainMenuPanelLayout()
+	return shouldUseMainMenuPaperLayout()
+		and PANEL_LAYOUT_MAIN_MENU_PAPER
+		or PANEL_LAYOUT_MAIN_MENU_DOCKED
 end
 
 local function updateCloseButtonForMode()
@@ -1114,8 +1253,8 @@ end
 local function setPanelVisible(isVisible, options)
 	local forceClose = typeof(options) == "table" and options.ForceClose == true
 
-	if not isVisible and isMainMenuActive() and not forceClose then
-		applyPanelLayout(PANEL_LAYOUT_MAIN_MENU_DOCKED)
+	if not isVisible and isMainMenuActive() and not forceClose and not isMainMenuIntroBlockingNavigator() then
+		applyPanelLayout(getMainMenuPanelLayout())
 		isVisible = true
 	end
 
@@ -1902,13 +2041,23 @@ local function parseEditorUserInput()
 end
 
 local function updateTopTabButton(button, isSelected)
-	button.BackgroundColor3 = isSelected and Color3.fromRGB(72, 119, 143) or Color3.fromRGB(216, 222, 214)
-	button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 48, 45)
+	if isPaperLayout() then
+		button.BackgroundColor3 = isSelected and Color3.fromRGB(127, 101, 63) or Color3.fromRGB(230, 215, 180)
+		button.TextColor3 = isSelected and Color3.fromRGB(255, 250, 235) or Color3.fromRGB(68, 55, 39)
+	else
+		button.BackgroundColor3 = isSelected and Color3.fromRGB(72, 119, 143) or Color3.fromRGB(216, 222, 214)
+		button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 48, 45)
+	end
 end
 
 local function updateSubtabButton(button, isSelected)
-	button.BackgroundColor3 = isSelected and Color3.fromRGB(88, 128, 102) or Color3.fromRGB(244, 246, 242)
-	button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(48, 54, 48)
+	if isPaperLayout() then
+		button.BackgroundColor3 = isSelected and Color3.fromRGB(119, 94, 58) or Color3.fromRGB(248, 239, 214)
+		button.TextColor3 = isSelected and Color3.fromRGB(255, 250, 235) or Color3.fromRGB(68, 55, 39)
+	else
+		button.BackgroundColor3 = isSelected and Color3.fromRGB(88, 128, 102) or Color3.fromRGB(244, 246, 242)
+		button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(48, 54, 48)
+	end
 end
 
 local function updateCategoryButtons()
@@ -1917,8 +2066,14 @@ local function updateCategoryButtons()
 	for categoryName, button in pairs(categoryButtons) do
 		local isSelected = categoryName == selectedGuestCategory
 		button.Text = string.format("%s (%d)", categoryName, categoryCounts[categoryName] or 0)
-		button.BackgroundColor3 = isSelected and Color3.fromRGB(74, 118, 148) or Color3.fromRGB(228, 234, 226)
-		button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 50, 45)
+
+		if isPaperLayout() then
+			button.BackgroundColor3 = isSelected and Color3.fromRGB(125, 98, 61) or Color3.fromRGB(239, 226, 195)
+			button.TextColor3 = isSelected and Color3.fromRGB(255, 250, 235) or Color3.fromRGB(68, 55, 39)
+		else
+			button.BackgroundColor3 = isSelected and Color3.fromRGB(74, 118, 148) or Color3.fromRGB(228, 234, 226)
+			button.TextColor3 = isSelected and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 50, 45)
+		end
 	end
 end
 
@@ -2009,11 +2164,19 @@ local function setRowSelected(row, isSelected)
 	local stroke = row:FindFirstChild("RowStroke")
 
 	if stroke then
-		stroke.Color = isSelected and Color3.fromRGB(68, 128, 166) or Color3.fromRGB(213, 220, 210)
+		if isPaperLayout() then
+			stroke.Color = isSelected and Color3.fromRGB(138, 102, 58) or Color3.fromRGB(201, 179, 139)
+		else
+			stroke.Color = isSelected and Color3.fromRGB(68, 128, 166) or Color3.fromRGB(213, 220, 210)
+		end
 		stroke.Thickness = isSelected and 2 or 1
 	end
 
-	row.BackgroundColor3 = isSelected and Color3.fromRGB(231, 243, 249) or Color3.fromRGB(255, 255, 255)
+	if isPaperLayout() then
+		row.BackgroundColor3 = isSelected and Color3.fromRGB(248, 235, 200) or Color3.fromRGB(255, 250, 236)
+	else
+		row.BackgroundColor3 = isSelected and Color3.fromRGB(231, 243, 249) or Color3.fromRGB(255, 255, 255)
+	end
 end
 
 local function updateDetailPanel()
@@ -2092,9 +2255,15 @@ local function updateDetailPanel()
 	ui.favouriteButton.Visible = canFavourite
 	ui.favouriteButton.Active = canFavourite and pendingFavouriteToggleByRoomKey[roomKey] ~= true
 	ui.favouriteButton.AutoButtonColor = ui.favouriteButton.Active
-	ui.favouriteButton.BackgroundColor3 = canFavourite
-		and (isFavourite and Color3.fromRGB(151, 102, 82) or Color3.fromRGB(86, 126, 151))
-		or Color3.fromRGB(180, 185, 180)
+	if isPaperLayout() then
+		ui.favouriteButton.BackgroundColor3 = canFavourite
+			and (isFavourite and Color3.fromRGB(138, 91, 70) or Color3.fromRGB(126, 100, 62))
+			or Color3.fromRGB(178, 168, 145)
+	else
+		ui.favouriteButton.BackgroundColor3 = canFavourite
+			and (isFavourite and Color3.fromRGB(151, 102, 82) or Color3.fromRGB(86, 126, 151))
+			or Color3.fromRGB(180, 185, 180)
+	end
 	ui.favouriteButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 	ui.favouriteButton.Text = isFavourite and "Remove Favourite" or "Add to Favourites"
 
@@ -2116,7 +2285,9 @@ local function updateDetailPanel()
 	if isCurrentRoom then
 		ui.goButton.Active = false
 		ui.goButton.AutoButtonColor = false
-		ui.goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
+		ui.goButton.BackgroundColor3 = isPaperLayout()
+			and Color3.fromRGB(153, 142, 119)
+			or Color3.fromRGB(110, 115, 110)
 		ui.goButton.Text = "Here"
 		return
 	end
@@ -2124,7 +2295,9 @@ local function updateDetailPanel()
 	if joinRoomRequestInFlight then
 		ui.goButton.Active = false
 		ui.goButton.AutoButtonColor = false
-		ui.goButton.BackgroundColor3 = Color3.fromRGB(110, 115, 110)
+		ui.goButton.BackgroundColor3 = isPaperLayout()
+			and Color3.fromRGB(153, 142, 119)
+			or Color3.fromRGB(110, 115, 110)
 		ui.goButton.Text = "Joining..."
 		return
 	end
@@ -2139,7 +2312,11 @@ local function updateDetailPanel()
 
 	ui.goButton.Active = canGo
 	ui.goButton.AutoButtonColor = canGo
-	ui.goButton.BackgroundColor3 = canGo and Color3.fromRGB(68, 143, 82) or Color3.fromRGB(110, 115, 110)
+	if isPaperLayout() then
+		ui.goButton.BackgroundColor3 = canGo and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(153, 142, 119)
+	else
+		ui.goButton.BackgroundColor3 = canGo and Color3.fromRGB(68, 143, 82) or Color3.fromRGB(110, 115, 110)
+	end
 	ui.goButton.Text = canGo and "Go" or (selectedRoomData.RoomType == "PublicSpace" and "Closed" or "Unavailable")
 end
 
@@ -2246,12 +2423,19 @@ local function createEmptyState(message)
 	local emptyFrame = Instance.new("Frame")
 	emptyFrame.Name = "EmptyState"
 	emptyFrame.Size = UDim2.new(1, -4, 0, 76)
-	emptyFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	emptyFrame.BackgroundColor3 = isPaperLayout()
+		and Color3.fromRGB(255, 250, 236)
+		or Color3.fromRGB(255, 255, 255)
 	emptyFrame.BorderSizePixel = 0
 	emptyFrame.Parent = ui.listFrame
 
 	createCorner(emptyFrame, 8)
-	createStroke(emptyFrame, Color3.fromRGB(220, 226, 218), 1, 0)
+	createStroke(
+		emptyFrame,
+		isPaperLayout() and Color3.fromRGB(201, 179, 139) or Color3.fromRGB(220, 226, 218),
+		1,
+		0
+	)
 
 	local label = Instance.new("TextLabel")
 	label.Name = "Message"
@@ -2259,7 +2443,7 @@ local function createEmptyState(message)
 	label.Size = UDim2.new(1, -28, 1, -24)
 	label.BackgroundTransparency = 1
 	label.Text = message
-	label.TextColor3 = Color3.fromRGB(90, 96, 90)
+	label.TextColor3 = isPaperLayout() and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(90, 96, 90)
 	label.TextSize = 14
 	label.TextWrapped = true
 	label.Font = Enum.Font.Gotham
@@ -2267,15 +2451,16 @@ local function createEmptyState(message)
 end
 
 local function addFavouriteMarker(row, yOffset)
+	local paper = isPaperLayout()
 	local marker = Instance.new("TextLabel")
 	marker.Name = "FavouriteMarker"
 	marker.AnchorPoint = Vector2.new(1, 0)
 	marker.Position = UDim2.new(1, -84, 0, yOffset or 34)
 	marker.Size = UDim2.fromOffset(58, 18)
-	marker.BackgroundColor3 = Color3.fromRGB(235, 211, 125)
+	marker.BackgroundColor3 = paper and Color3.fromRGB(228, 205, 152) or Color3.fromRGB(235, 211, 125)
 	marker.BorderSizePixel = 0
 	marker.Text = "Fav"
-	marker.TextColor3 = Color3.fromRGB(84, 67, 24)
+	marker.TextColor3 = paper and Color3.fromRGB(94, 67, 28) or Color3.fromRGB(84, 67, 24)
 	marker.TextSize = 11
 	marker.Font = Enum.Font.GothamBold
 	marker.Parent = row
@@ -2286,11 +2471,12 @@ end
 local function createPublicSpaceRow(publicRoomData, order)
 	applyCachedFavouriteState(publicRoomData)
 
+	local paper = isPaperLayout()
 	local row = Instance.new("TextButton")
 	row.Name = tostring(publicRoomData.PublicRoomId or publicRoomData.DisplayName or "PublicSpace")
 	row.LayoutOrder = order
 	row.Size = UDim2.new(1, -4, 0, 98)
-	row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	row.BackgroundColor3 = paper and Color3.fromRGB(255, 250, 236) or Color3.fromRGB(255, 255, 255)
 	row.BorderSizePixel = 0
 	row.Text = ""
 	row.AutoButtonColor = true
@@ -2298,7 +2484,12 @@ local function createPublicSpaceRow(publicRoomData, order)
 
 	createCorner(row, 8)
 
-	local stroke = createStroke(row, Color3.fromRGB(220, 226, 218), 1, 0)
+	local stroke = createStroke(
+		row,
+		paper and Color3.fromRGB(201, 179, 139) or Color3.fromRGB(220, 226, 218),
+		1,
+		0
+	)
 	stroke.Name = "RowStroke"
 
 	local nameLabel = Instance.new("TextLabel")
@@ -2307,7 +2498,7 @@ local function createPublicSpaceRow(publicRoomData, order)
 	nameLabel.Size = UDim2.new(1, -190, 0, 22)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = tostring(publicRoomData.DisplayName or publicRoomData.PublicRoomId)
-	nameLabel.TextColor3 = Color3.fromRGB(45, 50, 45)
+	nameLabel.TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(45, 50, 45)
 	nameLabel.TextSize = 16
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2320,7 +2511,7 @@ local function createPublicSpaceRow(publicRoomData, order)
 	noteLabel.Size = UDim2.new(1, -190, 0, 18)
 	noteLabel.BackgroundTransparency = 1
 	noteLabel.Text = tostring(publicRoomData.Description or "")
-	noteLabel.TextColor3 = Color3.fromRGB(95, 100, 95)
+	noteLabel.TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(95, 100, 95)
 	noteLabel.TextSize = 12
 	noteLabel.TextXAlignment = Enum.TextXAlignment.Left
 	noteLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2336,7 +2527,7 @@ local function createPublicSpaceRow(publicRoomData, order)
 		and ("  -  " .. publicRoomData.Theme)
 		or ""
 	categoryLabel.Text = tostring(publicRoomData.Category or "Public Spaces") .. themeSuffix
-	categoryLabel.TextColor3 = Color3.fromRGB(102, 108, 102)
+	categoryLabel.TextColor3 = paper and Color3.fromRGB(105, 88, 64) or Color3.fromRGB(102, 108, 102)
 	categoryLabel.TextSize = 11
 	categoryLabel.TextXAlignment = Enum.TextXAlignment.Left
 	categoryLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2349,7 +2540,7 @@ local function createPublicSpaceRow(publicRoomData, order)
 	tagsLabel.Size = UDim2.new(1, -190, 0, 16)
 	tagsLabel.BackgroundTransparency = 1
 	tagsLabel.Text = getTagsText(publicRoomData.Tags, 3)
-	tagsLabel.TextColor3 = Color3.fromRGB(111, 118, 111)
+	tagsLabel.TextColor3 = paper and Color3.fromRGB(118, 100, 75) or Color3.fromRGB(111, 118, 111)
 	tagsLabel.TextSize = 10
 	tagsLabel.TextXAlignment = Enum.TextXAlignment.Left
 	tagsLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2363,7 +2554,7 @@ local function createPublicSpaceRow(publicRoomData, order)
 	occupancyLabel.Size = UDim2.fromOffset(70, 20)
 	occupancyLabel.BackgroundTransparency = 1
 	occupancyLabel.Text = getOccupancyText(publicRoomData)
-	occupancyLabel.TextColor3 = Color3.fromRGB(60, 90, 70)
+	occupancyLabel.TextColor3 = paper and Color3.fromRGB(98, 76, 47) or Color3.fromRGB(60, 90, 70)
 	occupancyLabel.TextSize = 14
 	occupancyLabel.TextXAlignment = Enum.TextXAlignment.Right
 	occupancyLabel.Font = Enum.Font.GothamBold
@@ -2375,13 +2566,13 @@ local function createPublicSpaceRow(publicRoomData, order)
 	statusLabel.Position = UDim2.new(1, -14, 0, 10)
 	statusLabel.Size = UDim2.fromOffset(70, 18)
 	statusLabel.BackgroundColor3 = isPublicRoomOpen(publicRoomData)
-		and Color3.fromRGB(218, 238, 220)
-		or Color3.fromRGB(224, 224, 224)
+		and (paper and Color3.fromRGB(235, 219, 182) or Color3.fromRGB(218, 238, 220))
+		or (paper and Color3.fromRGB(222, 212, 190) or Color3.fromRGB(224, 224, 224))
 	statusLabel.BorderSizePixel = 0
 	statusLabel.Text = getPublicRoomStatusText(publicRoomData)
 	statusLabel.TextColor3 = isPublicRoomOpen(publicRoomData)
-		and Color3.fromRGB(50, 92, 58)
-		or Color3.fromRGB(92, 92, 92)
+		and (paper and Color3.fromRGB(92, 67, 37) or Color3.fromRGB(50, 92, 58))
+		or (paper and Color3.fromRGB(92, 82, 65) or Color3.fromRGB(92, 92, 92))
 	statusLabel.TextSize = 11
 	statusLabel.Font = Enum.Font.GothamBold
 	statusLabel.Parent = row
@@ -2417,7 +2608,9 @@ local function createPublicSpaceRow(publicRoomData, order)
 		)
 		rowGoButton.AnchorPoint = Vector2.new(1, 1)
 		rowGoButton.Position = UDim2.new(1, -14, 1, -10)
-		rowGoButton.BackgroundColor3 = publicRoomOpen and Color3.fromRGB(68, 143, 82) or Color3.fromRGB(120, 124, 120)
+		rowGoButton.BackgroundColor3 = publicRoomOpen
+			and (paper and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(68, 143, 82))
+			or (paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(120, 124, 120))
 		rowGoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 		rowGoButton.TextSize = 13
 		rowGoButton.Active = publicRoomOpen
@@ -2445,16 +2638,17 @@ local function createPublicSpaceRow(publicRoomData, order)
 end
 
 local function createPublicCategoryPlaceholderRow(categoryName, order)
+	local paper = isPaperLayout()
 	local row = Instance.new("Frame")
 	row.Name = tostring(categoryName)
 	row.LayoutOrder = order
 	row.Size = UDim2.new(1, -4, 0, 62)
-	row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	row.BackgroundColor3 = paper and Color3.fromRGB(255, 250, 236) or Color3.fromRGB(255, 255, 255)
 	row.BorderSizePixel = 0
 	row.Parent = ui.listFrame
 
 	createCorner(row, 8)
-	createStroke(row, Color3.fromRGB(220, 226, 218), 1, 0)
+	createStroke(row, paper and Color3.fromRGB(201, 179, 139) or Color3.fromRGB(220, 226, 218), 1, 0)
 
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Name = "NameLabel"
@@ -2462,7 +2656,7 @@ local function createPublicCategoryPlaceholderRow(categoryName, order)
 	nameLabel.Size = UDim2.new(1, -140, 0, 22)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = tostring(categoryName)
-	nameLabel.TextColor3 = Color3.fromRGB(45, 50, 45)
+	nameLabel.TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(45, 50, 45)
 	nameLabel.TextSize = 16
 	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	nameLabel.Font = Enum.Font.GothamBold
@@ -2474,7 +2668,7 @@ local function createPublicCategoryPlaceholderRow(categoryName, order)
 	noteLabel.Size = UDim2.new(1, -140, 0, 18)
 	noteLabel.BackgroundTransparency = 1
 	noteLabel.Text = "Developer public spaces coming soon."
-	noteLabel.TextColor3 = Color3.fromRGB(95, 100, 95)
+	noteLabel.TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(95, 100, 95)
 	noteLabel.TextSize = 12
 	noteLabel.TextXAlignment = Enum.TextXAlignment.Left
 	noteLabel.Font = Enum.Font.Gotham
@@ -2485,10 +2679,10 @@ local function createPublicCategoryPlaceholderRow(categoryName, order)
 	soonBadge.AnchorPoint = Vector2.new(1, 0.5)
 	soonBadge.Position = UDim2.new(1, -14, 0.5, 0)
 	soonBadge.Size = UDim2.fromOffset(104, 28)
-	soonBadge.BackgroundColor3 = Color3.fromRGB(205, 210, 205)
+	soonBadge.BackgroundColor3 = paper and Color3.fromRGB(222, 212, 190) or Color3.fromRGB(205, 210, 205)
 	soonBadge.BorderSizePixel = 0
 	soonBadge.Text = "Coming soon"
-	soonBadge.TextColor3 = Color3.fromRGB(78, 82, 78)
+	soonBadge.TextColor3 = paper and Color3.fromRGB(92, 82, 65) or Color3.fromRGB(78, 82, 78)
 	soonBadge.TextSize = 12
 	soonBadge.Font = Enum.Font.GothamBold
 	soonBadge.Parent = row
@@ -2499,11 +2693,12 @@ end
 local function createRoomRow(roomData, order)
 	applyCachedFavouriteState(roomData)
 
+	local paper = isPaperLayout()
 	local row = Instance.new("TextButton")
 	row.Name = tostring(roomData.RoomName or roomData.RoomKey or "Room")
 	row.LayoutOrder = order
 	row.Size = UDim2.new(1, -4, 0, 72)
-	row.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	row.BackgroundColor3 = paper and Color3.fromRGB(255, 250, 236) or Color3.fromRGB(255, 255, 255)
 	row.BorderSizePixel = 0
 	row.Text = ""
 	row.AutoButtonColor = true
@@ -2511,7 +2706,12 @@ local function createRoomRow(roomData, order)
 
 	createCorner(row, 8)
 
-	local stroke = createStroke(row, Color3.fromRGB(213, 220, 210), 1, 0)
+	local stroke = createStroke(
+		row,
+		paper and Color3.fromRGB(201, 179, 139) or Color3.fromRGB(213, 220, 210),
+		1,
+		0
+	)
 	stroke.Name = "RowStroke"
 
 	local roomNameLabel = Instance.new("TextLabel")
@@ -2520,7 +2720,7 @@ local function createRoomRow(roomData, order)
 	roomNameLabel.Size = UDim2.new(1, -170, 0, 22)
 	roomNameLabel.BackgroundTransparency = 1
 	roomNameLabel.Text = getRoomDisplayName(roomData)
-	roomNameLabel.TextColor3 = Color3.fromRGB(38, 44, 38)
+	roomNameLabel.TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(38, 44, 38)
 	roomNameLabel.TextSize = 16
 	roomNameLabel.TextXAlignment = Enum.TextXAlignment.Left
 	roomNameLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2533,7 +2733,7 @@ local function createRoomRow(roomData, order)
 	ownerLabel.Size = UDim2.new(1, -170, 0, 18)
 	ownerLabel.BackgroundTransparency = 1
 	ownerLabel.Text = "Owner: " .. getRoomOwnerText(roomData)
-	ownerLabel.TextColor3 = Color3.fromRGB(82, 88, 82)
+	ownerLabel.TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(82, 88, 82)
 	ownerLabel.TextSize = 12
 	ownerLabel.TextXAlignment = Enum.TextXAlignment.Left
 	ownerLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2546,7 +2746,7 @@ local function createRoomRow(roomData, order)
 	categoryLabel.Size = UDim2.new(1, -170, 0, 16)
 	categoryLabel.BackgroundTransparency = 1
 	categoryLabel.Text = tostring(roomData.Category or "Guest Rooms")
-	categoryLabel.TextColor3 = Color3.fromRGB(102, 108, 102)
+	categoryLabel.TextColor3 = paper and Color3.fromRGB(105, 88, 64) or Color3.fromRGB(102, 108, 102)
 	categoryLabel.TextSize = 11
 	categoryLabel.TextXAlignment = Enum.TextXAlignment.Left
 	categoryLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2560,7 +2760,7 @@ local function createRoomRow(roomData, order)
 	occupancyLabel.Size = UDim2.fromOffset(70, 20)
 	occupancyLabel.BackgroundTransparency = 1
 	occupancyLabel.Text = getOccupancyText(roomData)
-	occupancyLabel.TextColor3 = Color3.fromRGB(60, 90, 70)
+	occupancyLabel.TextColor3 = paper and Color3.fromRGB(98, 76, 47) or Color3.fromRGB(60, 90, 70)
 	occupancyLabel.TextSize = 14
 	occupancyLabel.TextXAlignment = Enum.TextXAlignment.Right
 	occupancyLabel.Font = Enum.Font.GothamBold
@@ -2589,7 +2789,7 @@ local function createRoomRow(roomData, order)
 		local rowGoButton = createTextButton("RowGoButton", "Go", UDim2.fromOffset(58, 28), row)
 		rowGoButton.AnchorPoint = Vector2.new(1, 1)
 		rowGoButton.Position = UDim2.new(1, -14, 1, -10)
-		rowGoButton.BackgroundColor3 = Color3.fromRGB(68, 143, 82)
+		rowGoButton.BackgroundColor3 = paper and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(68, 143, 82)
 		rowGoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 		rowGoButton.TextSize = 13
 
@@ -3039,7 +3239,7 @@ end)
 
 ui.closeButton.MouseButton1Click:Connect(function()
 	if isMainMenuActive() then
-		applyPanelLayout(PANEL_LAYOUT_MAIN_MENU_DOCKED)
+		applyPanelLayout(getMainMenuPanelLayout())
 		setPanelVisible(true)
 		return
 	end
@@ -3049,24 +3249,48 @@ end)
 
 local function syncMainMenuNavigatorState()
 	if isMainMenuActive() then
-		applyPanelLayout(PANEL_LAYOUT_MAIN_MENU_DOCKED)
+		applyPanelLayout(getMainMenuPanelLayout())
+
+		if isMainMenuIntroBlockingNavigator() then
+			if ui.panel.Visible then
+				setPanelVisible(false, { ForceClose = true })
+			else
+				updateCloseButtonForMode()
+				updateOpenButton()
+			end
+
+			return
+		end
 
 		if not ui.panel.Visible then
 			setPanelVisible(true)
 		else
 			updateCloseButtonForMode()
 			updateOpenButton()
+
+			if renderNavigator then
+				renderNavigator()
+			end
 		end
 
 		return
 	end
 
-	if currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_DOCKED then
+	local restoredNormalLayout = false
+
+	if currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_DOCKED
+		or currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_PAPER then
+
 		applyPanelLayout(PANEL_LAYOUT_NORMAL)
+		restoredNormalLayout = true
 	end
 
 	updateCloseButtonForMode()
 	updateOpenButton()
+
+	if restoredNormalLayout and ui.panel.Visible and renderNavigator then
+		renderNavigator()
+	end
 end
 
 openRoomNavigator.Event:Connect(function(payload)
@@ -3078,9 +3302,11 @@ openRoomNavigator.Event:Connect(function(payload)
 		mode = payload
 	end
 
-	applyPanelLayout(mode == PANEL_LAYOUT_MAIN_MENU_DOCKED
-		and PANEL_LAYOUT_MAIN_MENU_DOCKED
-		or PANEL_LAYOUT_NORMAL)
+	applyPanelLayout(
+		mode == PANEL_LAYOUT_MAIN_MENU_DOCKED
+			and getMainMenuPanelLayout()
+			or PANEL_LAYOUT_NORMAL
+	)
 	setPanelVisible(true)
 	syncMainMenuNavigatorState()
 end)
@@ -3357,6 +3583,9 @@ player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
 end)
 
 player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(syncMainMenuNavigatorState)
+player:GetAttributeChangedSignal("MainMenuCameraActive"):Connect(syncMainMenuNavigatorState)
+player:GetAttributeChangedSignal("MainMenuIntroPlaying"):Connect(syncMainMenuNavigatorState)
+player:GetAttributeChangedSignal("MainMenuIntroComplete"):Connect(syncMainMenuNavigatorState)
 
 renderNavigator()
 syncMainMenuNavigatorState()

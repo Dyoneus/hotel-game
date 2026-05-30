@@ -574,20 +574,54 @@ local requestWorkCooldowns = nil
 local renderWorkPanel = nil
 local stopLocalWorkProgress = nil
 
+local function isCinematicMenuCameraActive()
+	return player:GetAttribute("MainMenuCameraActive") == true
+end
+
+local function shouldHideLegacyPanelForCinematic()
+	return player:GetAttribute("OnboardingStep") == "Complete"
+		and player:GetAttribute("CurrentRoomName") == nil
+		and (
+			isCinematicMenuCameraActive()
+			or player:GetAttribute("MainMenuIntroComplete") ~= true
+		)
+end
+
+local function shouldShowLegacyMenuPanel()
+	return background.Visible == true and not shouldHideLegacyPanelForCinematic()
+end
+
+local function syncLegacyMenuPanelVisibility()
+	local showLegacyPanel = shouldShowLegacyMenuPanel()
+
+	if not showLegacyPanel and isWorkPanelOpen then
+		isWorkPanelOpen = false
+
+		if stopLocalWorkProgress then
+			stopLocalWorkProgress()
+		end
+	end
+
+	leftPanel.Visible = showLegacyPanel
+
+	for _, guiObject in ipairs(welcomePanelObjects) do
+		guiObject.Visible = showLegacyPanel and not isWorkPanelOpen
+	end
+
+	workPanel.Visible = showLegacyPanel and isWorkPanelOpen
+	workButton.Visible = showLegacyPanel
+	workButton.Active = showLegacyPanel and not isWorkPanelOpen
+	workButton.AutoButtonColor = showLegacyPanel and not isWorkPanelOpen
+end
+
 local function setWorkPanelOpen(isOpen)
-	isWorkPanelOpen = isOpen == true and background.Visible == true
+	isWorkPanelOpen = isOpen == true and shouldShowLegacyMenuPanel()
 
 	if not isWorkPanelOpen and stopLocalWorkProgress then
 		stopLocalWorkProgress()
 	end
 
-	for _, guiObject in ipairs(welcomePanelObjects) do
-		guiObject.Visible = not isWorkPanelOpen
-	end
-
-	workPanel.Visible = isWorkPanelOpen
-	workButton.Active = not isWorkPanelOpen
-	workButton.AutoButtonColor = not isWorkPanelOpen
+	syncLegacyMenuPanelVisibility()
 
 	cooldownToken += 1
 
@@ -628,8 +662,7 @@ local function shouldShowMainMenu()
 end
 
 local function updateCinematicBackgroundState(isMainMenuActive)
-	local cinematicActive = isMainMenuActive == true
-		and player:GetAttribute("MainMenuCameraActive") == true
+	local cinematicActive = isMainMenuActive == true and isCinematicMenuCameraActive()
 
 	background.BackgroundTransparency = cinematicActive and 1 or 0
 	backgroundImage.Visible = (not cinematicActive) and MAIN_MENU_BACKGROUND_IMAGE ~= ""
@@ -969,6 +1002,7 @@ local function updateMainMenu()
 	updateCinematicBackgroundState(shouldShow)
 	worldInputBlocker.Visible = shouldShow
 	updateGameplayGuiSuppression(shouldShow)
+	syncLegacyMenuPanelVisibility()
 
 	if shouldShow and not wasVisible then
 		requestNavigatorOpen()
@@ -978,7 +1012,7 @@ local function updateMainMenu()
 end
 
 workButton.MouseButton1Click:Connect(function()
-	if not shouldShowMainMenu() then
+	if not shouldShowMainMenu() or isCinematicMenuCameraActive() then
 		return
 	end
 
@@ -1145,5 +1179,7 @@ player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("OnboardingStep"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("MainMenuCameraActive"):Connect(updateMainMenu)
+player:GetAttributeChangedSignal("MainMenuIntroPlaying"):Connect(updateMainMenu)
+player:GetAttributeChangedSignal("MainMenuIntroComplete"):Connect(updateMainMenu)
 
 task.defer(updateMainMenu)
