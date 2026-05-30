@@ -9,7 +9,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local mainMenuIntroCompleteRequest = remoteEvents:WaitForChild("MainMenuIntroCompleteRequest")
 
-local DEBUG_MAIN_MENU_CAMERA = true
+local DEBUG_MAIN_MENU_CAMERA = false
 local SCENE_FOLDER_NAME = "MainMenuScenes"
 local SCENE_TEMPLATE_NAME = "HotelLobbyMainMenu"
 local LOCAL_SCENE_NAME = "MainMenuSceneLocal"
