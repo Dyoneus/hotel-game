@@ -77,6 +77,7 @@ local workActivityById = {}
 local workCooldowns = {}
 local selectedWorkActivityId = nil
 local workRequestPending = false
+local workCooldownCheckPending = false
 local activeWorkAttempt = nil
 local progressToken = 0
 local cooldownToken = 0
@@ -962,6 +963,17 @@ local function formatSeconds(seconds)
 	return tostring(math.ceil(safeSeconds)) .. "s"
 end
 
+local function getWorkResponseMessage(response, fallbackMessage)
+	local message = tostring(response.Message or fallbackMessage or "")
+	local remainingCooldown = tonumber(response.RemainingCooldown)
+
+	if remainingCooldown and remainingCooldown > 0 and not string.find(message, "Cooldown:", 1, true) then
+		message = message .. " Cooldown: " .. formatSeconds(remainingCooldown)
+	end
+
+	return message
+end
+
 local function setWorkStatus(message, isError)
 	lastWorkStatusMessage = tostring(message or "")
 	lastWorkStatusIsError = isError == true
@@ -1078,6 +1090,7 @@ renderWorkPanel = function()
 		and shouldShowMainMenu()
 		and activity ~= nil
 		and not workRequestPending
+		and not workCooldownCheckPending
 		and not isWorking
 		and cooldownRemaining <= 0
 
@@ -1086,7 +1099,7 @@ renderWorkPanel = function()
 		placeholderDescription.Text = "Available jobs will appear here."
 		placeholderReward.Text = "Reward: --"
 		activityCooldownLabel.Text = "Cooldown: --"
-		startWorkButton.Text = workRequestPending and "Loading" or "Start"
+		startWorkButton.Text = (workRequestPending or workCooldownCheckPending) and "Loading" or "Start"
 		startWorkButton.Active = false
 		startWorkButton.AutoButtonColor = false
 		progressTrack.Visible = false
@@ -1105,6 +1118,8 @@ renderWorkPanel = function()
 
 	if cooldownRemaining > 0 then
 		activityCooldownLabel.Text = "Cooldown: " .. formatSeconds(cooldownRemaining)
+	elseif workCooldownCheckPending then
+		activityCooldownLabel.Text = "Checking cooldown..."
 	elseif isWorking then
 		activityCooldownLabel.Text = "Status: Working"
 	else
@@ -1113,6 +1128,8 @@ renderWorkPanel = function()
 
 	if workRequestPending then
 		startWorkButton.Text = "..."
+	elseif workCooldownCheckPending then
+		startWorkButton.Text = "Checking"
 	elseif cooldownRemaining > 0 then
 		startWorkButton.Text = formatSeconds(cooldownRemaining)
 	elseif isWorking then
@@ -1152,6 +1169,8 @@ requestWorkCooldowns = function()
 		return
 	end
 
+	workCooldownCheckPending = true
+	renderWorkPanel()
 	workActivityRequest:FireServer("GetCooldowns", {})
 end
 
@@ -1161,6 +1180,7 @@ requestWorkActivities = function()
 	end
 
 	workRequestPending = true
+	workCooldownCheckPending = true
 	setWorkStatus("Loading work...", false)
 	renderWorkPanel()
 	workActivityRequest:FireServer("GetActivities", {})
@@ -1171,6 +1191,7 @@ stopLocalWorkProgress = function()
 	progressToken += 1
 	activeWorkAttempt = nil
 	workRequestPending = false
+	workCooldownCheckPending = false
 
 	if renderWorkPanel then
 		renderWorkPanel()
@@ -1367,14 +1388,14 @@ startWorkButton.MouseButton1Click:Connect(function()
 
 	local activity = getSelectedWorkActivity()
 
-	if not activity or workRequestPending or activeWorkAttempt then
+	if not activity or workRequestPending or workCooldownCheckPending or activeWorkAttempt then
 		return
 	end
 
 	local cooldownRemaining = getCooldownRemaining(activity.ActivityId)
 
 	if cooldownRemaining > 0 then
-		setWorkStatus("Please wait before working again.", true)
+		setWorkStatus("Please wait before working again. Cooldown: " .. formatSeconds(cooldownRemaining), true)
 		renderWorkPanel()
 		return
 	end
@@ -1418,6 +1439,8 @@ workActivityResult.OnClientEvent:Connect(function(response)
 			for activityId, remaining in pairs(response.Cooldowns) do
 				setCooldownRemaining(activityId, remaining)
 			end
+
+			workCooldownCheckPending = false
 		end
 
 		setWorkStatus(response.Message or "Work activities loaded.", false)
@@ -1432,24 +1455,28 @@ workActivityResult.OnClientEvent:Connect(function(response)
 			end
 		end
 
+		workCooldownCheckPending = false
 		renderWorkPanel()
 		return
 	end
 
 	if kind == "GetActivities" then
 		workRequestPending = false
+		workCooldownCheckPending = false
 		setWorkStatus(response.Message or "Could not load work activities.", true)
 		renderWorkPanel()
 		return
 	end
 
 	if kind == "GetCooldowns" then
+		workCooldownCheckPending = false
 		renderWorkPanel()
 		return
 	end
 
 	if kind == "StartActivity" then
 		workRequestPending = false
+		workCooldownCheckPending = false
 
 		if response.Success == true then
 			if not isWorkPanelOpen or not shouldShowMainMenu() then
@@ -1476,7 +1503,7 @@ workActivityResult.OnClientEvent:Connect(function(response)
 				setCooldownRemaining(response.ActivityId, response.RemainingCooldown)
 			end
 
-			setWorkStatus(response.Message or "Could not start work.", true)
+			setWorkStatus(getWorkResponseMessage(response, "Could not start work."), true)
 			renderWorkPanel()
 		end
 
@@ -1485,6 +1512,7 @@ workActivityResult.OnClientEvent:Connect(function(response)
 
 	if kind == "CompleteActivity" then
 		workRequestPending = false
+		workCooldownCheckPending = false
 		progressToken += 1
 		activeWorkAttempt = nil
 
@@ -1498,7 +1526,10 @@ workActivityResult.OnClientEvent:Connect(function(response)
 		end
 
 		setWorkStatus(
-			response.Message or (response.Success == true and "Work complete." or "Could not complete work."),
+			getWorkResponseMessage(
+				response,
+				response.Success == true and "Work complete." or "Could not complete work."
+			),
 			response.Success ~= true
 		)
 		renderWorkPanel()

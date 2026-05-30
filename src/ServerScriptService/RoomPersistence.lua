@@ -1996,7 +1996,35 @@ function RoomPersistence.GetWorkActivityCooldownSnapshot(player)
 		return {}
 	end
 
-	return deepCopy(ensureWorkActivityCooldowns(profile))
+	local now = os.time()
+	local cooldowns = ensureWorkActivityCooldowns(profile)
+	local snapshot = {}
+	local removedExpired = false
+
+	for activityId, cooldownRecord in pairs(cooldowns) do
+		local nextAvailableUnix = cooldownRecord.NextAvailableUnix
+		local remainingSeconds = typeof(nextAvailableUnix) == "number"
+			and math.max(0, math.ceil(nextAvailableUnix - now))
+			or 0
+
+		if remainingSeconds > 0 then
+			snapshot[activityId] = {
+				LastCompletedUnix = cooldownRecord.LastCompletedUnix,
+				NextAvailableUnix = nextAvailableUnix,
+				RemainingCooldown = remainingSeconds,
+			}
+		else
+			cooldowns[activityId] = nil
+			removedExpired = true
+		end
+	end
+
+	if removedExpired then
+		profile.UpdatedAt = now
+		RoomPersistence.QueueSave(player)
+	end
+
+	return deepCopy(snapshot)
 end
 
 function RoomPersistence.GetWorkActivityCooldown(player, activityId)
@@ -2021,6 +2049,8 @@ function RoomPersistence.GetWorkActivityCooldown(player, activityId)
 
 	if remainingSeconds <= 0 then
 		cooldowns[activityId] = nil
+		profile.UpdatedAt = os.time()
+		RoomPersistence.QueueSave(player)
 
 		return 0, nil, nil
 	end
@@ -2059,7 +2089,12 @@ function RoomPersistence.SetWorkActivityCooldown(player, activityId, cooldownSec
 
 	RoomPersistence.QueueSave(player)
 
-	return true, "Work cooldown saved.", normalizedCooldownSeconds, deepCopy(cooldownRecord)
+	local savedNow = RoomPersistence.SavePlayer(player)
+	local message = savedNow
+		and "Work cooldown saved."
+		or "Work cooldown queued; immediate save failed."
+
+	return true, message, normalizedCooldownSeconds, deepCopy(cooldownRecord)
 end
 
 function RoomPersistence.GrantStarterDollarsIfNeeded(player)

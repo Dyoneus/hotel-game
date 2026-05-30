@@ -38,6 +38,7 @@ end
 local workActivityRequest = getOrCreateRemoteEvent("WorkActivityRequest")
 local workActivityResult = getOrCreateRemoteEvent("WorkActivityResult")
 
+local DEBUG_WORK_ACTIVITY = false
 local REQUEST_COOLDOWN_SECONDS = 0.25
 local ATTEMPT_EXPIRY_GRACE_SECONDS = 10
 
@@ -62,6 +63,45 @@ local function sendResult(player, payload)
 	payload.Message = tostring(payload.Message or "")
 
 	workActivityResult:FireClient(player, payload)
+end
+
+local function debugLog(...)
+	if DEBUG_WORK_ACTIVITY then
+		print("[WorkActivity]", ...)
+	end
+end
+
+local function debugPlayerName(player)
+	return player and player.Name or "UnknownPlayer"
+end
+
+local function getPayloadActivityId(payload)
+	if typeof(payload) == "table" and typeof(payload.ActivityId) == "string" and payload.ActivityId ~= "" then
+		return payload.ActivityId
+	end
+
+	return nil
+end
+
+local function sendFailure(player, kind, message, activityId, extra)
+	local payload = extra or {}
+	payload.Kind = kind
+	payload.Success = false
+	payload.Message = message
+
+	if activityId ~= nil then
+		payload.ActivityId = activityId
+	end
+
+	debugLog(
+		tostring(kind) .. " denied",
+		debugPlayerName(player),
+		activityId or "no activity",
+		message,
+		payload.RemainingCooldown and ("cooldown=" .. tostring(payload.RemainingCooldown)) or ""
+	)
+
+	sendResult(player, payload)
 end
 
 local function getSafeActionName(actionName)
@@ -136,11 +176,11 @@ end
 
 local function validateWorkStartLocation(player)
 	if player:GetAttribute("InHotelMainMenu") ~= true then
-		return false, "Work can only start from the Main Menu."
+		return false, "Work can only be started from the Main Menu."
 	end
 
 	if player:GetAttribute("CurrentRoomName") ~= nil then
-		return false, "Work can only start from the Main Menu."
+		return false, "Work can only be started from the Main Menu."
 	end
 
 	return true, nil
@@ -188,8 +228,12 @@ local function buildCooldownsForActivities(player, activities)
 		local cooldownRecord = cooldownSnapshot[activity.ActivityId]
 		local remainingCooldown = 0
 
-		if typeof(cooldownRecord) == "table" and typeof(cooldownRecord.NextAvailableUnix) == "number" then
-			remainingCooldown = math.max(0, math.ceil(cooldownRecord.NextAvailableUnix - now))
+		if typeof(cooldownRecord) == "table" then
+			if typeof(cooldownRecord.RemainingCooldown) == "number" then
+				remainingCooldown = math.max(0, math.ceil(cooldownRecord.RemainingCooldown))
+			elseif typeof(cooldownRecord.NextAvailableUnix) == "number" then
+				remainingCooldown = math.max(0, math.ceil(cooldownRecord.NextAvailableUnix - now))
+			end
 		end
 
 		activityCooldowns[activity.ActivityId] = remainingCooldown
@@ -226,45 +270,26 @@ local function handleStartActivity(player, payload)
 	local activity, activityMessage = validateActivity(activityId)
 
 	if not activity then
-		sendResult(player, {
-			Kind = "StartActivity",
-			Success = false,
-			Message = activityMessage,
-			ActivityId = activityId,
-		})
+		sendFailure(player, "StartActivity", activityMessage, activityId)
 		return
 	end
 
 	local locationValid, locationMessage = validateWorkStartLocation(player)
 
 	if not locationValid then
-		sendResult(player, {
-			Kind = "StartActivity",
-			Success = false,
-			Message = locationMessage,
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "StartActivity", locationMessage, activity.ActivityId)
 		return
 	end
 
 	local remainingCooldown, cooldownMessage = getProfileCooldownRemaining(player, activity.ActivityId)
 
 	if remainingCooldown == nil then
-		sendResult(player, {
-			Kind = "StartActivity",
-			Success = false,
-			Message = cooldownMessage,
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "StartActivity", cooldownMessage, activity.ActivityId)
 		return
 	end
 
 	if remainingCooldown > 0 then
-		sendResult(player, {
-			Kind = "StartActivity",
-			Success = false,
-			Message = "Please wait before working again.",
-			ActivityId = activity.ActivityId,
+		sendFailure(player, "StartActivity", "Please wait before working again.", activity.ActivityId, {
 			RemainingCooldown = remainingCooldown,
 		})
 		return
@@ -275,11 +300,7 @@ local function handleStartActivity(player, payload)
 	local now = os.clock()
 
 	if existingAttempt and typeof(existingAttempt.ExpiresAt) == "number" and now < existingAttempt.ExpiresAt then
-		sendResult(player, {
-			Kind = "StartActivity",
-			Success = false,
-			Message = "Work already started.",
-			ActivityId = activity.ActivityId,
+		sendFailure(player, "StartActivity", "Work already started.", activity.ActivityId, {
 			DurationSeconds = activity.DurationSeconds,
 		})
 		return
@@ -289,6 +310,8 @@ local function handleStartActivity(player, payload)
 		StartedAt = now,
 		ExpiresAt = now + activity.DurationSeconds + ATTEMPT_EXPIRY_GRACE_SECONDS,
 	}
+
+	debugLog("StartActivity accepted", debugPlayerName(player), activity.ActivityId)
 
 	sendResult(player, {
 		Kind = "StartActivity",
@@ -304,12 +327,7 @@ local function handleCompleteActivity(player, payload)
 	local activity, activityMessage = validateActivity(activityId)
 
 	if not activity then
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = activityMessage,
-			ActivityId = activityId,
-		})
+		sendFailure(player, "CompleteActivity", activityMessage, activityId)
 		return
 	end
 
@@ -317,36 +335,21 @@ local function handleCompleteActivity(player, payload)
 	local attempt = userAttempts and userAttempts[activity.ActivityId]
 
 	if not attempt then
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = "No active work attempt.",
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "CompleteActivity", "No active work attempt.", activity.ActivityId)
 		return
 	end
 
 	local now = os.clock()
 
 	if now - attempt.StartedAt < activity.DurationSeconds then
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = "Work is not complete yet.",
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "CompleteActivity", "Work is not complete yet.", activity.ActivityId)
 		return
 	end
 
 	if now > attempt.ExpiresAt then
 		userAttempts[activity.ActivityId] = nil
 
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = "Work attempt expired.",
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "CompleteActivity", "Work attempt expired.", activity.ActivityId)
 		return
 	end
 
@@ -355,12 +358,7 @@ local function handleCompleteActivity(player, payload)
 	if not locationValid then
 		userAttempts[activity.ActivityId] = nil
 
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = locationMessage,
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "CompleteActivity", locationMessage, activity.ActivityId)
 		return
 	end
 
@@ -369,23 +367,14 @@ local function handleCompleteActivity(player, payload)
 	if remainingCooldown == nil then
 		userAttempts[activity.ActivityId] = nil
 
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = cooldownMessage,
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "CompleteActivity", cooldownMessage, activity.ActivityId)
 		return
 	end
 
 	if remainingCooldown > 0 then
 		userAttempts[activity.ActivityId] = nil
 
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = "Please wait before working again.",
-			ActivityId = activity.ActivityId,
+		sendFailure(player, "CompleteActivity", "Please wait before working again.", activity.ActivityId, {
 			RemainingCooldown = remainingCooldown,
 		})
 		return
@@ -396,12 +385,7 @@ local function handleCompleteActivity(player, payload)
 	if not rewardValid then
 		userAttempts[activity.ActivityId] = nil
 
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = rewardMessage,
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "CompleteActivity", rewardMessage, activity.ActivityId)
 		return
 	end
 
@@ -410,12 +394,7 @@ local function handleCompleteActivity(player, payload)
 	if not cooldownValid then
 		userAttempts[activity.ActivityId] = nil
 
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = cooldownValidationMessage,
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "CompleteActivity", cooldownValidationMessage, activity.ActivityId)
 		return
 	end
 
@@ -428,14 +407,18 @@ local function handleCompleteActivity(player, payload)
 	)
 
 	if not grantSuccess then
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = grantMessage or "Could not grant work reward.",
-			ActivityId = activity.ActivityId,
-		})
+		sendFailure(player, "CompleteActivity", grantMessage or "Could not grant work reward.", activity.ActivityId)
 		return
 	end
+
+	debugLog(
+		"CompleteActivity reward granted",
+		debugPlayerName(player),
+		activity.ActivityId,
+		rewardAmount,
+		"Dollars",
+		"balance=" .. tostring(newDollarBalance)
+	)
 
 	local cooldownSuccess, cooldownSaveMessage, savedRemainingCooldown = RoomPersistence.SetWorkActivityCooldown(
 		player,
@@ -444,22 +427,25 @@ local function handleCompleteActivity(player, payload)
 	)
 
 	if not cooldownSuccess then
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = true,
-			Message = "Work complete! You earned "
-				.. tostring(rewardAmount)
-				.. " Dollars. "
-				.. tostring(cooldownSaveMessage or "Cooldown could not be saved."),
-			ActivityId = activity.ActivityId,
-			RewardAmount = rewardAmount,
-			RewardCurrency = "Dollars",
-			NewCurrencyBalance = newDollarBalance,
-			RemainingCooldown = 0,
+		debugLog(
+			"CompleteActivity cooldown save failed",
+			debugPlayerName(player),
+			activity.ActivityId,
+			tostring(cooldownSaveMessage)
+		)
+
+		sendFailure(player, "CompleteActivity", cooldownSaveMessage or "Could not save work cooldown.", activity.ActivityId, {
 			Warning = cooldownSaveMessage,
 		})
 		return
 	end
+
+	debugLog(
+		"CompleteActivity accepted",
+		debugPlayerName(player),
+		activity.ActivityId,
+		"cooldown=" .. tostring(savedRemainingCooldown or cooldownSeconds)
+	)
 
 	sendResult(player, {
 		Kind = "CompleteActivity",
@@ -481,20 +467,17 @@ local function handleRequest(player, actionName, payload)
 	local safeActionName = getSafeActionName(actionName)
 
 	if safeActionName == "Unknown" then
-		sendResult(player, {
-			Kind = "Unknown",
-			Success = false,
-			Message = "Unknown work activity action.",
-		})
+		sendFailure(player, "Unknown", "Unknown work activity action.", getPayloadActivityId(payload))
 		return
 	end
 
 	if isRequestRateLimited(player, safeActionName) then
-		sendResult(player, {
-			Kind = safeActionName,
-			Success = false,
-			Message = "Please slow down before requesting work activities.",
-		})
+		sendFailure(
+			player,
+			safeActionName,
+			"Please slow down before requesting work activities.",
+			getPayloadActivityId(payload)
+		)
 		return
 	end
 
@@ -519,11 +502,12 @@ workActivityRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	if not success then
 		warn("WorkActivityServer request failed:", errorMessage)
 
-		sendResult(player, {
-			Kind = getSafeActionName(actionName),
-			Success = false,
-			Message = "Work activity request failed.",
-		})
+		sendFailure(
+			player,
+			getSafeActionName(actionName),
+			"Work activity request failed.",
+			getPayloadActivityId(payload)
+		)
 	end
 end)
 
