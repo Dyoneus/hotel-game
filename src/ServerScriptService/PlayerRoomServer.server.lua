@@ -51,6 +51,7 @@ local roomNavigatorRequest = getOrCreateRemoteEvent("RoomNavigatorRequest")
 local roomNavigatorResult = getOrCreateRemoteEvent("RoomNavigatorResult")
 local leaveRoomRequest = getOrCreateRemoteEvent("LeaveRoomRequest")
 local leaveRoomResult = getOrCreateRemoteEvent("LeaveRoomResult")
+local mainMenuIntroCompleteRequest = getOrCreateRemoteEvent("MainMenuIntroCompleteRequest")
 local roomPermissionRequest = getOrCreateRemoteEvent("RoomPermissionRequest")
 local roomPermissionResult = getOrCreateRemoteEvent("RoomPermissionResult")
 
@@ -84,6 +85,9 @@ local MAIN_MENU_HOLDING_PLATFORM_NAME = "MainMenuHoldingPlatform"
 local MAIN_MENU_HOLDING_SPAWN_NAME = "MainMenuHoldingSpawn"
 local MAIN_MENU_HOLDING_POSITION = Vector3.new(0, -500, 0)
 local MAIN_MENU_HOLDING_CHARACTER_Y_OFFSET = 2.5
+local MAIN_MENU_INTRO_FIRST_VISIT = "FirstVisit"
+local MAIN_MENU_INTRO_FIRST_VISIT_ONBOARDING = "FirstVisitOnboarding"
+local MAIN_MENU_INTRO_RETURNING = "Returning"
 
 local playerRooms = {}
 local playerRoomSlots = {}
@@ -830,6 +834,22 @@ local function setPlayerInHotelMainMenu(player, isInMainMenu)
 	player:SetAttribute("InHotelMainMenu", isInMainMenu == true)
 end
 
+local function enterMainMenuForPlayer(player, introVariant, pendingOnboardingAfterIntro)
+	player:SetAttribute("RoomMode", "Play")
+	player:SetAttribute("ControlMode", "Hotel")
+	player:SetAttribute("CurrentRoomName", nil)
+	player:SetAttribute("MainMenuIntroVariant", introVariant or MAIN_MENU_INTRO_RETURNING)
+	player:SetAttribute("PendingOnboardingAfterIntro", pendingOnboardingAfterIntro == true)
+	player:SetAttribute("OnboardingUiAllowed", false)
+
+	if player:GetAttribute("CanEditCurrentRoom") ~= nil then
+		player:SetAttribute("CanEditCurrentRoom", false)
+	end
+
+	setPlayerInHotelMainMenu(player, true)
+	parkCharacterInMainMenu(player)
+end
+
 local function getRoomOwnerPlayer(roomModel)
 	local ownerUserId = roomModel:GetAttribute("OwnerUserId")
 
@@ -1479,6 +1499,9 @@ local function enterSavedRoomForPlayer(player, profile)
 	player:SetAttribute("CharacterCreatedThisSession", profile.CharacterCreated == true)
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	player:SetAttribute("MainMenuIntroVariant", nil)
+	player:SetAttribute("PendingOnboardingAfterIntro", false)
+	player:SetAttribute("OnboardingUiAllowed", false)
 	setPlayerInHotelMainMenu(player, false)
 
 	local onboardingStep = profile.OnboardingStep
@@ -1492,6 +1515,36 @@ local function enterSavedRoomForPlayer(player, profile)
 	roomCreationResult:FireClient(player, "Created", roomModel.Name)
 
 	sendRoomListToAll()
+
+	return true
+end
+
+local function prepareSavedRoomForMainMenu(player, profile)
+	local roomState = profile.RoomState
+	local layoutId = profile.CurrentLayoutId
+
+	if typeof(roomState) == "table" and typeof(roomState.LayoutId) == "string" then
+		layoutId = roomState.LayoutId
+	end
+
+	if typeof(layoutId) ~= "string" or not VALID_LAYOUTS[layoutId] then
+		warn("Saved room has invalid layout:", layoutId)
+		return false
+	end
+
+	local roomModel = cloneRoomForPlayer(player, layoutId)
+
+	if not roomModel then
+		return false
+	end
+
+	RoomPersistence.ApplyRoomState(roomModel, roomState)
+
+	player:SetAttribute("CurrentLayoutId", layoutId)
+	player:SetAttribute("HasCreatedRoom", true)
+	player:SetAttribute("ProfileCreated", true)
+	player:SetAttribute("CharacterCreatedThisSession", profile.CharacterCreated == true)
+	player:SetAttribute("OnboardingStep", "Complete")
 
 	return true
 end
@@ -1633,6 +1686,9 @@ local function joinPublicRoom(player, publicRoomId)
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	player:SetAttribute("MainMenuIntroVariant", nil)
+	player:SetAttribute("PendingOnboardingAfterIntro", false)
+	player:SetAttribute("OnboardingUiAllowed", false)
 	setPlayerInHotelMainMenu(player, false)
 
 	joinRoomResult:FireClient(player, true, "Joined public space.", roomModel.Name)
@@ -1681,6 +1737,9 @@ local function joinRoom(player, roomName)
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	player:SetAttribute("MainMenuIntroVariant", nil)
+	player:SetAttribute("PendingOnboardingAfterIntro", false)
+	player:SetAttribute("OnboardingUiAllowed", false)
 	setPlayerInHotelMainMenu(player, false)
 
 	local success, errorMessage = pcall(function()
@@ -1730,15 +1789,7 @@ local function leaveCurrentRoom(player)
 		RoomPersistence.QueueSave(player)
 	end
 
-	player:SetAttribute("RoomMode", "Play")
-	player:SetAttribute("CurrentRoomName", nil)
-
-	if player:GetAttribute("CanEditCurrentRoom") ~= nil then
-		player:SetAttribute("CanEditCurrentRoom", false)
-	end
-
-	setPlayerInHotelMainMenu(player, true)
-	parkCharacterInMainMenu(player)
+	enterMainMenuForPlayer(player, MAIN_MENU_INTRO_RETURNING)
 
 	leaveRoomResult:FireClient(player, true, "Left room.")
 	sendRoomListToAll()
@@ -1765,6 +1816,9 @@ Players.PlayerAdded:Connect(function(player)
 
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	player:SetAttribute("MainMenuIntroVariant", nil)
+	player:SetAttribute("PendingOnboardingAfterIntro", false)
+	player:SetAttribute("OnboardingUiAllowed", false)
 	setPlayerInHotelMainMenu(player, false)
 
 	local profile, loaded = RoomPersistence.LoadProfile(player)
@@ -1784,6 +1838,30 @@ Players.PlayerAdded:Connect(function(player)
 	player:SetAttribute("ProfileCreated", profile.ProfileCreated == true)
 	player:SetAttribute("CharacterCreatedThisSession", profile.CharacterCreated == true)
 
+	if not RoomPersistence.HasSeenHotelIntro(player) then
+		local pendingOnboarding = profile.ProfileCreated ~= true
+			or profile.OnboardingStep ~= "Complete"
+
+		if pendingOnboarding then
+			player:SetAttribute("OnboardingStep", "HotelIntro")
+			player:SetAttribute("OnboardingUiAllowed", false)
+			enterMainMenuForPlayer(player, MAIN_MENU_INTRO_FIRST_VISIT_ONBOARDING, true)
+			sendRoomListToAll()
+			return
+		end
+
+		local roomPrepared = prepareSavedRoomForMainMenu(player, profile)
+
+		if not roomPrepared then
+			player:Kick("Your saved room could not load. Please rejoin.")
+			return
+		end
+
+		enterMainMenuForPlayer(player, MAIN_MENU_INTRO_FIRST_VISIT)
+		sendRoomListToAll()
+		return
+	end
+
 	if profile.ProfileCreated == true then
 		local enteredSavedRoom = enterSavedRoomForPlayer(player, profile)
 
@@ -1795,6 +1873,8 @@ Players.PlayerAdded:Connect(function(player)
 		player:Kick("Your saved room could not load. Please rejoin.")
 		return
 	end
+
+	player:SetAttribute("OnboardingUiAllowed", true)
 
 	if profile.CharacterCreated == true then
 		player:SetAttribute("OnboardingStep", "RoomCreation")
@@ -1841,7 +1921,31 @@ Players.PlayerRemoving:Connect(function(player)
 	end)
 end)
 
+local function showOnboardingAfterHotelIntro(player, profile)
+	player:SetAttribute("PendingOnboardingAfterIntro", false)
+	player:SetAttribute("OnboardingUiAllowed", true)
+	player:SetAttribute("MainMenuIntroVariant", nil)
+	player:SetAttribute("CurrentRoomName", nil)
+	setPlayerInHotelMainMenu(player, false)
+
+	if profile.CharacterCreated == true
+		or profile.OnboardingStep == "RoomCreation" then
+
+		player:SetAttribute("CharacterCreatedThisSession", profile.CharacterCreated == true)
+		player:SetAttribute("OnboardingStep", "RoomCreation")
+		roomCreationResult:FireClient(player, "ShowCreation")
+	else
+		player:SetAttribute("CharacterCreatedThisSession", false)
+		player:SetAttribute("OnboardingStep", "CharacterCreation")
+		roomCreationResult:FireClient(player, "ShowCharacterCreation")
+	end
+end
+
 characterCreationFinished.OnServerEvent:Connect(function(player, characterData)
+	if player:GetAttribute("PendingOnboardingAfterIntro") == true then
+		return
+	end
+
 	if player:GetAttribute("HasCreatedRoom") then
 		return
 	end
@@ -1877,6 +1981,10 @@ createRoomRequest.OnServerEvent:Connect(function(player, layoutId)
 		if player.Parent == Players then
 			roomCreationResult:FireClient(player, status, roomName)
 		end
+	end
+
+	if player:GetAttribute("PendingOnboardingAfterIntro") == true then
+		return
 	end
 
 	if roomCreationInFlightByUserId[player.UserId] then
@@ -1952,6 +2060,10 @@ createRoomRequest.OnServerEvent:Connect(function(player, layoutId)
 	player:SetAttribute("OnboardingStep", "Tutorial")
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	player:SetAttribute("MainMenuIntroVariant", nil)
+	player:SetAttribute("PendingOnboardingAfterIntro", false)
+	player:SetAttribute("OnboardingUiAllowed", false)
+	setPlayerInHotelMainMenu(player, false)
 
 	local profile = RoomPersistence.GetProfile(player)
 
@@ -2428,6 +2540,37 @@ leaveRoomRequest.OnServerEvent:Connect(function(player)
 	leaveCurrentRoom(player)
 end)
 
+mainMenuIntroCompleteRequest.OnServerEvent:Connect(function(player)
+	local profile = RoomPersistence.GetProfile(player)
+
+	if not profile then
+		return
+	end
+
+	local introVariant = player:GetAttribute("MainMenuIntroVariant")
+
+	if introVariant == MAIN_MENU_INTRO_FIRST_VISIT_ONBOARDING then
+		if player:GetAttribute("PendingOnboardingAfterIntro") == true then
+			showOnboardingAfterHotelIntro(player, profile)
+		end
+
+		return
+	end
+
+	if introVariant ~= MAIN_MENU_INTRO_FIRST_VISIT then
+		return
+	end
+
+	local success, message = RoomPersistence.MarkHotelIntroSeen(player)
+
+	if not success then
+		warn("Could not mark hotel intro seen for", player.Name, message)
+		return
+	end
+
+	player:SetAttribute("MainMenuIntroVariant", MAIN_MENU_INTRO_RETURNING)
+end)
+
 tutorialFinishedRequest.OnServerEvent:Connect(function(player)
 	if player:GetAttribute("OnboardingStep") ~= "Tutorial" then
 		return
@@ -2440,6 +2583,14 @@ tutorialFinishedRequest.OnServerEvent:Connect(function(player)
 	if profile then
 		profile.OnboardingStep = "Complete"
 		RoomPersistence.QueueSave(player)
+	end
+
+	if not RoomPersistence.HasSeenHotelIntro(player) then
+		local success, message = RoomPersistence.MarkHotelIntroSeen(player)
+
+		if not success then
+			warn("Could not mark hotel intro seen after onboarding for", player.Name, message)
+		end
 	end
 
 	-- Refresh this player’s navigator button/list availability.

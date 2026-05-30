@@ -48,6 +48,7 @@ local function createDefaultProfile()
 
 		CurrentLayoutId = nil,
 		StarterDollarsGranted = false,
+		HasSeenHotelIntro = false,
 
 		RoomState = nil,
 		RoomDirectory = {
@@ -820,6 +821,9 @@ local function fillDefaults(profile)
 		return defaults
 	end
 
+	local hasHotelIntroFlag = profile.HasSeenHotelIntro ~= nil
+	local existingOnboardingStep = profile.OnboardingStep
+
 	for key, defaultValue in pairs(defaults) do
 		if profile[key] == nil then
 			profile[key] = defaultValue
@@ -837,6 +841,12 @@ local function fillDefaults(profile)
 
 	if profile.StarterDollarsGranted ~= true then
 		profile.StarterDollarsGranted = false
+	end
+
+	if hasHotelIntroFlag then
+		profile.HasSeenHotelIntro = profile.HasSeenHotelIntro == true
+	else
+		profile.HasSeenHotelIntro = existingOnboardingStep == "Complete"
 	end
 
 	return profile
@@ -1149,6 +1159,35 @@ end
 
 function RoomPersistence.GetProfile(player)
 	return profilesByPlayer[player]
+end
+
+function RoomPersistence.HasSeenHotelIntro(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false
+	end
+
+	return profile.HasSeenHotelIntro == true
+end
+
+function RoomPersistence.MarkHotelIntroSeen(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded."
+	end
+
+	if profile.HasSeenHotelIntro == true then
+		return true, "Hotel intro already seen."
+	end
+
+	profile.HasSeenHotelIntro = true
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Hotel intro marked seen."
 end
 
 function RoomPersistence.GetMarketplaceListingsSnapshot(player)

@@ -6,6 +6,8 @@ local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
+local mainMenuIntroCompleteRequest = remoteEvents:WaitForChild("MainMenuIntroCompleteRequest")
 
 local DEBUG_MAIN_MENU_CAMERA = true
 local SCENE_FOLDER_NAME = "MainMenuScenes"
@@ -17,11 +19,18 @@ local CAMERA_FIELD_OF_VIEW = 50
 local CAMERA_CONCIERGE_TWEEN_SECONDS = 2.5
 local CAMERA_NAVIGATOR_TWEEN_SECONDS = 1.5
 local CAMERA_VIEW_TWEEN_SECONDS = 0.85
+local RETURNING_INTRO_TWEEN_SECONDS = 0.9
+local IDLE_CAMERA_SWAY_POSITION = 0.045
+local IDLE_CAMERA_SWAY_ROTATION = math.rad(0.28)
 local CONCIERGE_SUBTITLE_DELAY_SECONDS = 1.05
 local CONCIERGE_SUBTITLE_DURATION_SECONDS = 2.6
 local CONCIERGE_WELCOME_SUBTITLE = "Welcome to the Hotel. The Navigator is ready for you."
+local CONCIERGE_CHECK_IN_SUBTITLE = "Welcome to the Hotel. Let's get you checked in."
 local CONCIERGE_VOICE_SOUND_ID = "" -- Future placeholder: use only an owned/approved Roblox audio asset.
 
+local INTRO_VARIANT_FIRST_VISIT = "FirstVisit"
+local INTRO_VARIANT_FIRST_VISIT_ONBOARDING = "FirstVisitOnboarding"
+local INTRO_VARIANT_RETURNING = "Returning"
 local VIEW_NAVIGATOR = "Navigator"
 local VIEW_WORK = "Work"
 
@@ -45,6 +54,8 @@ local isActive = false
 local isTweening = false
 local activationSerial = 0
 local holdCameraCFrame = nil
+local idleBaseCFrame = nil
+local idleStartedAt = 0
 local missingSceneWarned = false
 local missingMarkerWarned = {}
 local isCurrentActivation = nil
@@ -93,6 +104,24 @@ local function getCamera()
 	return camera
 end
 
+local function getIntroVariant()
+	if player:GetAttribute("MainMenuIntroVariant") == INTRO_VARIANT_FIRST_VISIT_ONBOARDING then
+		return INTRO_VARIANT_FIRST_VISIT_ONBOARDING
+	end
+
+	if player:GetAttribute("MainMenuIntroVariant") == INTRO_VARIANT_FIRST_VISIT then
+		return INTRO_VARIANT_FIRST_VISIT
+	end
+
+	return INTRO_VARIANT_RETURNING
+end
+
+local function setHoldCameraCFrame(cframe)
+	holdCameraCFrame = cframe
+	idleBaseCFrame = cframe
+	idleStartedAt = os.clock()
+end
+
 local function setMainMenuCameraActive(active)
 	if player:GetAttribute("MainMenuCameraActive") ~= active then
 		player:SetAttribute("MainMenuCameraActive", active)
@@ -122,6 +151,15 @@ local function requestSubtitleHide()
 	})
 end
 
+local function requestSubtitleShow(text, durationSeconds)
+	mainMenuSubtitleRequest:Fire({
+		Action = "Show",
+		Text = text,
+		DurationSeconds = durationSeconds,
+		SoundId = CONCIERGE_VOICE_SOUND_ID,
+	})
+end
+
 local function requestConciergeSubtitle(serial)
 	task.delay(CONCIERGE_SUBTITLE_DELAY_SECONDS, function()
 		if not isCurrentActivation(serial)
@@ -131,12 +169,7 @@ local function requestConciergeSubtitle(serial)
 			return
 		end
 
-		mainMenuSubtitleRequest:Fire({
-			Action = "Show",
-			Text = CONCIERGE_WELCOME_SUBTITLE,
-			DurationSeconds = CONCIERGE_SUBTITLE_DURATION_SECONDS,
-			SoundId = CONCIERGE_VOICE_SOUND_ID,
-		})
+		requestSubtitleShow(CONCIERGE_WELCOME_SUBTITLE, CONCIERGE_SUBTITLE_DURATION_SECONDS)
 	end)
 end
 
@@ -163,7 +196,19 @@ local function applyCameraOwnership()
 	currentCamera.FieldOfView = CAMERA_FIELD_OF_VIEW
 
 	if not isTweening and holdCameraCFrame then
-		currentCamera.CFrame = holdCameraCFrame
+		if player:GetAttribute("MainMenuIntroComplete") == true and idleBaseCFrame then
+			local elapsed = os.clock() - idleStartedAt
+			local offsetX = math.sin(elapsed * 0.55) * IDLE_CAMERA_SWAY_POSITION
+			local offsetY = math.sin(elapsed * 0.37) * IDLE_CAMERA_SWAY_POSITION * 0.35
+			local yaw = math.sin(elapsed * 0.42) * IDLE_CAMERA_SWAY_ROTATION
+			local pitch = math.sin(elapsed * 0.31) * IDLE_CAMERA_SWAY_ROTATION * 0.45
+
+			currentCamera.CFrame = idleBaseCFrame
+				* CFrame.new(offsetX, offsetY, 0)
+				* CFrame.Angles(pitch, yaw, 0)
+		else
+			currentCamera.CFrame = holdCameraCFrame
+		end
 	end
 end
 
@@ -174,7 +219,14 @@ local function shouldUseMainMenuCamera()
 		return false
 	end
 
-	if player:GetAttribute("OnboardingStep") ~= "Complete" then
+	local introVariant = getIntroVariant()
+	local isFirstVisitIntro = (
+			introVariant == INTRO_VARIANT_FIRST_VISIT
+			or introVariant == INTRO_VARIANT_FIRST_VISIT_ONBOARDING
+		)
+		and player:GetAttribute("InHotelMainMenu") == true
+
+	if player:GetAttribute("OnboardingStep") ~= "Complete" and not isFirstVisitIntro then
 		return false
 	end
 
@@ -369,7 +421,7 @@ local function tweenCameraTo(targetCFrame, durationSeconds, serial)
 	end
 
 	if isCurrentActivation(serial) then
-		holdCameraCFrame = targetCFrame
+		setHoldCameraCFrame(targetCFrame)
 		currentCamera.CameraType = Enum.CameraType.Scriptable
 		currentCamera.FieldOfView = CAMERA_FIELD_OF_VIEW
 		currentCamera.CFrame = targetCFrame
@@ -380,7 +432,7 @@ local function tweenCameraTo(targetCFrame, durationSeconds, serial)
 	return isCurrentActivation(serial)
 end
 
-local function playIntro(serial)
+local function playFirstVisitIntro(serial)
 	local currentCamera = getCamera()
 
 	if not currentCamera or not sceneClone or not isCurrentActivation(serial) then
@@ -399,7 +451,7 @@ local function playIntro(serial)
 	local conciergeCFrame = getMarkerCFrame("CameraConcierge")
 	local navigatorCFrame = getMarkerCFrame("CameraNavigatorDesk")
 
-	holdCameraCFrame = startCFrame
+	setHoldCameraCFrame(startCFrame)
 	applyCameraOwnership()
 	currentCamera.CFrame = startCFrame
 
@@ -413,15 +465,115 @@ local function playIntro(serial)
 	end
 
 	if tweenCameraTo(navigatorCFrame, CAMERA_NAVIGATOR_TWEEN_SECONDS, serial) then
-		holdCameraCFrame = navigatorCFrame
+		setHoldCameraCFrame(navigatorCFrame)
 		applyCameraOwnership()
 		setMainMenuView(VIEW_NAVIGATOR)
 		requestSubtitleHide()
 		setMainMenuIntroState(false, true)
-		debugPrint("Intro complete at CameraNavigatorDesk")
+		mainMenuIntroCompleteRequest:FireServer()
+		debugPrint("First-visit intro complete at CameraNavigatorDesk")
 	elseif isCurrentActivation(serial) then
 		requestSubtitleHide()
 		setMainMenuIntroState(false, false)
+	end
+end
+
+local function playFirstVisitOnboardingIntro(serial)
+	local currentCamera = getCamera()
+
+	if not currentCamera or not sceneClone or not isCurrentActivation(serial) then
+		if isCurrentActivation(serial) then
+			setMainMenuIntroState(false, false)
+		end
+
+		return
+	end
+
+	setMainMenuIntroState(true, false)
+	requestSubtitleHide()
+	clearMainMenuView()
+
+	local startCFrame = getMarkerCFrame("CameraStart")
+	local conciergeCFrame = getMarkerCFrame("CameraConcierge")
+
+	setHoldCameraCFrame(startCFrame)
+	applyCameraOwnership()
+	currentCamera.CFrame = startCFrame
+
+	if not tweenCameraTo(conciergeCFrame, CAMERA_CONCIERGE_TWEEN_SECONDS, serial) then
+		if isCurrentActivation(serial) then
+			requestSubtitleHide()
+			setMainMenuIntroState(false, false)
+		end
+
+		return
+	end
+
+	requestSubtitleShow(CONCIERGE_CHECK_IN_SUBTITLE, CONCIERGE_SUBTITLE_DURATION_SECONDS)
+
+	local subtitleEndsAt = os.clock() + CONCIERGE_SUBTITLE_DURATION_SECONDS
+
+	while os.clock() < subtitleEndsAt do
+		if not isCurrentActivation(serial) then
+			return
+		end
+
+		task.wait()
+	end
+
+	if isCurrentActivation(serial) then
+		requestSubtitleHide()
+		setHoldCameraCFrame(conciergeCFrame)
+		applyCameraOwnership()
+		setMainMenuIntroState(false, true)
+		mainMenuIntroCompleteRequest:FireServer()
+		debugPrint("First-visit onboarding intro complete at CameraConcierge")
+	end
+end
+
+local function playReturningIntro(serial)
+	local currentCamera = getCamera()
+
+	if not currentCamera or not sceneClone or not isCurrentActivation(serial) then
+		if isCurrentActivation(serial) then
+			setMainMenuIntroState(false, false)
+		end
+
+		return
+	end
+
+	setMainMenuIntroState(true, false)
+	requestSubtitleHide()
+
+	local navigatorCFrame = getMarkerCFrame("CameraNavigatorDesk")
+	local driftStartCFrame = navigatorCFrame
+		* CFrame.new(0.35, 0.08, 0.25)
+		* CFrame.Angles(math.rad(-0.6), math.rad(1), 0)
+
+	setHoldCameraCFrame(driftStartCFrame)
+	applyCameraOwnership()
+	currentCamera.CFrame = driftStartCFrame
+
+	if tweenCameraTo(navigatorCFrame, RETURNING_INTRO_TWEEN_SECONDS, serial) then
+		setHoldCameraCFrame(navigatorCFrame)
+		applyCameraOwnership()
+		setMainMenuView(VIEW_NAVIGATOR)
+		setMainMenuIntroState(false, true)
+		debugPrint("Returning intro complete at CameraNavigatorDesk")
+	elseif isCurrentActivation(serial) then
+		setMainMenuIntroState(false, false)
+	end
+end
+
+local function playIntro(serial)
+	local introVariant = getIntroVariant()
+
+	if introVariant == INTRO_VARIANT_FIRST_VISIT_ONBOARDING then
+		playFirstVisitOnboardingIntro(serial)
+	elseif introVariant == INTRO_VARIANT_FIRST_VISIT then
+		playFirstVisitIntro(serial)
+	else
+		playReturningIntro(serial)
 	end
 end
 
@@ -440,6 +592,8 @@ local function deactivate()
 	isActive = false
 	isTweening = false
 	holdCameraCFrame = nil
+	idleBaseCFrame = nil
+	idleStartedAt = 0
 	cancelTween()
 	destroyLocalScenes()
 	setMainMenuCameraActive(false)
@@ -473,10 +627,12 @@ local function activate()
 	activationSerial += 1
 	local serial = activationSerial
 	isActive = true
+	idleBaseCFrame = nil
+	idleStartedAt = 0
 	setMainMenuCameraActive(true)
 	setMainMenuIntroState(true, false)
 	clearMainMenuView()
-	debugPrint("Cinematic activates")
+	debugPrint("Cinematic activates", getIntroVariant())
 
 	task.spawn(function()
 		playIntro(serial)
@@ -524,7 +680,7 @@ local function requestView(viewName)
 
 	task.spawn(function()
 		if tweenCameraTo(markerCFrame, CAMERA_VIEW_TWEEN_SECONDS, serial) then
-			holdCameraCFrame = markerCFrame
+			setHoldCameraCFrame(markerCFrame)
 			applyCameraOwnership()
 			setMainMenuView(viewName)
 			debugPrint("View switch complete", viewName)
@@ -569,6 +725,7 @@ player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(scheduleRefresh)
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(scheduleRefresh)
 player:GetAttributeChangedSignal("OnboardingStep"):Connect(scheduleRefresh)
 player:GetAttributeChangedSignal("ControlMode"):Connect(scheduleRefresh)
+player:GetAttributeChangedSignal("MainMenuIntroVariant"):Connect(scheduleRefresh)
 
 mainMenuCameraViewRequest.Event:Connect(function(payload)
 	if typeof(payload) ~= "table" then

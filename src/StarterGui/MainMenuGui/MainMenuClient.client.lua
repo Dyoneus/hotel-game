@@ -803,6 +803,12 @@ local function isCinematicMenuCameraActive()
 	return player:GetAttribute("MainMenuCameraActive") == true
 end
 
+local function isPendingOnboardingIntro()
+	return player:GetAttribute("PendingOnboardingAfterIntro") == true
+		and player:GetAttribute("MainMenuIntroVariant") == "FirstVisitOnboarding"
+		and player:GetAttribute("CurrentRoomName") == nil
+end
+
 local function getMainMenuView()
 	return player:GetAttribute("MainMenuView") == VIEW_WORK and VIEW_WORK or VIEW_NAVIGATOR
 end
@@ -821,7 +827,10 @@ local function shouldShowCinematicWorkPanel()
 end
 
 local function shouldHideLegacyPanelForCinematic()
-	return player:GetAttribute("OnboardingStep") == "Complete"
+	return (
+			player:GetAttribute("OnboardingStep") == "Complete"
+			or isPendingOnboardingIntro()
+		)
 		and player:GetAttribute("CurrentRoomName") == nil
 		and (
 			isCinematicMenuCameraActive()
@@ -921,7 +930,7 @@ local function setWorkPanelOpen(isOpen)
 end
 
 local function shouldShowMainMenu()
-	if player:GetAttribute("OnboardingStep") ~= "Complete" then
+	if player:GetAttribute("OnboardingStep") ~= "Complete" and not isPendingOnboardingIntro() then
 		return false
 	end
 
@@ -1247,6 +1256,10 @@ local function updateGameplayGuiSuppression(isMainMenuActive)
 end
 
 local function requestNavigatorOpen()
+	if isPendingOnboardingIntro() or player:GetAttribute("OnboardingStep") ~= "Complete" then
+		return
+	end
+
 	local payload = {
 		Mode = "MainMenuDocked",
 	}
@@ -1505,6 +1518,8 @@ player:GetAttributeChangedSignal("OnboardingStep"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("MainMenuCameraActive"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("MainMenuIntroPlaying"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("MainMenuIntroComplete"):Connect(updateMainMenu)
+player:GetAttributeChangedSignal("MainMenuIntroVariant"):Connect(updateMainMenu)
+player:GetAttributeChangedSignal("PendingOnboardingAfterIntro"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("MainMenuView"):Connect(updateMainMenu)
 
 task.defer(updateMainMenu)

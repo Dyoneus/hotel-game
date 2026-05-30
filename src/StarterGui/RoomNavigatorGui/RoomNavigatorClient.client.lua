@@ -1157,7 +1157,16 @@ local function shouldShowRoomsButton()
 		and player:GetAttribute("ControlMode") == "Hotel"
 end
 
+local function isFirstVisitOnboardingIntro()
+	return player:GetAttribute("PendingOnboardingAfterIntro") == true
+		or player:GetAttribute("MainMenuIntroVariant") == "FirstVisitOnboarding"
+end
+
 local function isMainMenuActive()
+	if isFirstVisitOnboardingIntro() then
+		return false
+	end
+
 	if player:GetAttribute("OnboardingStep") ~= "Complete" then
 		return false
 	end
@@ -3252,6 +3261,17 @@ ui.closeButton.MouseButton1Click:Connect(function()
 end)
 
 local function syncMainMenuNavigatorState()
+	if isFirstVisitOnboardingIntro() or player:GetAttribute("OnboardingStep") ~= "Complete" then
+		if ui.panel.Visible then
+			setPanelVisible(false, { ForceClose = true })
+		else
+			updateCloseButtonForMode()
+			updateOpenButton()
+		end
+
+		return
+	end
+
 	if isMainMenuActive() then
 		applyPanelLayout(getMainMenuPanelLayout())
 
@@ -3298,6 +3318,15 @@ local function syncMainMenuNavigatorState()
 end
 
 openRoomNavigator.Event:Connect(function(payload)
+	if isFirstVisitOnboardingIntro() or player:GetAttribute("OnboardingStep") ~= "Complete" then
+		if ui.panel.Visible then
+			setPanelVisible(false, { ForceClose = true })
+		end
+
+		updateOpenButton()
+		return
+	end
+
 	local mode = nil
 
 	if typeof(payload) == "table" then
@@ -3590,6 +3619,8 @@ player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(syncMainMenuNavigato
 player:GetAttributeChangedSignal("MainMenuCameraActive"):Connect(syncMainMenuNavigatorState)
 player:GetAttributeChangedSignal("MainMenuIntroPlaying"):Connect(syncMainMenuNavigatorState)
 player:GetAttributeChangedSignal("MainMenuIntroComplete"):Connect(syncMainMenuNavigatorState)
+player:GetAttributeChangedSignal("MainMenuIntroVariant"):Connect(syncMainMenuNavigatorState)
+player:GetAttributeChangedSignal("PendingOnboardingAfterIntro"):Connect(syncMainMenuNavigatorState)
 player:GetAttributeChangedSignal("MainMenuView"):Connect(syncMainMenuNavigatorState)
 
 renderNavigator()
