@@ -19,6 +19,11 @@ ReplicatedStorage
       CameraConcierge
       CameraNavigatorDesk
       CameraWorkDesk
+      Entrance
+        EntranceDoorLeft
+        EntranceDoorRight
+        EntranceDoorLeftOpen
+        EntranceDoorRightOpen
       ConciergeNPC
       AmbientNPCs
       Desk
@@ -43,6 +48,12 @@ Markers are visible and labeled for setup. They use full `CFrame` orientation, s
 
 Future runtime camera code should read these marker CFrames, hide marker visuals, and tween the camera while the player is in Main Menu.
 
+## Entrance Door Animation
+
+The generated `Entrance` model includes visible `EntranceDoorLeft` and `EntranceDoorRight` panels plus invisible `EntranceDoorLeftOpen` and `EntranceDoorRightOpen` marker parts. `MainMenuCameraClient` tweens the visible door panels to those marker CFrames during the first-time onboarding intro only.
+
+The open marker parts are non-colliding, non-querying, and hidden at runtime. Move or rotate them in Studio to tune how wide the doors open. Returning Main Menu visits use the shorter returning camera flow and do not replay the door-opening animation.
+
 ## Scene Purpose
 
 The scene is intended to be visual-only and cloned locally by a future client script. It should not affect gameplay collisions, pathing, room joins, public rooms, or Work rewards.
@@ -54,6 +65,7 @@ Current placeholder parts are non-colliding, non-touching, and non-querying. The
 The generated lobby includes:
 
 - Entrance floor path
+- First-visit entrance door panels with open-position markers
 - Concierge helpdesk
 - Back and side walls
 - Side coffee tables and chairs

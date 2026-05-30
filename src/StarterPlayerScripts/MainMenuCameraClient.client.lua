@@ -20,6 +20,8 @@ local CAMERA_CONCIERGE_TWEEN_SECONDS = 2.5
 local CAMERA_NAVIGATOR_TWEEN_SECONDS = 1.5
 local CAMERA_VIEW_TWEEN_SECONDS = 0.85
 local RETURNING_INTRO_TWEEN_SECONDS = 0.9
+local ENTRANCE_DOOR_TWEEN_SECONDS = 1.25
+local ENTRANCE_DOOR_CAMERA_DELAY_SECONDS = 0.35
 local IDLE_CAMERA_SWAY_POSITION = 0.045
 local IDLE_CAMERA_SWAY_ROTATION = math.rad(0.28)
 local CONCIERGE_SUBTITLE_DELAY_SECONDS = 1.05
@@ -48,6 +50,7 @@ local FALLBACK_CFRAMES = {
 local camera = Workspace.CurrentCamera
 local sceneClone = nil
 local activeTween = nil
+local activeDoorTweens = {}
 local activeTweenSerial = 0
 local refreshQueued = false
 local isActive = false
@@ -58,6 +61,7 @@ local idleBaseCFrame = nil
 local idleStartedAt = 0
 local missingSceneWarned = false
 local missingMarkerWarned = {}
+local missingDoorWarned = {}
 local isCurrentActivation = nil
 
 local function getOrCreateClientEvent(name)
@@ -368,6 +372,14 @@ local function cancelTween()
 	end
 end
 
+local function cancelDoorTweens()
+	for _, tween in ipairs(activeDoorTweens) do
+		tween:Cancel()
+	end
+
+	table.clear(activeDoorTweens)
+end
+
 isCurrentActivation = function(serial)
 	return isActive and activationSerial == serial and shouldUseMainMenuCamera()
 end
@@ -430,6 +442,83 @@ local function tweenCameraTo(targetCFrame, durationSeconds, serial)
 	debugPrint("Camera tween finishes", tostring(playbackState))
 
 	return isCurrentActivation(serial)
+end
+
+local function getDoorPart(partName)
+	local part = sceneClone and sceneClone:FindFirstChild(partName, true)
+
+	if part and part:IsA("BasePart") then
+		return part
+	end
+
+	if DEBUG_MAIN_MENU_CAMERA and not missingDoorWarned[partName] then
+		missingDoorWarned[partName] = true
+		warn("MainMenuCameraClient: missing entrance door part " .. partName .. "; skipping door animation.")
+	end
+
+	return nil
+end
+
+local function createDoorTween(doorName, openMarkerName)
+	local doorPart = getDoorPart(doorName)
+	local openMarker = getDoorPart(openMarkerName)
+
+	if not doorPart or not openMarker then
+		return nil
+	end
+
+	local tween = TweenService:Create(
+		doorPart,
+		TweenInfo.new(ENTRANCE_DOOR_TWEEN_SECONDS, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		{
+			CFrame = openMarker.CFrame,
+		}
+	)
+
+	table.insert(activeDoorTweens, tween)
+
+	return tween
+end
+
+local function playEntranceDoorOpenAnimation(serial)
+	if not sceneClone or not isCurrentActivation(serial) then
+		return false
+	end
+
+	cancelDoorTweens()
+
+	local leftTween = createDoorTween("EntranceDoorLeft", "EntranceDoorLeftOpen")
+	local rightTween = createDoorTween("EntranceDoorRight", "EntranceDoorRightOpen")
+
+	if not leftTween and not rightTween then
+		return false
+	end
+
+	debugPrint("Entrance door animation starts")
+
+	if leftTween then
+		leftTween:Play()
+	end
+
+	if rightTween then
+		rightTween:Play()
+	end
+
+	return true
+end
+
+local function waitDuringActivation(seconds, serial)
+	local endsAt = os.clock() + seconds
+
+	while os.clock() < endsAt do
+		if not isCurrentActivation(serial) then
+			return false
+		end
+
+		task.wait()
+	end
+
+	return true
 end
 
 local function playFirstVisitIntro(serial)
@@ -499,6 +588,12 @@ local function playFirstVisitOnboardingIntro(serial)
 	setHoldCameraCFrame(startCFrame)
 	applyCameraOwnership()
 	currentCamera.CFrame = startCFrame
+
+	if playEntranceDoorOpenAnimation(serial)
+		and not waitDuringActivation(ENTRANCE_DOOR_CAMERA_DELAY_SECONDS, serial) then
+
+		return
+	end
 
 	if not tweenCameraTo(conciergeCFrame, CAMERA_CONCIERGE_TWEEN_SECONDS, serial) then
 		if isCurrentActivation(serial) then
@@ -595,6 +690,7 @@ local function deactivate()
 	idleBaseCFrame = nil
 	idleStartedAt = 0
 	cancelTween()
+	cancelDoorTweens()
 	destroyLocalScenes()
 	setMainMenuCameraActive(false)
 	setMainMenuIntroState(false, false)

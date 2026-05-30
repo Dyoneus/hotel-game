@@ -22,6 +22,7 @@ local COLORS = {
 	DarkWood = Color3.fromRGB(82, 56, 39),
 	Wood = Color3.fromRGB(126, 83, 50),
 	WoodLight = Color3.fromRGB(164, 112, 67),
+	Door = Color3.fromRGB(94, 56, 36),
 	Gold = Color3.fromRGB(222, 178, 88),
 	Paper = Color3.fromRGB(244, 232, 198),
 	PaperInk = Color3.fromRGB(64, 56, 47),
@@ -416,6 +417,66 @@ createPlant(props, "Plant_RightEntrance", Vector3.new(36, 0.2, 29))
 createPlant(props, "Plant_LeftDesk", Vector3.new(-30, 0.2, -28))
 createPlant(props, "Plant_RightDesk", Vector3.new(30, 0.2, -28))
 
+local entrance = Instance.new("Model")
+entrance.Name = "Entrance"
+entrance.Parent = scene
+
+-- Door panels and open-position markers are used by MainMenuCameraClient for
+-- the first-time onboarding check-in intro. Adjust the closed panels or marker
+-- CFrames in Studio if you retune the entrance camera path.
+local entranceDoorLeft = createPart(
+	entrance,
+	"EntranceDoorLeft",
+	Vector3.new(5.8, 7.2, 0.35),
+	CFrame.new(-2.95, 3.75, 38.05),
+	COLORS.Door,
+	Enum.Material.Wood,
+	0
+)
+local entranceDoorRight = createPart(
+	entrance,
+	"EntranceDoorRight",
+	Vector3.new(5.8, 7.2, 0.35),
+	CFrame.new(2.95, 3.75, 38.05),
+	COLORS.Door,
+	Enum.Material.Wood,
+	0
+)
+
+local entranceDoorLeftOpen = createPart(
+	entrance,
+	"EntranceDoorLeftOpen",
+	Vector3.new(1, 1, 1),
+	CFrame.new(-7.2, 3.75, 36.35) * CFrame.Angles(0, math.rad(-72), 0),
+	COLORS.MarkerTarget,
+	Enum.Material.Neon,
+	1
+)
+local entranceDoorRightOpen = createPart(
+	entrance,
+	"EntranceDoorRightOpen",
+	Vector3.new(1, 1, 1),
+	CFrame.new(7.2, 3.75, 36.35) * CFrame.Angles(0, math.rad(72), 0),
+	COLORS.MarkerTarget,
+	Enum.Material.Neon,
+	1
+)
+local doorOpenFocus = createPart(
+	entrance,
+	"DoorOpenFocus",
+	Vector3.new(0.8, 0.8, 0.8),
+	CFrame.new(0, 4.1, 34),
+	COLORS.MarkerTarget,
+	Enum.Material.Neon,
+	1
+)
+
+entranceDoorLeft:SetAttribute("AnimatedEntranceDoor", true)
+entranceDoorRight:SetAttribute("AnimatedEntranceDoor", true)
+entranceDoorLeftOpen:SetAttribute("MainMenuSceneMarker", true)
+entranceDoorRightOpen:SetAttribute("MainMenuSceneMarker", true)
+doorOpenFocus:SetAttribute("MainMenuSceneMarker", true)
+
 local desk = Instance.new("Model")
 desk.Name = "Desk"
 desk.Parent = scene
@@ -507,6 +568,7 @@ end
 
 print(TOOL_PREFIX .. " Created ReplicatedStorage." .. SCENE_FOLDER_NAME .. "." .. SCENE_NAME)
 print(TOOL_PREFIX .. " Markers: MainMenuAnchor, CameraStart, CameraConcierge, CameraNavigatorDesk, CameraWorkDesk")
+print(TOOL_PREFIX .. " Entrance doors: Entrance.EntranceDoorLeft/Right with EntranceDoorLeftOpen/RightOpen markers")
 print(TOOL_PREFIX .. " Desk targets: NavigatorPaperTarget=" .. tostring(navigatorPaperTarget.Position) .. ", WorkPaperTarget=" .. tostring(workPaperTarget.Position))
 print(TOOL_PREFIX .. " CameraStart=" .. tostring(cameraStart.Position))
 print(TOOL_PREFIX .. " CameraConcierge=" .. tostring(cameraConcierge.Position))
