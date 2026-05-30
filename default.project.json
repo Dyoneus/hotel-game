@@ -63,6 +63,9 @@
       "PlayerCollisionServer": {
         "$path": "src/ServerScriptService/PlayerCollisionServer.server.lua"
       },
+      "PublicActivityServer": {
+        "$path": "src/ServerScriptService/PublicActivityServer.server.lua"
+      },
       "RoomModeServer": {
         "$path": "src/ServerScriptService/RoomModeServer.server.lua"
       },
