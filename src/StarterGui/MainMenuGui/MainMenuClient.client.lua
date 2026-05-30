@@ -49,6 +49,8 @@ local function getOrCreateClientEvent(name)
 end
 
 local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
+local currencyRefreshRequested = getOrCreateClientEvent("CurrencyRefreshRequested")
+local currencyLocalDelta = getOrCreateClientEvent("CurrencyLocalDelta")
 
 local MAIN_MENU_BACKGROUND_IMAGE = ""
 local HOTEL_TITLE = "Hotel"
@@ -75,6 +77,7 @@ local workRequestPending = false
 local activeWorkAttempt = nil
 local progressToken = 0
 local cooldownToken = 0
+local rewardFeedbackSerial = 0
 local lastWorkStatusMessage = "Choose a job to begin."
 local lastWorkStatusIsError = false
 
@@ -427,6 +430,21 @@ placeholderTitle.Font = Enum.Font.GothamBold
 placeholderTitle.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 3
 placeholderTitle.Parent = placeholderCard
 
+local rewardFeedbackLabel = Instance.new("TextLabel")
+rewardFeedbackLabel.Name = "RewardFeedback"
+rewardFeedbackLabel.AnchorPoint = Vector2.new(1, 0)
+rewardFeedbackLabel.Position = UDim2.new(1, -12, 0, 8)
+rewardFeedbackLabel.Size = UDim2.fromOffset(104, 22)
+rewardFeedbackLabel.BackgroundTransparency = 1
+rewardFeedbackLabel.Text = ""
+rewardFeedbackLabel.TextColor3 = Color3.fromRGB(45, 116, 62)
+rewardFeedbackLabel.TextSize = 14
+rewardFeedbackLabel.TextXAlignment = Enum.TextXAlignment.Right
+rewardFeedbackLabel.Font = Enum.Font.GothamBold
+rewardFeedbackLabel.Visible = false
+rewardFeedbackLabel.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 4
+rewardFeedbackLabel.Parent = placeholderCard
+
 local placeholderDescription = Instance.new("TextLabel")
 placeholderDescription.Name = "Description"
 placeholderDescription.Position = UDim2.fromOffset(14, 32)
@@ -590,6 +608,8 @@ local function setWorkPanelOpen(isOpen)
 			end
 		end)
 	elseif renderWorkPanel then
+		rewardFeedbackSerial += 1
+		rewardFeedbackLabel.Visible = false
 		renderWorkPanel()
 	end
 end
@@ -624,6 +644,55 @@ local function setWorkStatus(message, isError)
 	workBody.TextColor3 = lastWorkStatusIsError
 		and Color3.fromRGB(136, 55, 45)
 		or Color3.fromRGB(71, 69, 58)
+end
+
+local function showRewardFeedback(rewardAmount, rewardCurrency)
+	local safeAmount = tonumber(rewardAmount) or 0
+
+	if safeAmount <= 0 then
+		return
+	end
+
+	rewardFeedbackSerial += 1
+	local currentSerial = rewardFeedbackSerial
+
+	rewardFeedbackLabel.Text = "+" .. tostring(math.floor(safeAmount)) .. " " .. tostring(rewardCurrency or "Dollars")
+	rewardFeedbackLabel.Visible = true
+
+	task.delay(3, function()
+		if rewardFeedbackSerial == currentSerial then
+			rewardFeedbackLabel.Visible = false
+		end
+	end)
+end
+
+local function publishDollarRewardToHud(rewardAmount, newCurrencyBalance)
+	local safeAmount = tonumber(rewardAmount) or 0
+
+	if safeAmount <= 0 then
+		return
+	end
+
+	local payload = {
+		CurrencyKey = "Dollars",
+		Amount = math.floor(safeAmount),
+		Delta = math.floor(safeAmount),
+		Reason = "WorkActivityReward",
+	}
+
+	if typeof(newCurrencyBalance) == "number"
+		and newCurrencyBalance == newCurrencyBalance
+		and newCurrencyBalance >= 0
+		and newCurrencyBalance < math.huge then
+
+		payload.Balance = math.floor(newCurrencyBalance)
+	end
+
+	currencyLocalDelta:Fire(payload)
+	currencyRefreshRequested:Fire({
+		Reason = "WorkActivityReward",
+		Force = true,
+	})
 end
 
 local function setCooldownRemaining(activityId, remainingSeconds)
@@ -929,6 +998,8 @@ startWorkButton.MouseButton1Click:Connect(function()
 
 	workRequestPending = true
 	setWorkStatus("Starting work...", false)
+	rewardFeedbackSerial += 1
+	rewardFeedbackLabel.Visible = false
 	renderWorkPanel()
 	workActivityRequest:FireServer("StartActivity", {
 		ActivityId = activity.ActivityId,
@@ -1036,6 +1107,11 @@ workActivityResult.OnClientEvent:Connect(function(response)
 
 		if response.RemainingCooldown then
 			setCooldownRemaining(response.ActivityId, response.RemainingCooldown)
+		end
+
+		if response.Success == true and response.RewardCurrency == "Dollars" then
+			showRewardFeedback(response.RewardAmount, response.RewardCurrency)
+			publishDollarRewardToHud(response.RewardAmount, response.NewCurrencyBalance)
 		end
 
 		setWorkStatus(

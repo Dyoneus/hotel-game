@@ -1,9 +1,11 @@
 -- ServerScriptService/WorkActivityServer.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
 local WorkActivityConfig = require(sharedFolder:WaitForChild("WorkActivityConfig"))
+local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
 
 local remoteEvents = ReplicatedStorage:FindFirstChild("RemoteEvents")
 
@@ -158,6 +160,25 @@ local function validateWorkStartLocation(player)
 	return true, nil
 end
 
+local function validateWorkReward(activity)
+	if activity.RewardCurrency ~= "Dollars" then
+		return false, "Invalid work reward currency."
+	end
+
+	local rewardAmount = activity.RewardAmount
+
+	if typeof(rewardAmount) ~= "number"
+		or rewardAmount ~= rewardAmount
+		or rewardAmount <= 0
+		or rewardAmount >= math.huge
+		or rewardAmount ~= math.floor(rewardAmount) then
+
+		return false, "Invalid work reward amount."
+	end
+
+	return true, nil, rewardAmount
+end
+
 local function buildCooldownsForActivities(userId, activities)
 	local activityCooldowns = {}
 
@@ -310,16 +331,77 @@ local function handleCompleteActivity(player, payload)
 		return
 	end
 
+	local locationValid, locationMessage = validateWorkStartLocation(player)
+
+	if not locationValid then
+		userAttempts[activity.ActivityId] = nil
+
+		sendResult(player, {
+			Kind = "CompleteActivity",
+			Success = false,
+			Message = locationMessage,
+			ActivityId = activity.ActivityId,
+		})
+		return
+	end
+
+	local remainingCooldown = getCooldownRemaining(player.UserId, activity.ActivityId)
+
+	if remainingCooldown > 0 then
+		userAttempts[activity.ActivityId] = nil
+
+		sendResult(player, {
+			Kind = "CompleteActivity",
+			Success = false,
+			Message = "Please wait before working again.",
+			ActivityId = activity.ActivityId,
+			RemainingCooldown = remainingCooldown,
+		})
+		return
+	end
+
+	local rewardValid, rewardMessage, rewardAmount = validateWorkReward(activity)
+
+	if not rewardValid then
+		userAttempts[activity.ActivityId] = nil
+
+		sendResult(player, {
+			Kind = "CompleteActivity",
+			Success = false,
+			Message = rewardMessage,
+			ActivityId = activity.ActivityId,
+		})
+		return
+	end
+
 	userAttempts[activity.ActivityId] = nil
+
+	local grantSuccess, grantMessage, newDollarBalance = RoomPersistence.AddDollars(
+		player,
+		rewardAmount,
+		"WorkActivity:" .. activity.ActivityId
+	)
+
+	if not grantSuccess then
+		sendResult(player, {
+			Kind = "CompleteActivity",
+			Success = false,
+			Message = grantMessage or "Could not grant work reward.",
+			ActivityId = activity.ActivityId,
+		})
+		return
+	end
+
 	getUserActivityTable(cooldowns, player.UserId)[activity.ActivityId] = now + activity.CooldownSeconds
 
 	sendResult(player, {
 		Kind = "CompleteActivity",
 		Success = true,
-		Message = "Work complete. Rewards are not enabled yet.",
+		Message = "Work complete! You earned " .. tostring(rewardAmount) .. " Dollars.",
 		ActivityId = activity.ActivityId,
-		RewardAmount = activity.RewardAmount,
-		RewardCurrency = activity.RewardCurrency,
+		RewardAmount = rewardAmount,
+		RewardCurrency = "Dollars",
+		NewCurrencyBalance = newDollarBalance,
 		RemainingCooldown = activity.CooldownSeconds,
 	})
 end
