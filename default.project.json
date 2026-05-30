@@ -63,9 +63,6 @@
       "PlayerCollisionServer": {
         "$path": "src/ServerScriptService/PlayerCollisionServer.server.lua"
       },
-      "PublicActivityServer": {
-        "$path": "src/ServerScriptService/PublicActivityServer.server.lua"
-      },
       "RoomModeServer": {
         "$path": "src/ServerScriptService/RoomModeServer.server.lua"
       },
@@ -74,6 +71,9 @@
       },
       "RoomPersistence": {
         "$path": "src/ServerScriptService/RoomPersistence.lua"
+      },
+      "WorkActivityServer": {
+        "$path": "src/ServerScriptService/WorkActivityServer.server.lua"
       }
     },
 

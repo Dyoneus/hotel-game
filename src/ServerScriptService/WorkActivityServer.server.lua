@@ -1,9 +1,9 @@
--- ServerScriptService/PublicActivityServer.lua
+-- ServerScriptService/WorkActivityServer.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
-local PublicActivityConfig = require(sharedFolder:WaitForChild("PublicActivityConfig"))
+local WorkActivityConfig = require(sharedFolder:WaitForChild("WorkActivityConfig"))
 
 local remoteEvents = ReplicatedStorage:FindFirstChild("RemoteEvents")
 
@@ -33,18 +33,15 @@ local function getOrCreateRemoteEvent(name)
 	return remoteEvent
 end
 
-local publicActivityRequest = getOrCreateRemoteEvent("PublicActivityRequest")
-local publicActivityResult = getOrCreateRemoteEvent("PublicActivityResult")
+local workActivityRequest = getOrCreateRemoteEvent("WorkActivityRequest")
+local workActivityResult = getOrCreateRemoteEvent("WorkActivityResult")
 
 local REQUEST_COOLDOWN_SECONDS = 0.25
-local DEFAULT_PROXIMITY_STUDS = 10
 local ATTEMPT_EXPIRY_GRACE_SECONDS = 10
 
 local activeAttempts = {}
 local cooldowns = {}
 local lastRequestByUserId = {}
-
-local activeRooms = workspace:WaitForChild("ActiveRooms")
 
 local VALID_ACTIONS = {
 	GetActivities = true,
@@ -63,7 +60,7 @@ local function sendResult(player, payload)
 	payload.Success = payload.Success == true
 	payload.Message = tostring(payload.Message or "")
 
-	publicActivityResult:FireClient(player, payload)
+	workActivityResult:FireClient(player, payload)
 end
 
 local function getSafeActionName(actionName)
@@ -135,116 +132,30 @@ local function getCooldownRemaining(userId, activityId)
 	return remaining
 end
 
-local function getPlayerRootPart(player)
-	local character = player.Character
-
-	if not character then
-		return nil
-	end
-
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-
-	if rootPart and rootPart:IsA("BasePart") then
-		return rootPart
-	end
-
-	return nil
-end
-
-local function getCurrentPublicRoom(player)
-	local currentRoomName = player:GetAttribute("CurrentRoomName")
-
-	if typeof(currentRoomName) ~= "string" or currentRoomName == "" then
-		return nil, "You must be in a public room to do this activity."
-	end
-
-	local roomModel = activeRooms:FindFirstChild(currentRoomName)
-
-	if not roomModel then
-		return nil, "Current room is not available."
-	end
-
-	if roomModel:GetAttribute("RoomType") ~= "PublicSpace" then
-		return nil, "You must be in a public room to do this activity."
-	end
-
-	return roomModel, nil
-end
-
-local function getActivityMarker(roomModel, activity)
-	local markerName = activity.MarkerName
-
-	if typeof(markerName) ~= "string" or markerName == "" then
-		return nil
-	end
-
-	return roomModel:FindFirstChild(markerName, true)
-end
-
-local function getMarkerPosition(marker)
-	if marker:IsA("BasePart") then
-		return marker.Position
-	end
-
-	if marker:IsA("Model") then
-		return marker:GetPivot().Position
-	end
-
-	return nil
-end
-
-local function validateActivityContext(player, activity)
-	local roomModel, roomMessage = getCurrentPublicRoom(player)
-
-	if not roomModel then
-		return false, roomMessage
-	end
-
-	if roomModel:GetAttribute("PublicRoomId") ~= activity.PublicRoomId then
-		return false, "This activity is not available in this room."
-	end
-
-	local rootPart = getPlayerRootPart(player)
-
-	if not rootPart then
-		return false, "Character is not ready."
-	end
-
-	local marker = getActivityMarker(roomModel, activity)
-
-	if not marker then
-		return false, "Activity marker is missing."
-	end
-
-	local markerPosition = getMarkerPosition(marker)
-
-	if not markerPosition then
-		return false, "Activity marker is missing."
-	end
-
-	local maxDistance = typeof(activity.ProximityStuds) == "number"
-		and activity.ProximityStuds
-		or DEFAULT_PROXIMITY_STUDS
-
-	if (rootPart.Position - markerPosition).Magnitude > maxDistance then
-		return false, "Move closer to the activity."
-	end
-
-	return true, nil, roomModel, marker
-end
-
 local function validateActivity(activityId)
-	local activity = PublicActivityConfig.GetActivity(activityId)
+	local activity = WorkActivityConfig.GetActivity(activityId)
 
 	if not activity then
-		return nil, "Unknown activity."
+		return nil, "Unknown work activity."
 	end
 
 	if activity.Enabled ~= true then
-		return nil, "This activity is not available."
+		return nil, "This work activity is not available."
 	end
 
 	return activity, nil
+end
+
+local function validateWorkStartLocation(player)
+	if player:GetAttribute("InHotelMainMenu") ~= true then
+		return false, "Work can only start from the Main Menu."
+	end
+
+	if player:GetAttribute("CurrentRoomName") ~= nil then
+		return false, "Work can only start from the Main Menu."
+	end
+
+	return true, nil
 end
 
 local function buildCooldownsForActivities(userId, activities)
@@ -257,39 +168,25 @@ local function buildCooldownsForActivities(userId, activities)
 	return activityCooldowns
 end
 
-local function handleGetActivities(player, payload)
-	local publicRoomId = payload.PublicRoomId
-	local activities
-
-	if typeof(publicRoomId) == "string" and publicRoomId ~= "" then
-		activities = PublicActivityConfig.GetActivitiesForPublicRoom(publicRoomId)
-	else
-		activities = PublicActivityConfig.GetAllActivities()
-	end
+local function handleGetActivities(player)
+	local activities = WorkActivityConfig.GetAllActivities()
 
 	sendResult(player, {
 		Kind = "Activities",
 		Success = true,
-		Message = "Activities loaded.",
+		Message = "Work activities loaded.",
 		Activities = activities,
 		Cooldowns = buildCooldownsForActivities(player.UserId, activities),
 	})
 end
 
-local function handleGetCooldowns(player, payload)
-	local publicRoomId = payload.PublicRoomId
-	local activities
-
-	if typeof(publicRoomId) == "string" and publicRoomId ~= "" then
-		activities = PublicActivityConfig.GetActivitiesForPublicRoom(publicRoomId)
-	else
-		activities = PublicActivityConfig.GetAllActivities()
-	end
+local function handleGetCooldowns(player)
+	local activities = WorkActivityConfig.GetAllActivities()
 
 	sendResult(player, {
 		Kind = "Cooldowns",
 		Success = true,
-		Message = "Cooldowns loaded.",
+		Message = "Work cooldowns loaded.",
 		Cooldowns = buildCooldownsForActivities(player.UserId, activities),
 	})
 end
@@ -308,29 +205,27 @@ local function handleStartActivity(player, payload)
 		return
 	end
 
+	local locationValid, locationMessage = validateWorkStartLocation(player)
+
+	if not locationValid then
+		sendResult(player, {
+			Kind = "StartActivity",
+			Success = false,
+			Message = locationMessage,
+			ActivityId = activity.ActivityId,
+		})
+		return
+	end
+
 	local remainingCooldown = getCooldownRemaining(player.UserId, activity.ActivityId)
 
 	if remainingCooldown > 0 then
 		sendResult(player, {
 			Kind = "StartActivity",
 			Success = false,
-			Message = "Please wait before doing this activity again.",
+			Message = "Please wait before working again.",
 			ActivityId = activity.ActivityId,
-			Activity = activity,
 			RemainingCooldown = remainingCooldown,
-		})
-		return
-	end
-
-	local validContext, contextMessage = validateActivityContext(player, activity)
-
-	if not validContext then
-		sendResult(player, {
-			Kind = "StartActivity",
-			Success = false,
-			Message = contextMessage,
-			ActivityId = activity.ActivityId,
-			Activity = activity,
 		})
 		return
 	end
@@ -343,9 +238,8 @@ local function handleStartActivity(player, payload)
 		sendResult(player, {
 			Kind = "StartActivity",
 			Success = false,
-			Message = "Activity already started.",
+			Message = "Work already started.",
 			ActivityId = activity.ActivityId,
-			Activity = activity,
 			DurationSeconds = activity.DurationSeconds,
 		})
 		return
@@ -359,12 +253,9 @@ local function handleStartActivity(player, payload)
 	sendResult(player, {
 		Kind = "StartActivity",
 		Success = true,
-		Message = "Activity started.",
+		Message = "Work started.",
 		ActivityId = activity.ActivityId,
-		Activity = activity,
 		DurationSeconds = activity.DurationSeconds,
-		RewardAmount = activity.RewardAmount,
-		RewardCurrency = activity.RewardCurrency,
 	})
 end
 
@@ -389,9 +280,8 @@ local function handleCompleteActivity(player, payload)
 		sendResult(player, {
 			Kind = "CompleteActivity",
 			Success = false,
-			Message = "No active activity attempt.",
+			Message = "No active work attempt.",
 			ActivityId = activity.ActivityId,
-			Activity = activity,
 		})
 		return
 	end
@@ -402,9 +292,8 @@ local function handleCompleteActivity(player, payload)
 		sendResult(player, {
 			Kind = "CompleteActivity",
 			Success = false,
-			Message = "Activity is not complete yet.",
+			Message = "Work is not complete yet.",
 			ActivityId = activity.ActivityId,
-			Activity = activity,
 		})
 		return
 	end
@@ -415,40 +304,23 @@ local function handleCompleteActivity(player, payload)
 		sendResult(player, {
 			Kind = "CompleteActivity",
 			Success = false,
-			Message = "Activity attempt expired.",
+			Message = "Work attempt expired.",
 			ActivityId = activity.ActivityId,
-			Activity = activity,
-		})
-		return
-	end
-
-	local validContext, contextMessage = validateActivityContext(player, activity)
-
-	if not validContext then
-		sendResult(player, {
-			Kind = "CompleteActivity",
-			Success = false,
-			Message = contextMessage,
-			ActivityId = activity.ActivityId,
-			Activity = activity,
 		})
 		return
 	end
 
 	userAttempts[activity.ActivityId] = nil
-
-	local cooldownExpiresAt = now + activity.CooldownSeconds
-	getUserActivityTable(cooldowns, player.UserId)[activity.ActivityId] = cooldownExpiresAt
+	getUserActivityTable(cooldowns, player.UserId)[activity.ActivityId] = now + activity.CooldownSeconds
 
 	sendResult(player, {
 		Kind = "CompleteActivity",
 		Success = true,
-		Message = "Activity complete. Rewards are not enabled yet.",
+		Message = "Work complete. Rewards are not enabled yet.",
 		ActivityId = activity.ActivityId,
-		Activity = activity,
-		RemainingCooldown = activity.CooldownSeconds,
 		RewardAmount = activity.RewardAmount,
 		RewardCurrency = activity.RewardCurrency,
+		RemainingCooldown = activity.CooldownSeconds,
 	})
 end
 
@@ -463,7 +335,7 @@ local function handleRequest(player, actionName, payload)
 		sendResult(player, {
 			Kind = "Unknown",
 			Success = false,
-			Message = "Unknown public activity action.",
+			Message = "Unknown work activity action.",
 		})
 		return
 	end
@@ -472,7 +344,7 @@ local function handleRequest(player, actionName, payload)
 		sendResult(player, {
 			Kind = safeActionName,
 			Success = false,
-			Message = "Please slow down before requesting activities.",
+			Message = "Please slow down before requesting work activities.",
 		})
 		return
 	end
@@ -480,28 +352,28 @@ local function handleRequest(player, actionName, payload)
 	local safePayload = getSafePayload(payload)
 
 	if safeActionName == "GetActivities" then
-		handleGetActivities(player, safePayload)
+		handleGetActivities(player)
 	elseif safeActionName == "StartActivity" then
 		handleStartActivity(player, safePayload)
 	elseif safeActionName == "CompleteActivity" then
 		handleCompleteActivity(player, safePayload)
 	elseif safeActionName == "GetCooldowns" then
-		handleGetCooldowns(player, safePayload)
+		handleGetCooldowns(player)
 	end
 end
 
-publicActivityRequest.OnServerEvent:Connect(function(player, actionName, payload)
+workActivityRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	local success, errorMessage = pcall(function()
 		handleRequest(player, actionName, payload)
 	end)
 
 	if not success then
-		warn("PublicActivityServer request failed:", errorMessage)
+		warn("WorkActivityServer request failed:", errorMessage)
 
 		sendResult(player, {
 			Kind = getSafeActionName(actionName),
 			Success = false,
-			Message = "Activity request failed.",
+			Message = "Work activity request failed.",
 		})
 	end
 end)
