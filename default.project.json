@@ -102,6 +102,9 @@
         "HotelVoidBackgroundClient": {
           "$path": "src/StarterPlayerScripts/HotelVoidBackgroundClient.client.lua"
         },
+        "MainMenuCameraClient": {
+          "$path": "src/StarterPlayerScripts/MainMenuCameraClient.client.lua"
+        },
         "PublicRoomAmbienceClient": {
           "$path": "src/StarterPlayerScripts/PublicRoomAmbienceClient.client.lua"
         },

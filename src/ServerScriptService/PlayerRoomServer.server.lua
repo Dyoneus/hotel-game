@@ -79,6 +79,11 @@ local PUBLIC_ROOM_ZONE_ORIGIN = Vector3.new(100000, 0, 0)
 local PUBLIC_ROOM_SPACING = 10000
 -- Public rooms are intentionally isolated from player rooms. Large public
 -- spaces should set WorldPosition and FootprintRadius in PublicRoomConfig.
+local MAIN_MENU_HOLDING_AREA_NAME = "MainMenuHoldingArea"
+local MAIN_MENU_HOLDING_PLATFORM_NAME = "MainMenuHoldingPlatform"
+local MAIN_MENU_HOLDING_SPAWN_NAME = "MainMenuHoldingSpawn"
+local MAIN_MENU_HOLDING_POSITION = Vector3.new(0, -500, 0)
+local MAIN_MENU_HOLDING_CHARACTER_Y_OFFSET = 2.5
 
 local playerRooms = {}
 local playerRoomSlots = {}
@@ -639,6 +644,130 @@ local function getPlayerRootPart(player)
 	end
 
 	return nil
+end
+
+local function configureHoldingPart(part, size, cframe, canCollide)
+	part.Anchored = true
+	part.CanCollide = canCollide == true
+	part.CanTouch = false
+	part.CanQuery = false
+	part.Transparency = 1
+	part.Size = size
+	part.CFrame = cframe
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+end
+
+local function getOrCreateHoldingPart(parent, name, size, cframe, canCollide)
+	local existing = parent:FindFirstChild(name)
+	local part = existing
+
+	if part and not part:IsA("BasePart") then
+		part:Destroy()
+		part = nil
+	end
+
+	if not part then
+		part = Instance.new("Part")
+		part.Name = name
+		part.Parent = parent
+	end
+
+	configureHoldingPart(part, size, cframe, canCollide)
+
+	return part
+end
+
+local function getOrCreateMainMenuHoldingArea()
+	local holdingArea = workspace:FindFirstChild(MAIN_MENU_HOLDING_AREA_NAME)
+
+	if holdingArea and not holdingArea:IsA("Folder") then
+		warn("Main Menu holding area name is occupied by a non-Folder instance.")
+		return nil, nil
+	end
+
+	if not holdingArea then
+		holdingArea = Instance.new("Folder")
+		holdingArea.Name = MAIN_MENU_HOLDING_AREA_NAME
+		holdingArea.Parent = workspace
+	end
+
+	getOrCreateHoldingPart(
+		holdingArea,
+		MAIN_MENU_HOLDING_PLATFORM_NAME,
+		Vector3.new(80, 1, 80),
+		CFrame.new(MAIN_MENU_HOLDING_POSITION),
+		true
+	)
+
+	local spawnPart = getOrCreateHoldingPart(
+		holdingArea,
+		MAIN_MENU_HOLDING_SPAWN_NAME,
+		Vector3.new(2, 1, 2),
+		CFrame.new(MAIN_MENU_HOLDING_POSITION + Vector3.new(0, 4, 0)),
+		false
+	)
+
+	return holdingArea, spawnPart
+end
+
+local function getCharacterForParking(player)
+	local character = player.Character
+	local deadline = os.clock() + 3
+
+	while not character and player.Parent == Players and os.clock() < deadline do
+		task.wait(0.05)
+		character = player.Character
+	end
+
+	return character
+end
+
+local function clearCharacterVelocities(character)
+	for _, descendant in ipairs(character:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.AssemblyLinearVelocity = Vector3.zero
+			descendant.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+end
+
+local function parkCharacterInMainMenu(player)
+	local _, holdingSpawn = getOrCreateMainMenuHoldingArea()
+
+	if not holdingSpawn then
+		return false
+	end
+
+	local character = getCharacterForParking(player)
+
+	if not character then
+		return false
+	end
+
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+
+	if not rootPart or not rootPart:IsA("BasePart") then
+		rootPart = character:WaitForChild("HumanoidRootPart", 3)
+	end
+
+	if not rootPart or not rootPart:IsA("BasePart") then
+		warn("Could not park character in Main Menu; missing HumanoidRootPart:", player.Name)
+		return false
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if humanoid then
+		humanoid.Sit = false
+		humanoid.PlatformStand = false
+	end
+
+	clearCharacterVelocities(character)
+	character:PivotTo(holdingSpawn.CFrame + Vector3.new(0, MAIN_MENU_HOLDING_CHARACTER_Y_OFFSET, 0))
+	clearCharacterVelocities(character)
+
+	return true
 end
 
 local function isRoomExitInstance(instance)
@@ -1609,6 +1738,7 @@ local function leaveCurrentRoom(player)
 	end
 
 	setPlayerInHotelMainMenu(player, true)
+	parkCharacterInMainMenu(player)
 
 	leaveRoomResult:FireClient(player, true, "Left room.")
 	sendRoomListToAll()
@@ -1627,6 +1757,9 @@ Players.PlayerAdded:Connect(function(player)
 				task.wait(0.2)
 				movePlayerToRoom(player, roomModel)
 			end
+		elseif player:GetAttribute("InHotelMainMenu") == true then
+			task.wait(0.2)
+			parkCharacterInMainMenu(player)
 		end
 	end)
 

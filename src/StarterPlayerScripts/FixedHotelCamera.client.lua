@@ -20,6 +20,22 @@ local CAMERA_LERP_ALPHA = 0.18
 
 local targetCameraCFrame = nil
 
+local function shouldYieldToMainMenuCamera()
+	if player:GetAttribute("MainMenuCameraActive") == true then
+		return true
+	end
+
+	if player:GetAttribute("CurrentRoomName") ~= nil then
+		return false
+	end
+
+	if player:GetAttribute("InHotelMainMenu") == true then
+		return true
+	end
+
+	return player:GetAttribute("OnboardingStep") == "Complete"
+end
+
 local function getCurrentRoomModel()
 	local roomName = player:GetAttribute("CurrentRoomName")
 
@@ -88,6 +104,11 @@ local function getCameraFrame()
 end
 
 local function updateCamera()
+	if shouldYieldToMainMenuCamera() then
+		targetCameraCFrame = nil
+		return
+	end
+
 	local controlMode = player:GetAttribute("ControlMode") or "Hotel"
 
 	if controlMode ~= "Hotel" then
@@ -111,6 +132,11 @@ local function updateCamera()
 end
 
 local function updateCameraMode()
+	if shouldYieldToMainMenuCamera() then
+		targetCameraCFrame = nil
+		return
+	end
+
 	local controlMode = player:GetAttribute("ControlMode") or "Hotel"
 
 	if controlMode ~= "Hotel" then
@@ -122,7 +148,11 @@ end
 player:GetAttributeChangedSignal("ControlMode"):Connect(updateCameraMode)
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
 	targetCameraCFrame = nil
+	updateCameraMode()
 end)
+player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(updateCameraMode)
+player:GetAttributeChangedSignal("MainMenuCameraActive"):Connect(updateCameraMode)
+player:GetAttributeChangedSignal("OnboardingStep"):Connect(updateCameraMode)
 updateCameraMode()
 
 RunService:BindToRenderStep(

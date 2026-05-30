@@ -627,6 +627,17 @@ local function shouldShowMainMenu()
 		or player:GetAttribute("CurrentRoomName") == nil
 end
 
+local function updateCinematicBackgroundState(isMainMenuActive)
+	local cinematicActive = isMainMenuActive == true
+		and player:GetAttribute("MainMenuCameraActive") == true
+
+	background.BackgroundTransparency = cinematicActive and 1 or 0
+	backgroundImage.Visible = (not cinematicActive) and MAIN_MENU_BACKGROUND_IMAGE ~= ""
+	imageShade.Visible = not cinematicActive
+	floorBand.Visible = not cinematicActive
+	skyline.Visible = (not cinematicActive) and MAIN_MENU_BACKGROUND_IMAGE == ""
+end
+
 local function formatSeconds(seconds)
 	local safeSeconds = tonumber(seconds) or 0
 
@@ -955,6 +966,7 @@ local function updateMainMenu()
 	end
 
 	background.Visible = shouldShow
+	updateCinematicBackgroundState(shouldShow)
 	worldInputBlocker.Visible = shouldShow
 	updateGameplayGuiSuppression(shouldShow)
 
@@ -1132,5 +1144,6 @@ end)
 player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(updateMainMenu)
 player:GetAttributeChangedSignal("OnboardingStep"):Connect(updateMainMenu)
+player:GetAttributeChangedSignal("MainMenuCameraActive"):Connect(updateMainMenu)
 
 task.defer(updateMainMenu)
