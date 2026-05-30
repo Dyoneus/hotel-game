@@ -22,6 +22,11 @@ local CAMERA_VIEW_TWEEN_SECONDS = 0.85
 local RETURNING_INTRO_TWEEN_SECONDS = 0.9
 local ENTRANCE_DOOR_TWEEN_SECONDS = 1.25
 local ENTRANCE_DOOR_CAMERA_DELAY_SECONDS = 0.35
+local ENTRANCE_STEP_INSIDE_SECONDS = 1.2
+local ENTRANCE_LOOK_AROUND_PAUSE_SECONDS = 0.3
+local ENTRANCE_LOOK_AROUND_LEFT_SECONDS = 0.7
+local ENTRANCE_LOOK_AROUND_RIGHT_SECONDS = 0.85
+local ENTRANCE_LOOK_AROUND_SETTLE_SECONDS = 0.65
 local IDLE_CAMERA_SWAY_POSITION = 0.045
 local IDLE_CAMERA_SWAY_ROTATION = math.rad(0.28)
 local CONCIERGE_SUBTITLE_DELAY_SECONDS = 1.05
@@ -459,6 +464,16 @@ local function getDoorPart(partName)
 	return nil
 end
 
+local function getOptionalScenePart(partName)
+	local part = sceneClone and sceneClone:FindFirstChild(partName, true)
+
+	if part and part:IsA("BasePart") then
+		return part
+	end
+
+	return nil
+end
+
 local function createDoorTween(doorName, openMarkerName)
 	local doorPart = getDoorPart(doorName)
 	local openMarker = getDoorPart(openMarkerName)
@@ -516,6 +531,60 @@ local function waitDuringActivation(seconds, serial)
 		end
 
 		task.wait()
+	end
+
+	return true
+end
+
+local function getEntranceInsideCFrame(startCFrame, conciergeCFrame)
+	local startPosition = startCFrame.Position
+	local insidePosition = startPosition:Lerp(conciergeCFrame.Position, 0.28)
+	local doorOpenFocus = getOptionalScenePart("DoorOpenFocus")
+
+	if doorOpenFocus then
+		local focusPosition = doorOpenFocus.Position
+		insidePosition = Vector3.new(focusPosition.X, startPosition.Y - 0.25, focusPosition.Z + 2.5)
+	end
+
+	local lookTarget = conciergeCFrame.Position + conciergeCFrame.LookVector * 28
+
+	if (lookTarget - insidePosition).Magnitude < 1 then
+		lookTarget = insidePosition + startCFrame.LookVector * 60
+	end
+
+	return CFrame.lookAt(insidePosition, lookTarget)
+end
+
+local function getEntranceLookAroundCFrames(baseCFrame)
+	return {
+		{
+			CFrame = baseCFrame
+				* CFrame.new(-0.12, 0.04, 0.05)
+				* CFrame.Angles(math.rad(0.2), math.rad(3.1), 0),
+			Duration = ENTRANCE_LOOK_AROUND_LEFT_SECONDS,
+		},
+		{
+			CFrame = baseCFrame
+				* CFrame.new(0.16, -0.02, 0.03)
+				* CFrame.Angles(math.rad(-0.15), math.rad(-2.6), 0),
+			Duration = ENTRANCE_LOOK_AROUND_RIGHT_SECONDS,
+		},
+		{
+			CFrame = baseCFrame
+				* CFrame.new(0.02, 0.03, 0)
+				* CFrame.Angles(math.rad(0.08), math.rad(0.55), 0),
+			Duration = ENTRANCE_LOOK_AROUND_SETTLE_SECONDS,
+		},
+	}
+end
+
+local function playEntranceLookAround(baseCFrame, serial)
+	debugPrint("Entrance lobby look-around starts")
+
+	for _, step in ipairs(getEntranceLookAroundCFrames(baseCFrame)) do
+		if not tweenCameraTo(step.CFrame, step.Duration, serial) then
+			return false
+		end
 	end
 
 	return true
@@ -589,8 +658,16 @@ local function playFirstVisitOnboardingIntro(serial)
 	applyCameraOwnership()
 	currentCamera.CFrame = startCFrame
 
-	if playEntranceDoorOpenAnimation(serial)
-		and not waitDuringActivation(ENTRANCE_DOOR_CAMERA_DELAY_SECONDS, serial) then
+	local doorsStarted = playEntranceDoorOpenAnimation(serial)
+	local doorPauseSeconds = doorsStarted
+		and (ENTRANCE_DOOR_TWEEN_SECONDS + ENTRANCE_DOOR_CAMERA_DELAY_SECONDS)
+		or ENTRANCE_DOOR_CAMERA_DELAY_SECONDS
+	local insideCFrame = getEntranceInsideCFrame(startCFrame, conciergeCFrame)
+
+	if not waitDuringActivation(doorPauseSeconds, serial)
+		or not tweenCameraTo(insideCFrame, ENTRANCE_STEP_INSIDE_SECONDS, serial)
+		or not waitDuringActivation(ENTRANCE_LOOK_AROUND_PAUSE_SECONDS, serial)
+		or not playEntranceLookAround(insideCFrame, serial) then
 
 		return
 	end
