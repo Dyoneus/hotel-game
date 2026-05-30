@@ -105,6 +105,9 @@
         "MainMenuCameraClient": {
           "$path": "src/StarterPlayerScripts/MainMenuCameraClient.client.lua"
         },
+        "MainMenuAmbientNpcClient": {
+          "$path": "src/StarterPlayerScripts/MainMenuAmbientNpcClient.client.lua"
+        },
         "PublicRoomAmbienceClient": {
           "$path": "src/StarterPlayerScripts/PublicRoomAmbienceClient.client.lua"
         },
