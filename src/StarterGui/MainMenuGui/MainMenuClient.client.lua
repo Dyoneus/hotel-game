@@ -51,6 +51,7 @@ end
 
 local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
 local mainMenuCameraViewRequest = getOrCreateClientEvent("MainMenuCameraViewRequest")
+local mainMenuSubtitleRequest = getOrCreateClientEvent("MainMenuSubtitleRequest")
 local currencyRefreshRequested = getOrCreateClientEvent("CurrencyRefreshRequested")
 local currencyLocalDelta = getOrCreateClientEvent("CurrencyLocalDelta")
 
@@ -84,6 +85,7 @@ local lastWorkStatusMessage = "Choose a job to begin."
 local lastWorkStatusIsError = false
 local VIEW_NAVIGATOR = "Navigator"
 local VIEW_WORK = "Work"
+local DEFAULT_CONCIERGE_SUBTITLE_SECONDS = 2.8
 
 local function disableDecorativeInput(guiObject)
 	if not guiObject:IsA("GuiObject") then
@@ -632,6 +634,53 @@ end
 local workViewArrow = createViewArrowButton("WorkViewArrow", "<", UDim2.new(0, 76, 0.54, 0))
 local navigatorViewArrow = createViewArrowButton("NavigatorViewArrow", ">", UDim2.new(1, -76, 0.54, 0))
 
+local conciergeSubtitleFrame = Instance.new("Frame")
+conciergeSubtitleFrame.Name = "ConciergeSubtitle"
+conciergeSubtitleFrame.AnchorPoint = Vector2.new(0.5, 1)
+conciergeSubtitleFrame.Position = UDim2.new(0.5, 0, 1, -82)
+conciergeSubtitleFrame.Size = UDim2.new(0.62, 0, 0, 58)
+conciergeSubtitleFrame.BackgroundColor3 = Color3.fromRGB(24, 20, 17)
+conciergeSubtitleFrame.BackgroundTransparency = 1
+conciergeSubtitleFrame.BorderSizePixel = 0
+conciergeSubtitleFrame.Visible = false
+conciergeSubtitleFrame.Active = false
+conciergeSubtitleFrame.Selectable = false
+conciergeSubtitleFrame.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 30
+conciergeSubtitleFrame.Parent = background
+
+local conciergeSubtitleSize = Instance.new("UISizeConstraint")
+conciergeSubtitleSize.MinSize = Vector2.new(320, 48)
+conciergeSubtitleSize.MaxSize = Vector2.new(720, 64)
+conciergeSubtitleSize.Parent = conciergeSubtitleFrame
+
+local conciergeSubtitleCorner = Instance.new("UICorner")
+conciergeSubtitleCorner.CornerRadius = UDim.new(0, 10)
+conciergeSubtitleCorner.Parent = conciergeSubtitleFrame
+
+local conciergeSubtitleStroke = Instance.new("UIStroke")
+conciergeSubtitleStroke.Color = Color3.fromRGB(225, 205, 158)
+conciergeSubtitleStroke.Thickness = 1
+conciergeSubtitleStroke.Transparency = 1
+conciergeSubtitleStroke.Parent = conciergeSubtitleFrame
+
+local conciergeSubtitleText = Instance.new("TextLabel")
+conciergeSubtitleText.Name = "Text"
+conciergeSubtitleText.Position = UDim2.fromOffset(18, 8)
+conciergeSubtitleText.Size = UDim2.new(1, -36, 1, -16)
+conciergeSubtitleText.BackgroundTransparency = 1
+conciergeSubtitleText.Text = ""
+conciergeSubtitleText.TextColor3 = Color3.fromRGB(255, 248, 226)
+conciergeSubtitleText.TextTransparency = 1
+conciergeSubtitleText.TextSize = 18
+conciergeSubtitleText.TextWrapped = true
+conciergeSubtitleText.TextXAlignment = Enum.TextXAlignment.Center
+conciergeSubtitleText.TextYAlignment = Enum.TextYAlignment.Center
+conciergeSubtitleText.Font = Enum.Font.GothamMedium
+conciergeSubtitleText.Active = false
+conciergeSubtitleText.Selectable = false
+conciergeSubtitleText.ZIndex = conciergeSubtitleFrame.ZIndex + 1
+conciergeSubtitleText.Parent = conciergeSubtitleFrame
+
 disableDecorativeInput(background)
 
 for _, descendant in ipairs(background:GetDescendants()) do
@@ -649,6 +698,106 @@ local requestWorkActivities = nil
 local requestWorkCooldowns = nil
 local renderWorkPanel = nil
 local stopLocalWorkProgress = nil
+local subtitleSerial = 0
+local subtitleTweens = {}
+
+local function cancelSubtitleTweens()
+	for _, tween in ipairs(subtitleTweens) do
+		tween:Cancel()
+	end
+
+	subtitleTweens = {}
+end
+
+local function tweenSubtitle(properties, durationSeconds)
+	local tween = TweenService:Create(
+		conciergeSubtitleFrame,
+		TweenInfo.new(durationSeconds, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		properties.Frame or {}
+	)
+	local textTween = TweenService:Create(
+		conciergeSubtitleText,
+		TweenInfo.new(durationSeconds, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		properties.Text or {}
+	)
+	local strokeTween = TweenService:Create(
+		conciergeSubtitleStroke,
+		TweenInfo.new(durationSeconds, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+		properties.Stroke or {}
+	)
+
+	subtitleTweens = { tween, textTween, strokeTween }
+	tween:Play()
+	textTween:Play()
+	strokeTween:Play()
+
+	return tween
+end
+
+local function hideConciergeSubtitle()
+	subtitleSerial += 1
+	cancelSubtitleTweens()
+	conciergeSubtitleFrame.Visible = false
+	conciergeSubtitleFrame.BackgroundTransparency = 1
+	conciergeSubtitleStroke.Transparency = 1
+	conciergeSubtitleText.TextTransparency = 1
+	conciergeSubtitleText.Text = ""
+end
+
+local function showConciergeSubtitle(text, durationSeconds)
+	if not background.Visible or player:GetAttribute("MainMenuIntroPlaying") ~= true then
+		return
+	end
+
+	subtitleSerial += 1
+	local currentSerial = subtitleSerial
+	local displayDuration = tonumber(durationSeconds) or DEFAULT_CONCIERGE_SUBTITLE_SECONDS
+	displayDuration = math.clamp(displayDuration, 1.2, 4)
+
+	cancelSubtitleTweens()
+	conciergeSubtitleText.Text = tostring(text or "")
+	conciergeSubtitleFrame.Visible = true
+	conciergeSubtitleFrame.BackgroundTransparency = 1
+	conciergeSubtitleStroke.Transparency = 1
+	conciergeSubtitleText.TextTransparency = 1
+
+	tweenSubtitle({
+		Frame = {
+			BackgroundTransparency = 0.24,
+		},
+		Text = {
+			TextTransparency = 0,
+		},
+		Stroke = {
+			Transparency = 0.28,
+		},
+	}, 0.28)
+
+	task.delay(displayDuration, function()
+		if subtitleSerial ~= currentSerial then
+			return
+		end
+
+		local fadeTween = tweenSubtitle({
+			Frame = {
+				BackgroundTransparency = 1,
+			},
+			Text = {
+				TextTransparency = 1,
+			},
+			Stroke = {
+				Transparency = 1,
+			},
+		}, 0.35)
+
+		fadeTween.Completed:Wait()
+
+		if subtitleSerial == currentSerial then
+			conciergeSubtitleFrame.Visible = false
+			conciergeSubtitleText.Text = ""
+		end
+	end)
+end
 
 local function isCinematicMenuCameraActive()
 	return player:GetAttribute("MainMenuCameraActive") == true
@@ -1127,6 +1276,10 @@ local function updateMainMenu()
 	updateGameplayGuiSuppression(shouldShow)
 	syncLegacyMenuPanelVisibility()
 
+	if not shouldShow or player:GetAttribute("MainMenuIntroPlaying") ~= true then
+		hideConciergeSubtitle()
+	end
+
 	if shouldShow and not wasVisible then
 		requestNavigatorOpen()
 	elseif shouldShow then
@@ -1150,6 +1303,31 @@ end)
 
 navigatorViewArrow.MouseButton1Click:Connect(function()
 	requestMainMenuView(VIEW_NAVIGATOR)
+end)
+
+mainMenuSubtitleRequest.Event:Connect(function(payload)
+	if typeof(payload) ~= "table" then
+		return
+	end
+
+	if payload.Action == "Hide" then
+		hideConciergeSubtitle()
+		return
+	end
+
+	if payload.Action ~= "Show" then
+		return
+	end
+
+	local text = payload.Text
+
+	if typeof(text) ~= "string" or text == "" then
+		return
+	end
+
+	-- Future audio can be added here with an owned/approved Roblox SoundId.
+	-- Empty SoundId values are intentionally ignored for this placeholder patch.
+	showConciergeSubtitle(text, payload.DurationSeconds)
 end)
 
 workButton.MouseButton1Click:Connect(function()

@@ -17,6 +17,10 @@ local CAMERA_FIELD_OF_VIEW = 50
 local CAMERA_CONCIERGE_TWEEN_SECONDS = 2.5
 local CAMERA_NAVIGATOR_TWEEN_SECONDS = 1.5
 local CAMERA_VIEW_TWEEN_SECONDS = 0.85
+local CONCIERGE_SUBTITLE_DELAY_SECONDS = 1.05
+local CONCIERGE_SUBTITLE_DURATION_SECONDS = 2.6
+local CONCIERGE_WELCOME_SUBTITLE = "Welcome to the Hotel. The Navigator is ready for you."
+local CONCIERGE_VOICE_SOUND_ID = "" -- Future placeholder: use only an owned/approved Roblox audio asset.
 
 local VIEW_NAVIGATOR = "Navigator"
 local VIEW_WORK = "Work"
@@ -43,6 +47,7 @@ local activationSerial = 0
 local holdCameraCFrame = nil
 local missingSceneWarned = false
 local missingMarkerWarned = {}
+local isCurrentActivation = nil
 
 local function getOrCreateClientEvent(name)
 	local clientEvents = playerGui:FindFirstChild("ClientEvents")
@@ -75,6 +80,7 @@ local function getOrCreateClientEvent(name)
 end
 
 local mainMenuCameraViewRequest = getOrCreateClientEvent("MainMenuCameraViewRequest")
+local mainMenuSubtitleRequest = getOrCreateClientEvent("MainMenuSubtitleRequest")
 
 local function debugPrint(...)
 	if DEBUG_MAIN_MENU_CAMERA then
@@ -108,6 +114,30 @@ end
 local function setMainMenuIntroState(playing, complete)
 	setMainMenuIntroPlaying(playing == true)
 	setMainMenuIntroComplete(complete == true)
+end
+
+local function requestSubtitleHide()
+	mainMenuSubtitleRequest:Fire({
+		Action = "Hide",
+	})
+end
+
+local function requestConciergeSubtitle(serial)
+	task.delay(CONCIERGE_SUBTITLE_DELAY_SECONDS, function()
+		if not isCurrentActivation(serial)
+			or player:GetAttribute("MainMenuIntroPlaying") ~= true
+			or player:GetAttribute("MainMenuIntroComplete") == true then
+
+			return
+		end
+
+		mainMenuSubtitleRequest:Fire({
+			Action = "Show",
+			Text = CONCIERGE_WELCOME_SUBTITLE,
+			DurationSeconds = CONCIERGE_SUBTITLE_DURATION_SECONDS,
+			SoundId = CONCIERGE_VOICE_SOUND_ID,
+		})
+	end)
 end
 
 local function setMainMenuView(viewName)
@@ -286,7 +316,7 @@ local function cancelTween()
 	end
 end
 
-local function isCurrentActivation(serial)
+isCurrentActivation = function(serial)
 	return isActive and activationSerial == serial and shouldUseMainMenuCamera()
 end
 
@@ -362,6 +392,8 @@ local function playIntro(serial)
 	end
 
 	setMainMenuIntroState(true, false)
+	requestSubtitleHide()
+	requestConciergeSubtitle(serial)
 
 	local startCFrame = getMarkerCFrame("CameraStart")
 	local conciergeCFrame = getMarkerCFrame("CameraConcierge")
@@ -373,6 +405,7 @@ local function playIntro(serial)
 
 	if not tweenCameraTo(conciergeCFrame, CAMERA_CONCIERGE_TWEEN_SECONDS, serial) then
 		if isCurrentActivation(serial) then
+			requestSubtitleHide()
 			setMainMenuIntroState(false, false)
 		end
 
@@ -383,9 +416,11 @@ local function playIntro(serial)
 		holdCameraCFrame = navigatorCFrame
 		applyCameraOwnership()
 		setMainMenuView(VIEW_NAVIGATOR)
+		requestSubtitleHide()
 		setMainMenuIntroState(false, true)
 		debugPrint("Intro complete at CameraNavigatorDesk")
 	elseif isCurrentActivation(serial) then
+		requestSubtitleHide()
 		setMainMenuIntroState(false, false)
 	end
 end
@@ -409,6 +444,7 @@ local function deactivate()
 	destroyLocalScenes()
 	setMainMenuCameraActive(false)
 	setMainMenuIntroState(false, false)
+	requestSubtitleHide()
 	clearMainMenuView()
 	debugPrint("Cinematic deactivates")
 
