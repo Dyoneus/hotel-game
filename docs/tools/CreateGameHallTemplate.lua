@@ -37,6 +37,10 @@ local COLORS = {
 	SeatTrim = Color3.fromRGB(45, 59, 76),
 	Board = Color3.fromRGB(42, 61, 72),
 	BoardLine = Color3.fromRGB(219, 214, 145),
+	BaseLight = Color3.fromRGB(232, 241, 255),
+	CyanLight = Color3.fromRGB(89, 220, 255),
+	MagentaLight = Color3.fromRGB(242, 107, 255),
+	GreenLight = Color3.fromRGB(110, 255, 172),
 }
 
 local function getPublicRoomConfig()
@@ -165,6 +169,103 @@ local function createVisualPart(parent, name, size, cframe, color, material)
 	})
 end
 
+local function markWalkableDecorationPart(part)
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = true
+	part:SetAttribute("IsWalkableDecoration", true)
+	part:SetAttribute("WalkableSurface", true)
+	part:SetAttribute("BlocksMovement", false)
+
+	return part
+end
+
+local function createWalkableFloorDecoration(parent, name, size, cframe, color, material)
+	return markWalkableDecorationPart(createVisualPart(parent, name, size, cframe, color, material))
+end
+
+local function createPointLight(parentPart, name, color, brightness, range)
+	local light = Instance.new("PointLight")
+	light.Name = name or "PointLight"
+	light.Color = color or COLORS.BaseLight
+	light.Brightness = brightness or 0.55
+	light.Range = range or 12
+	light.Shadows = false
+	light.Parent = parentPart
+
+	return light
+end
+
+local function createSurfaceLight(parentPart, face, color, brightness, range)
+	local light = Instance.new("SurfaceLight")
+	light.Name = "SurfaceLight"
+	light.Color = color or COLORS.BaseLight
+	light.Face = face or Enum.NormalId.Bottom
+	light.Brightness = brightness or 0.9
+	light.Range = range or 14
+	light.Shadows = false
+	light.Parent = parentPart
+
+	return light
+end
+
+local function createCeilingLight(parent, name, position, color, brightness, range)
+	local fixture = Instance.new("Model")
+	fixture.Name = name
+	fixture.Parent = parent
+
+	createVisualPart(
+		fixture,
+		"CeilingPlate",
+		Vector3.new(3.4, 0.18, 3.4),
+		CFrame.new(position.X, position.Y + 0.1, position.Z),
+		COLORS.Trim,
+		Enum.Material.Metal
+	)
+
+	local glow = createVisualPart(
+		fixture,
+		"GlowPanel",
+		Vector3.new(2.6, 0.16, 2.6),
+		CFrame.new(position.X, position.Y - 0.05, position.Z),
+		color or COLORS.BaseLight,
+		Enum.Material.Neon
+	)
+	createPointLight(glow, "BasePointLight", color or COLORS.BaseLight, brightness or 0.85, range or 18)
+	createSurfaceLight(glow, Enum.NormalId.Bottom, color or COLORS.BaseLight, (brightness or 0.85) * 1.2, range or 18)
+
+	return fixture
+end
+
+local function createAccentLightFixture(parent, name, position, color, brightness, range)
+	local fixture = Instance.new("Model")
+	fixture.Name = name
+	fixture.Parent = parent
+
+	createVisualPart(
+		fixture,
+		"Bracket",
+		Vector3.new(1.2, 0.22, 1.2),
+		CFrame.new(position.X, position.Y + 0.18, position.Z),
+		COLORS.Trim,
+		Enum.Material.Metal
+	)
+
+	local glow = createVisualPart(
+		fixture,
+		"AccentGlow",
+		Vector3.new(1.5, 0.2, 1.5),
+		CFrame.new(position),
+		color,
+		Enum.Material.Neon
+	)
+	createPointLight(glow, "AccentPointLight", color, brightness or 0.35, range or 10)
+	createSurfaceLight(glow, Enum.NormalId.Bottom, color, brightness or 0.35, range or 10)
+
+	return fixture
+end
+
 local function createWall(parent, name, size, cframe)
 	return createDecorPart(parent, name, size, cframe, COLORS.Wall, true)
 end
@@ -199,10 +300,10 @@ local function buildDecorativeFloor(roomFolder)
 	decorativeFloor.Name = "DecorativeFloor"
 	decorativeFloor.Parent = roomFolder
 
-	createVisualPart(decorativeFloor, "CentralWalkway", Vector3.new(14, 0.08, 44), CFrame.new(-2, FLOOR_TOP_Y + 0.06, -2), COLORS.Runner, Enum.Material.SmoothPlastic)
-	createVisualPart(decorativeFloor, "EntrancePad", Vector3.new(12, 0.08, 6), CFrame.new(-2, FLOOR_TOP_Y + 0.07, -25), Color3.fromRGB(74, 91, 111), Enum.Material.SmoothPlastic)
-	createVisualPart(decorativeFloor, "ArcadeZoneLeft", Vector3.new(20, 0.05, 42), CFrame.new(-28, FLOOR_TOP_Y + 0.04, 0), Color3.fromRGB(153, 164, 172), Enum.Material.SmoothPlastic)
-	createVisualPart(decorativeFloor, "BoothZoneRight", Vector3.new(20, 0.05, 42), CFrame.new(28, FLOOR_TOP_Y + 0.04, 0), Color3.fromRGB(153, 164, 172), Enum.Material.SmoothPlastic)
+	createWalkableFloorDecoration(decorativeFloor, "CentralWalkway", Vector3.new(14, 0.08, 44), CFrame.new(-2, FLOOR_TOP_Y + 0.06, -2), COLORS.Runner, Enum.Material.SmoothPlastic)
+	createWalkableFloorDecoration(decorativeFloor, "EntrancePad", Vector3.new(12, 0.08, 6), CFrame.new(-2, FLOOR_TOP_Y + 0.07, -25), Color3.fromRGB(74, 91, 111), Enum.Material.SmoothPlastic)
+	createWalkableFloorDecoration(decorativeFloor, "ArcadeZoneLeft", Vector3.new(20, 0.05, 42), CFrame.new(-28, FLOOR_TOP_Y + 0.04, 0), Color3.fromRGB(153, 164, 172), Enum.Material.SmoothPlastic)
+	createWalkableFloorDecoration(decorativeFloor, "BoothZoneRight", Vector3.new(20, 0.05, 42), CFrame.new(28, FLOOR_TOP_Y + 0.04, 0), Color3.fromRGB(153, 164, 172), Enum.Material.SmoothPlastic)
 
 	return decorativeFloor
 end
@@ -213,7 +314,10 @@ local function createArcadeMachine(parent, name, x, z, color)
 	machine.Parent = parent
 
 	createDecorPart(machine, "Cabinet", Vector3.new(3.2, 4.2, 2.4), CFrame.new(x, FLOOR_TOP_Y + 2.1, z), color, true)
-	createVisualPart(machine, "Screen", Vector3.new(2.4, 1.4, 0.16), CFrame.new(x, FLOOR_TOP_Y + 3.0, z - 1.25), COLORS.Screen, Enum.Material.Neon)
+	local screen = createVisualPart(machine, "Screen", Vector3.new(2.4, 1.4, 0.16), CFrame.new(x, FLOOR_TOP_Y + 3.0, z - 1.25), COLORS.Screen, Enum.Material.Neon)
+	createPointLight(screen, "ScreenGlow", color, 0.18, 7)
+	local marquee = createVisualPart(machine, "MarqueeGlow", Vector3.new(2.7, 0.35, 0.18), CFrame.new(x, FLOOR_TOP_Y + 4.25, z - 1.25), color, Enum.Material.Neon)
+	createPointLight(marquee, "MarqueeGlowLight", color, 0.24, 8)
 	createDecorPart(machine, "Base", Vector3.new(3.6, 0.5, 2.8), CFrame.new(x, FLOOR_TOP_Y + 0.25, z), COLORS.Trim, true)
 
 	return machine
@@ -226,7 +330,8 @@ local function createActivityBooth(parent, name, x, z, color)
 
 	createDecorPart(booth, "Counter", Vector3.new(6, 2, 2.4), CFrame.new(x, FLOOR_TOP_Y + 1, z), color, true)
 	createVisualPart(booth, "Panel", Vector3.new(5.5, 2.8, 0.18), CFrame.new(x, FLOOR_TOP_Y + 3.2, z + 1.25), COLORS.Board, Enum.Material.SmoothPlastic)
-	createVisualPart(booth, "PanelLine", Vector3.new(4.6, 0.22, 0.12), CFrame.new(x, FLOOR_TOP_Y + 3.35, z + 1.05), COLORS.BoardLine, Enum.Material.Neon)
+	local panelLine = createVisualPart(booth, "PanelLine", Vector3.new(4.6, 0.22, 0.12), CFrame.new(x, FLOOR_TOP_Y + 3.35, z + 1.05), COLORS.BoardLine, Enum.Material.Neon)
+	createPointLight(panelLine, "PanelAccentLight", COLORS.BoardLine, 0.18, 7)
 
 	return booth
 end
@@ -258,6 +363,23 @@ local function buildDecor(roomFolder)
 
 	for index, z in ipairs(boothZValues) do
 		createActivityBooth(decorFolder, "ActivityBooth_" .. tostring(index), 34, z, COLORS.Booth)
+	end
+
+	for index, z in ipairs({ -22, -10, 2, 14, 24 }) do
+		createCeilingLight(decorFolder, "BaseCeilingLight_" .. tostring(index), Vector3.new(-2, FLOOR_TOP_Y + 7.35, z), COLORS.BaseLight, 0.9, 20)
+	end
+
+	local accentLights = {
+		{ Name = "ArcadeAccent_CyanFront", Position = Vector3.new(-28, FLOOR_TOP_Y + 6.5, -14), Color = COLORS.CyanLight },
+		{ Name = "ArcadeAccent_MagentaCenter", Position = Vector3.new(-28, FLOOR_TOP_Y + 6.5, 2), Color = COLORS.MagentaLight },
+		{ Name = "ArcadeAccent_GreenBack", Position = Vector3.new(-28, FLOOR_TOP_Y + 6.5, 18), Color = COLORS.GreenLight },
+		{ Name = "BoothAccent_MagentaFront", Position = Vector3.new(28, FLOOR_TOP_Y + 6.5, -14), Color = COLORS.MagentaLight },
+		{ Name = "BoothAccent_CyanCenter", Position = Vector3.new(28, FLOOR_TOP_Y + 6.5, 2), Color = COLORS.CyanLight },
+		{ Name = "BoothAccent_GreenBack", Position = Vector3.new(28, FLOOR_TOP_Y + 6.5, 18), Color = COLORS.GreenLight },
+	}
+
+	for _, lightData in ipairs(accentLights) do
+		createAccentLightFixture(decorFolder, lightData.Name, lightData.Position, lightData.Color, 0.32, 11)
 	end
 
 	createVisualPart(decorFolder, "LeaderboardBoard", Vector3.new(20, 5, 0.3), CFrame.new(0, FLOOR_TOP_Y + 4, 27.4), COLORS.Board)

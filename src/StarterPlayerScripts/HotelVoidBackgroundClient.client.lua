@@ -294,6 +294,7 @@ local function applyPlayerRoomVoidLighting()
 	Lighting.FogStart = 100000
 	Lighting.FogEnd = 100001
 	Lighting.Brightness = originalLighting.Brightness
+	Lighting.ClockTime = originalLighting.ClockTime
 	Lighting.ColorShift_Bottom = originalLighting.ColorShift_Bottom
 	Lighting.ColorShift_Top = originalLighting.ColorShift_Top
 

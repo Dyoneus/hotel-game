@@ -180,6 +180,22 @@ local function createVisualPart(parent, name, size, cframe, color, material)
 	})
 end
 
+local function markWalkableDecorationPart(part)
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = true
+	part:SetAttribute("IsWalkableDecoration", true)
+	part:SetAttribute("WalkableSurface", true)
+	part:SetAttribute("BlocksMovement", false)
+
+	return part
+end
+
+local function createWalkableFloorDecoration(parent, name, size, cframe, color, material)
+	return markWalkableDecorationPart(createVisualPart(parent, name, size, cframe, color, material))
+end
+
 local function createSurfaceSign(parent, name, text, size, cframe, options)
 	options = options or {}
 
@@ -214,16 +230,85 @@ local function createSurfaceSign(parent, name, text, size, cframe, options)
 	return signPart
 end
 
-local function createPointLight(parentPart, brightness, range)
+local function createPointLight(parentPart, brightness, range, color)
 	local light = Instance.new("PointLight")
 	light.Name = "WarmLight"
-	light.Color = COLORS.Light
+	light.Color = color or COLORS.Light
 	light.Brightness = brightness or 0.55
 	light.Range = range or 14
 	light.Shadows = false
 	light.Parent = parentPart
 
 	return light
+end
+
+local function createSurfaceLight(parentPart, face, brightness, range, color)
+	local light = Instance.new("SurfaceLight")
+	light.Name = "FixtureSurfaceLight"
+	light.Color = color or COLORS.Light
+	light.Face = face or Enum.NormalId.Bottom
+	light.Brightness = brightness or 0.7
+	light.Range = range or 14
+	light.Shadows = false
+	light.Parent = parentPart
+
+	return light
+end
+
+local function createPointLightFixture(parent, name, position, color, brightness, range)
+	local fixture = Instance.new("Model")
+	fixture.Name = name
+	fixture.Parent = parent
+
+	createVisualPart(
+		fixture,
+		"Stem",
+		Vector3.new(0.22, 1.1, 0.22),
+		CFrame.new(position.X, position.Y - 0.55, position.Z),
+		COLORS.DarkTrim,
+		Enum.Material.Metal
+	)
+
+	local shade = createVisualPart(
+		fixture,
+		"Shade",
+		Vector3.new(1.35, 0.8, 1.35),
+		CFrame.new(position),
+		color or COLORS.Light,
+		Enum.Material.Neon
+	)
+	shade.Shape = Enum.PartType.Ball
+	createPointLight(shade, brightness or 0.75, range or 16, color or COLORS.Light)
+
+	return fixture
+end
+
+local function createCeilingLight(parent, name, position, color, brightness, range)
+	local fixture = Instance.new("Model")
+	fixture.Name = name
+	fixture.Parent = parent
+
+	createVisualPart(
+		fixture,
+		"CeilingPlate",
+		Vector3.new(3.2, 0.18, 3.2),
+		CFrame.new(position.X, position.Y + 0.08, position.Z),
+		COLORS.DarkTrim,
+		Enum.Material.Metal
+	)
+
+	local glow = createVisualPart(
+		fixture,
+		"GlowPanel",
+		Vector3.new(2.45, 0.16, 2.45),
+		CFrame.new(position.X, position.Y - 0.05, position.Z),
+		color or COLORS.Light,
+		Enum.Material.Neon
+	)
+	createPointLight(glow, brightness or 0.8, range or 18, color or COLORS.Light)
+	createSurfaceLight(glow, Enum.NormalId.Bottom, (brightness or 0.8) * 1.15, range or 18, color or COLORS.Light)
+
+	return fixture
 end
 
 local function createPlant(parent, name, position, scale)
@@ -317,7 +402,8 @@ local function createWallSconce(parent, name, position, rotationY)
 		COLORS.Light,
 		Enum.Material.Neon
 	)
-	createPointLight(glow, 0.45, 12)
+	createPointLight(glow, 0.75, 16)
+	createSurfaceLight(glow, Enum.NormalId.Front, 0.55, 12)
 
 	return holder, glow
 end
@@ -524,13 +610,13 @@ local function buildDecorativeFloor(roomFolder)
 	decorativeFloor.Name = "DecorativeFloor"
 	decorativeFloor.Parent = roomFolder
 
-	createVisualPart(decorativeFloor, "MainCarpet", Vector3.new(30, 0.08, 20), CFrame.new(-2, FLOOR_TOP_Y + 0.05, 0), COLORS.Rug, Enum.Material.Fabric)
-	createVisualPart(decorativeFloor, "MainCarpetBorder", Vector3.new(32, 0.06, 22), CFrame.new(-2, FLOOR_TOP_Y + 0.035, 0), COLORS.RugBorder, Enum.Material.Fabric)
-	createVisualPart(decorativeFloor, "EntranceMat", Vector3.new(10, 0.08, 5), CFrame.new(-2, FLOOR_TOP_Y + 0.06, -21.5), Color3.fromRGB(94, 112, 120), Enum.Material.Fabric)
-	createVisualPart(decorativeFloor, "ReceptionRunner", Vector3.new(22, 0.07, 5), CFrame.new(0, FLOOR_TOP_Y + 0.06, 13), Color3.fromRGB(166, 150, 115), Enum.Material.Fabric)
+	createWalkableFloorDecoration(decorativeFloor, "MainCarpet", Vector3.new(30, 0.08, 20), CFrame.new(-2, FLOOR_TOP_Y + 0.05, 0), COLORS.Rug, Enum.Material.Fabric)
+	createWalkableFloorDecoration(decorativeFloor, "MainCarpetBorder", Vector3.new(32, 0.06, 22), CFrame.new(-2, FLOOR_TOP_Y + 0.035, 0), COLORS.RugBorder, Enum.Material.Fabric)
+	createWalkableFloorDecoration(decorativeFloor, "EntranceMat", Vector3.new(10, 0.08, 5), CFrame.new(-2, FLOOR_TOP_Y + 0.06, -21.5), Color3.fromRGB(94, 112, 120), Enum.Material.Fabric)
+	createWalkableFloorDecoration(decorativeFloor, "ReceptionRunner", Vector3.new(22, 0.07, 5), CFrame.new(0, FLOOR_TOP_Y + 0.06, 13), Color3.fromRGB(166, 150, 115), Enum.Material.Fabric)
 
 	for _, x in ipairs({ -30, -26, 26, 30 }) do
-		createVisualPart(
+		createWalkableFloorDecoration(
 			decorativeFloor,
 			"CornerTileAccent",
 			Vector3.new(3.5, 0.05, 3.5),
@@ -617,9 +703,19 @@ local function buildDecor(roomFolder)
 	createDecorPart(decorFolder, "RightCoffeeTable", Vector3.new(4, 0.9, 6), CFrame.new(20, FLOOR_TOP_Y + 0.45, 0), Color3.fromRGB(104, 76, 52), true)
 
 	createWallSconce(decorFolder, "BackLightLeft", Vector3.new(-24, FLOOR_TOP_Y + 5.4, 23.38), 0)
+	createWallSconce(decorFolder, "BackLightCenter", Vector3.new(0, FLOOR_TOP_Y + 5.4, 23.38), 0)
 	createWallSconce(decorFolder, "BackLightRight", Vector3.new(24, FLOOR_TOP_Y + 5.4, 23.38), 0)
 	createWallSconce(decorFolder, "LeftLight", Vector3.new(-32.38, FLOOR_TOP_Y + 5.2, -2), 90)
 	createWallSconce(decorFolder, "RightLight", Vector3.new(32.38, FLOOR_TOP_Y + 5.2, -2), -90)
+
+	createCeilingLight(decorFolder, "CeilingLight_Entrance", Vector3.new(-2, FLOOR_TOP_Y + 7.35, -14), COLORS.Light, 0.85, 18)
+	createCeilingLight(decorFolder, "CeilingLight_Center", Vector3.new(-2, FLOOR_TOP_Y + 7.35, 0), COLORS.Light, 0.9, 20)
+	createCeilingLight(decorFolder, "CeilingLight_Reception", Vector3.new(0, FLOOR_TOP_Y + 7.35, 14), COLORS.Light, 0.95, 18)
+	createCeilingLight(decorFolder, "CeilingLight_LeftSeating", Vector3.new(-20, FLOOR_TOP_Y + 7.2, -2), COLORS.Light, 0.75, 16)
+	createCeilingLight(decorFolder, "CeilingLight_RightSeating", Vector3.new(20, FLOOR_TOP_Y + 7.2, -2), COLORS.Light, 0.75, 16)
+	createPointLightFixture(decorFolder, "ReceptionDeskWarmLamp", Vector3.new(-6, FLOOR_TOP_Y + 3.25, 16.2), COLORS.Light, 0.65, 14)
+	createPointLightFixture(decorFolder, "LeftCoffeeTableLamp", Vector3.new(-20, FLOOR_TOP_Y + 1.55, 0), COLORS.Light, 0.55, 12)
+	createPointLightFixture(decorFolder, "RightCoffeeTableLamp", Vector3.new(20, FLOOR_TOP_Y + 1.55, 0), COLORS.Light, 0.55, 12)
 
 	return decorFolder
 end

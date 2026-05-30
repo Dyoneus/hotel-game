@@ -11,6 +11,10 @@ local playerGui = player:WaitForChild("PlayerGui")
 local activeRooms = Workspace:WaitForChild("ActiveRooms")
 
 local HOVER_BOX_HEIGHT = 0.06
+local FLOOR_HOVER_CENTER_OFFSET = HOVER_BOX_HEIGHT / 2 + 0.01
+local DECORATION_HOVER_CENTER_OFFSET = 0.06
+local FLOOR_DECORATION_MAX_HEIGHT = 0.35
+local FLOOR_DECORATION_MAX_CENTER_OFFSET = 0.75
 local RAYCAST_DISTANCE = 5000
 
 local anyMajorMenuOpen = false
@@ -139,10 +143,143 @@ local function shouldHideHover()
 		or anyMajorMenuOpen == true
 end
 
-local function getMouseFloorHit(floor)
+local function instanceHasWalkableSurfaceAttribute(instance)
+	if typeof(instance) ~= "Instance" then
+		return false
+	end
+
+	return instance:GetAttribute("WalkableSurface") == true
+		or instance:GetAttribute("IsWalkableSurface") == true
+		or instance:GetAttribute("IsWalkableDecoration") == true
+		or instance:GetAttribute("BlocksMovement") == false
+end
+
+local function getWalkableSurfaceMarker(instance, roomModel)
+	local current = instance
+
+	while current and current ~= Workspace do
+		if instanceHasWalkableSurfaceAttribute(current) then
+			return current
+		end
+
+		if current == roomModel then
+			break
+		end
+
+		current = current.Parent
+	end
+
+	return nil
+end
+
+local function nameLooksLikeWalkableDecoration(name)
+	if typeof(name) ~= "string" then
+		return false
+	end
+
+	local lowerName = string.lower(name)
+
+	return string.find(lowerName, "rug", 1, true) ~= nil
+		or string.find(lowerName, "mat", 1, true) ~= nil
+		or string.find(lowerName, "carpet", 1, true) ~= nil
+		or string.find(lowerName, "decorativefloor", 1, true) ~= nil
+end
+
+local function hasGeneratedFloorDecorationName(instance, roomModel)
+	local current = instance
+
+	while current and current ~= Workspace do
+		if nameLooksLikeWalkableDecoration(current.Name) then
+			return true
+		end
+
+		if current == roomModel then
+			break
+		end
+
+		current = current.Parent
+	end
+
+	return false
+end
+
+local function isLowFloorLikePart(part, floor)
+	if not floor then
+		return false
+	end
+
+	if part.Size.Y > FLOOR_DECORATION_MAX_HEIGHT then
+		return false
+	end
+
+	local localCenter = floor.CFrame:PointToObjectSpace(part.Position)
+	local floorTopLocalY = floor.Size.Y / 2
+
+	return math.abs(localCenter.Y - floorTopLocalY) <= FLOOR_DECORATION_MAX_CENTER_OFFSET
+end
+
+local function isWalkableSurfacePart(part, roomModel, floor)
+	if typeof(part) ~= "Instance" or not part:IsA("BasePart") then
+		return false
+	end
+
+	if part == floor then
+		return true
+	end
+
+	return roomModel ~= nil
+		and part:IsDescendantOf(roomModel)
+		and (
+			getWalkableSurfaceMarker(part, roomModel) ~= nil
+			or (
+				hasGeneratedFloorDecorationName(part, roomModel)
+				and isLowFloorLikePart(part, floor)
+			)
+		)
+end
+
+local function shouldIgnoreHoverRaycastPart(part, roomModel, floor)
+	if part == floor or isWalkableSurfacePart(part, roomModel, floor) then
+		return false
+	end
+
+	return part.Transparency >= 1 and part.CanCollide == false
+end
+
+local function getHoverRaycastParts(roomModel, floor)
+	local parts = {}
+
+	if floor and floor:IsA("BasePart") then
+		table.insert(parts, floor)
+	end
+
+	if not roomModel then
+		return parts
+	end
+
+	for _, descendant in ipairs(roomModel:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and descendant ~= floor
+			and descendant.CanQuery
+			and not shouldIgnoreHoverRaycastPart(descendant, roomModel, floor) then
+
+			table.insert(parts, descendant)
+		end
+	end
+
+	return parts
+end
+
+local function getMouseFloorHit(roomModel, floor)
 	local camera = Workspace.CurrentCamera
 
 	if not camera then
+		return nil
+	end
+
+	local raycastParts = getHoverRaycastParts(roomModel, floor)
+
+	if #raycastParts == 0 then
 		return nil
 	end
 
@@ -151,16 +288,31 @@ local function getMouseFloorHit(floor)
 
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Include
-	raycastParams.FilterDescendantsInstances = { floor }
+	raycastParams.FilterDescendantsInstances = raycastParts
 	raycastParams.IgnoreWater = true
 
 	local result = Workspace:Raycast(ray.Origin, ray.Direction * RAYCAST_DISTANCE, raycastParams)
 
-	if result and result.Instance == floor then
-		return result.Position
+	if result and isWalkableSurfacePart(result.Instance, roomModel, floor) then
+		return result
 	end
 
 	return nil
+end
+
+local function getHoverCenterY(floorTopY, hitResult, floor)
+	if not hitResult or hitResult.Instance == floor then
+		return floorTopY + FLOOR_HOVER_CENTER_OFFSET
+	end
+
+	local surfaceY = math.max(floorTopY, hitResult.Position.Y)
+	local hitPart = hitResult.Instance
+
+	if hitPart and hitPart:IsA("BasePart") then
+		surfaceY = math.max(surfaceY, hitPart.Position.Y + hitPart.Size.Y / 2)
+	end
+
+	return surfaceY + DECORATION_HOVER_CENTER_OFFSET
 end
 
 updateHover = function()
@@ -195,22 +347,22 @@ updateHover = function()
 		return
 	end
 
-	local hitPosition = getMouseFloorHit(floor)
+	local hitResult = getMouseFloorHit(roomModel, floor)
 
-	if not hitPosition then
+	if not hitResult then
 		hideHover()
 		return
 	end
 
 	local tileSize = GridConfig.GetTileSize(roomModel, floor)
-	local _, snappedLocalPosition = GridConfig.SnapWorldToTileCenter(floor, hitPosition, tileSize)
+	local _, snappedLocalPosition = GridConfig.SnapWorldToTileCenter(floor, hitResult.Position, tileSize)
 
 	if not snappedLocalPosition then
 		hideHover()
 		return
 	end
 
-	local localY = floor.Size.Y / 2 + HOVER_BOX_HEIGHT / 2 + 0.01
+	local localY = floor.Size.Y / 2 + FLOOR_HOVER_CENTER_OFFSET
 	local worldPosition = GridConfig.FloorLocalToWorld(
 		floor,
 		Vector3.new(snappedLocalPosition.X, localY, snappedLocalPosition.Z)
@@ -221,7 +373,7 @@ updateHover = function()
 		return
 	end
 
-	worldPosition = Vector3.new(worldPosition.X, floorTopY + HOVER_BOX_HEIGHT / 2 + 0.01, worldPosition.Z)
+	worldPosition = Vector3.new(worldPosition.X, getHoverCenterY(floorTopY, hitResult, floor), worldPosition.Z)
 
 	local floorRotation = floor.CFrame - floor.CFrame.Position
 

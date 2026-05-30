@@ -99,6 +99,9 @@
         "HotelVoidBackgroundClient": {
           "$path": "src/StarterPlayerScripts/HotelVoidBackgroundClient.client.lua"
         },
+        "PublicRoomAmbienceClient": {
+          "$path": "src/StarterPlayerScripts/PublicRoomAmbienceClient.client.lua"
+        },
         "RoomTransitionClient": {
           "$path": "src/StarterPlayerScripts/RoomTransitionClient.client.lua"
         },

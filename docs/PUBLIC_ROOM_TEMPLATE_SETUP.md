@@ -65,7 +65,7 @@ Closed rooms should set `IsOpen = false`. The Navigator can show them as closed,
 ## Required Markers
 
 - `RoomAnchor`: required. The server positions the cloned room by this marker.
-- `DoorSpawn`: required. Players are teleported here when they join.
+- `DoorSpawn`: required. This is the single spawn point for public-room joins and remains part of the exit flow.
 - `RoomExitZone` or a descendant with `IsRoomExit = true`: required for the exit prompt and leave validation.
 - `EntryWalkTarget`: required for the current doorway/exit walk flow.
 - `Room/WalkableFloor`: required for camera framing, click-to-move, grid hover, and grid lines.
@@ -186,6 +186,10 @@ docs/tools/ValidatePublicRoomTemplates.lua
 Then press Play and join the generated public room from the Room Navigator.
 
 Placeholder generators are blockout/detail tools. Final art can replace the visual walls, props, signs, and decorative parts later, but keep `RoomAnchor`, `DoorSpawn`, `EntryWalkTarget`, `RoomExitZone`, `Room.WalkableFloor`, and the grid attributes intact.
+
+Generated placeholder rooms include simple non-blocking light fixtures with modest `PointLight` and `SurfaceLight` objects so rooms are readable during gameplay tests. Public room ambience presets are client-side visual polish and do not change server room behavior. Final art lighting should be tuned manually later, but keep public rooms bright enough for grid hover, click-to-move, exits, and player readability.
+
+Walkable mats, rugs, carpets, grass patches, and floor overlays should be queryable but non-blocking. Use `CanCollide = false`, `CanTouch = false`, `CanQuery = true`, plus `IsWalkableDecoration = true`, `WalkableSurface = true`, and `BlocksMovement = false`. Do not apply those attributes to walls, counters, kiosks, plants, tables, machines, or other props that should block hover or movement intent.
 
 ## Manual Testing Checklist
 

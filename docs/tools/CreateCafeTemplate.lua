@@ -36,6 +36,8 @@ local COLORS = {
 	Pot = Color3.fromRGB(122, 76, 52),
 	Chair = Color3.fromRGB(132, 93, 68),
 	ChairTrim = Color3.fromRGB(78, 55, 42),
+	Light = Color3.fromRGB(255, 232, 188),
+	LightWarm = Color3.fromRGB(255, 218, 164),
 }
 
 local function getPublicRoomConfig()
@@ -164,6 +166,84 @@ local function createVisualPart(parent, name, size, cframe, color, material)
 	})
 end
 
+local function markWalkableDecorationPart(part)
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = true
+	part:SetAttribute("IsWalkableDecoration", true)
+	part:SetAttribute("WalkableSurface", true)
+	part:SetAttribute("BlocksMovement", false)
+
+	return part
+end
+
+local function createWalkableFloorDecoration(parent, name, size, cframe, color, material)
+	return markWalkableDecorationPart(createVisualPart(parent, name, size, cframe, color, material))
+end
+
+local function createPointLight(parentPart, name, color, brightness, range)
+	local light = Instance.new("PointLight")
+	light.Name = name or "WarmPointLight"
+	light.Color = color or COLORS.Light
+	light.Brightness = brightness or 0.55
+	light.Range = range or 12
+	light.Shadows = false
+	light.Parent = parentPart
+
+	return light
+end
+
+local function createSurfaceLight(parentPart, face, color, brightness, range)
+	local light = Instance.new("SurfaceLight")
+	light.Name = "WarmSurfaceLight"
+	light.Color = color or COLORS.Light
+	light.Face = face or Enum.NormalId.Bottom
+	light.Brightness = brightness or 0.8
+	light.Range = range or 12
+	light.Shadows = false
+	light.Parent = parentPart
+
+	return light
+end
+
+local function createHangingLight(parent, name, x, z, color, brightness, range)
+	local fixture = Instance.new("Model")
+	fixture.Name = name
+	fixture.Parent = parent
+
+	createVisualPart(
+		fixture,
+		"Cord",
+		Vector3.new(0.16, 1.45, 0.16),
+		CFrame.new(x, FLOOR_TOP_Y + 6.05, z),
+		COLORS.DarkTrim,
+		Enum.Material.Metal
+	)
+
+	createVisualPart(
+		fixture,
+		"Shade",
+		Vector3.new(1.9, 0.42, 1.9),
+		CFrame.new(x, FLOOR_TOP_Y + 5.25, z),
+		COLORS.Trim,
+		Enum.Material.Metal
+	)
+
+	local glow = createVisualPart(
+		fixture,
+		"Glow",
+		Vector3.new(1.45, 0.18, 1.45),
+		CFrame.new(x, FLOOR_TOP_Y + 5.02, z),
+		color or COLORS.Light,
+		Enum.Material.Neon
+	)
+	createPointLight(glow, "PendantPointLight", color or COLORS.Light, brightness or 0.65, range or 13)
+	createSurfaceLight(glow, Enum.NormalId.Bottom, color or COLORS.Light, (brightness or 0.65) * 1.15, range or 13)
+
+	return fixture
+end
+
 local function createPlant(parent, name, x, z)
 	local plant = Instance.new("Model")
 	plant.Name = name
@@ -214,10 +294,10 @@ local function buildDecorativeFloor(roomFolder)
 	decorativeFloor.Name = "DecorativeFloor"
 	decorativeFloor.Parent = roomFolder
 
-	createVisualPart(decorativeFloor, "EntranceMat", Vector3.new(10, 0.08, 5), CFrame.new(-2, FLOOR_TOP_Y + 0.06, -17), COLORS.FloorAccent, Enum.Material.Fabric)
-	createVisualPart(decorativeFloor, "CentralRunner", Vector3.new(8, 0.06, 24), CFrame.new(-2, FLOOR_TOP_Y + 0.05, -3), Color3.fromRGB(147, 111, 91), Enum.Material.Fabric)
-	createVisualPart(decorativeFloor, "DiningRugLeft", Vector3.new(18, 0.05, 14), CFrame.new(-18, FLOOR_TOP_Y + 0.04, 1), Color3.fromRGB(133, 154, 127), Enum.Material.Fabric)
-	createVisualPart(decorativeFloor, "DiningRugRight", Vector3.new(18, 0.05, 14), CFrame.new(18, FLOOR_TOP_Y + 0.04, 1), Color3.fromRGB(133, 154, 127), Enum.Material.Fabric)
+	createWalkableFloorDecoration(decorativeFloor, "EntranceMat", Vector3.new(10, 0.08, 5), CFrame.new(-2, FLOOR_TOP_Y + 0.06, -17), COLORS.FloorAccent, Enum.Material.Fabric)
+	createWalkableFloorDecoration(decorativeFloor, "CentralRunner", Vector3.new(8, 0.06, 24), CFrame.new(-2, FLOOR_TOP_Y + 0.05, -3), Color3.fromRGB(147, 111, 91), Enum.Material.Fabric)
+	createWalkableFloorDecoration(decorativeFloor, "DiningRugLeft", Vector3.new(18, 0.05, 14), CFrame.new(-18, FLOOR_TOP_Y + 0.04, 1), Color3.fromRGB(133, 154, 127), Enum.Material.Fabric)
+	createWalkableFloorDecoration(decorativeFloor, "DiningRugRight", Vector3.new(18, 0.05, 14), CFrame.new(18, FLOOR_TOP_Y + 0.04, 1), Color3.fromRGB(133, 154, 127), Enum.Material.Fabric)
 
 	return decorativeFloor
 end
@@ -305,6 +385,22 @@ local function buildDecor(roomFolder)
 
 	createDecorPart(decorFolder, "LeftLowDivider", Vector3.new(1, 1.6, 12), CFrame.new(-10, FLOOR_TOP_Y + 0.8, -2), COLORS.Trim, true)
 	createDecorPart(decorFolder, "RightLowDivider", Vector3.new(1, 1.6, 12), CFrame.new(10, FLOOR_TOP_Y + 0.8, -2), COLORS.Trim, true)
+
+	for index, x in ipairs({ -14, -6, 2, 10 }) do
+		createHangingLight(decorFolder, "CounterPendant_" .. tostring(index), x, 13.2, COLORS.LightWarm, 0.7, 13)
+	end
+
+	local tableLights = {
+		{ Name = "TablePendant_LeftFront", X = -18, Z = -6 },
+		{ Name = "TablePendant_RightFront", X = 18, Z = -6 },
+		{ Name = "TablePendant_LeftBack", X = -18, Z = 6 },
+		{ Name = "TablePendant_RightBack", X = 18, Z = 6 },
+		{ Name = "CentralCafePendant", X = -2, Z = -3 },
+	}
+
+	for _, lightData in ipairs(tableLights) do
+		createHangingLight(decorFolder, lightData.Name, lightData.X, lightData.Z, COLORS.Light, 0.6, 12)
+	end
 
 	return decorFolder
 end
