@@ -1,7 +1,11 @@
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
+local workActivityRequest = remoteEvents:WaitForChild("WorkActivityRequest")
+local workActivityResult = remoteEvents:WaitForChild("WorkActivityResult")
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -63,6 +67,16 @@ local suppressedGuiStates = {}
 local MAIN_MENU_PANEL_Z_INDEX = 110
 local MAIN_MENU_CONTROL_Z_INDEX = 112
 local isWorkPanelOpen = false
+local workActivities = {}
+local workActivityById = {}
+local workCooldowns = {}
+local selectedWorkActivityId = nil
+local workRequestPending = false
+local activeWorkAttempt = nil
+local progressToken = 0
+local cooldownToken = 0
+local lastWorkStatusMessage = "Choose a job to begin."
+local lastWorkStatusIsError = false
 
 local function disableDecorativeInput(guiObject)
 	if not guiObject:IsA("GuiObject") then
@@ -356,7 +370,7 @@ workSubtitle.Parent = workPanel
 local workInfoCard = Instance.new("Frame")
 workInfoCard.Name = "InfoCard"
 workInfoCard.Position = UDim2.fromOffset(0, 122)
-workInfoCard.Size = UDim2.new(1, 0, 0, 136)
+workInfoCard.Size = UDim2.new(1, 0, 0, 222)
 workInfoCard.BackgroundColor3 = Color3.fromRGB(229, 219, 184)
 workInfoCard.BorderSizePixel = 0
 workInfoCard.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 1
@@ -374,10 +388,10 @@ workInfoStroke.Parent = workInfoCard
 
 local workBody = Instance.new("TextLabel")
 workBody.Name = "Body"
-workBody.Position = UDim2.fromOffset(18, 14)
-workBody.Size = UDim2.new(1, -36, 0, 34)
+workBody.Position = UDim2.fromOffset(18, 12)
+workBody.Size = UDim2.new(1, -36, 0, 30)
 workBody.BackgroundTransparency = 1
-workBody.Text = "Jobs are coming soon."
+workBody.Text = lastWorkStatusMessage
 workBody.TextColor3 = Color3.fromRGB(71, 69, 58)
 workBody.TextSize = 16
 workBody.TextWrapped = true
@@ -388,9 +402,9 @@ workBody.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 2
 workBody.Parent = workInfoCard
 
 local placeholderCard = Instance.new("Frame")
-placeholderCard.Name = "HotelHelperCard"
-placeholderCard.Position = UDim2.fromOffset(18, 58)
-placeholderCard.Size = UDim2.new(1, -36, 0, 60)
+placeholderCard.Name = "WorkActivityCard"
+placeholderCard.Position = UDim2.fromOffset(18, 52)
+placeholderCard.Size = UDim2.new(1, -36, 0, 122)
 placeholderCard.BackgroundColor3 = Color3.fromRGB(245, 239, 215)
 placeholderCard.BorderSizePixel = 0
 placeholderCard.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 2
@@ -403,7 +417,7 @@ placeholderCorner.Parent = placeholderCard
 local placeholderTitle = Instance.new("TextLabel")
 placeholderTitle.Name = "Title"
 placeholderTitle.Position = UDim2.fromOffset(14, 8)
-placeholderTitle.Size = UDim2.new(1, -28, 0, 22)
+placeholderTitle.Size = UDim2.new(1, -122, 0, 22)
 placeholderTitle.BackgroundTransparency = 1
 placeholderTitle.Text = "Hotel Helper"
 placeholderTitle.TextColor3 = Color3.fromRGB(53, 61, 56)
@@ -413,18 +427,104 @@ placeholderTitle.Font = Enum.Font.GothamBold
 placeholderTitle.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 3
 placeholderTitle.Parent = placeholderCard
 
+local placeholderDescription = Instance.new("TextLabel")
+placeholderDescription.Name = "Description"
+placeholderDescription.Position = UDim2.fromOffset(14, 32)
+placeholderDescription.Size = UDim2.new(1, -28, 0, 30)
+placeholderDescription.BackgroundTransparency = 1
+placeholderDescription.Text = "Loading work..."
+placeholderDescription.TextColor3 = Color3.fromRGB(71, 69, 58)
+placeholderDescription.TextSize = 13
+placeholderDescription.TextWrapped = true
+placeholderDescription.TextXAlignment = Enum.TextXAlignment.Left
+placeholderDescription.TextYAlignment = Enum.TextYAlignment.Top
+placeholderDescription.Font = Enum.Font.GothamMedium
+placeholderDescription.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 3
+placeholderDescription.Parent = placeholderCard
+
 local placeholderReward = Instance.new("TextLabel")
 placeholderReward.Name = "Reward"
-placeholderReward.Position = UDim2.fromOffset(14, 32)
-placeholderReward.Size = UDim2.new(1, -28, 0, 20)
+placeholderReward.Position = UDim2.fromOffset(14, 66)
+placeholderReward.Size = UDim2.new(1, -28, 0, 18)
 placeholderReward.BackgroundTransparency = 1
-placeholderReward.Text = "Reward: Dollars  |  Coming soon"
+placeholderReward.Text = "Reward: --"
 placeholderReward.TextColor3 = Color3.fromRGB(91, 98, 92)
 placeholderReward.TextSize = 14
 placeholderReward.TextXAlignment = Enum.TextXAlignment.Left
 placeholderReward.Font = Enum.Font.GothamMedium
 placeholderReward.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 3
 placeholderReward.Parent = placeholderCard
+
+local activityCooldownLabel = Instance.new("TextLabel")
+activityCooldownLabel.Name = "Cooldown"
+activityCooldownLabel.Position = UDim2.fromOffset(14, 88)
+activityCooldownLabel.Size = UDim2.new(1, -124, 0, 20)
+activityCooldownLabel.BackgroundTransparency = 1
+activityCooldownLabel.Text = "Cooldown: Ready"
+activityCooldownLabel.TextColor3 = Color3.fromRGB(91, 98, 92)
+activityCooldownLabel.TextSize = 13
+activityCooldownLabel.TextXAlignment = Enum.TextXAlignment.Left
+activityCooldownLabel.Font = Enum.Font.GothamMedium
+activityCooldownLabel.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 3
+activityCooldownLabel.Parent = placeholderCard
+
+local startWorkButton = Instance.new("TextButton")
+startWorkButton.Name = "StartWorkButton"
+startWorkButton.AnchorPoint = Vector2.new(1, 1)
+startWorkButton.Position = UDim2.new(1, -12, 1, -12)
+startWorkButton.Size = UDim2.fromOffset(92, 30)
+startWorkButton.BackgroundColor3 = Color3.fromRGB(42, 67, 83)
+startWorkButton.BorderSizePixel = 0
+startWorkButton.Text = "Start"
+startWorkButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+startWorkButton.TextSize = 14
+startWorkButton.Font = Enum.Font.GothamBold
+startWorkButton.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 4
+startWorkButton.Parent = placeholderCard
+
+local startWorkCorner = Instance.new("UICorner")
+startWorkCorner.CornerRadius = UDim.new(0, 8)
+startWorkCorner.Parent = startWorkButton
+
+local progressTrack = Instance.new("Frame")
+progressTrack.Name = "ProgressTrack"
+progressTrack.Position = UDim2.fromOffset(18, 186)
+progressTrack.Size = UDim2.new(1, -36, 0, 18)
+progressTrack.BackgroundColor3 = Color3.fromRGB(207, 196, 160)
+progressTrack.BorderSizePixel = 0
+progressTrack.Visible = false
+progressTrack.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 2
+progressTrack.Parent = workInfoCard
+
+local progressTrackCorner = Instance.new("UICorner")
+progressTrackCorner.CornerRadius = UDim.new(0, 9)
+progressTrackCorner.Parent = progressTrack
+
+local progressFill = Instance.new("Frame")
+progressFill.Name = "ProgressFill"
+progressFill.Size = UDim2.fromScale(0, 1)
+progressFill.BackgroundColor3 = Color3.fromRGB(42, 67, 83)
+progressFill.BorderSizePixel = 0
+progressFill.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 3
+progressFill.Parent = progressTrack
+
+local progressFillCorner = Instance.new("UICorner")
+progressFillCorner.CornerRadius = UDim.new(0, 9)
+progressFillCorner.Parent = progressFill
+
+local progressText = Instance.new("TextLabel")
+progressText.Name = "ProgressText"
+progressText.Position = UDim2.fromOffset(18, 204)
+progressText.Size = UDim2.new(1, -36, 0, 18)
+progressText.BackgroundTransparency = 1
+progressText.Text = ""
+progressText.TextColor3 = Color3.fromRGB(71, 69, 58)
+progressText.TextSize = 13
+progressText.TextXAlignment = Enum.TextXAlignment.Left
+progressText.Font = Enum.Font.GothamMedium
+progressText.Visible = false
+progressText.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 2
+progressText.Parent = workInfoCard
 
 local worldInputBlocker = Instance.new("Frame")
 worldInputBlocker.Name = "WorldInputBlocker"
@@ -451,8 +551,17 @@ local welcomePanelObjects = {
 	statusCard,
 }
 
+local requestWorkActivities = nil
+local requestWorkCooldowns = nil
+local renderWorkPanel = nil
+local stopLocalWorkProgress = nil
+
 local function setWorkPanelOpen(isOpen)
 	isWorkPanelOpen = isOpen == true and background.Visible == true
+
+	if not isWorkPanelOpen and stopLocalWorkProgress then
+		stopLocalWorkProgress()
+	end
 
 	for _, guiObject in ipairs(welcomePanelObjects) do
 		guiObject.Visible = not isWorkPanelOpen
@@ -461,6 +570,28 @@ local function setWorkPanelOpen(isOpen)
 	workPanel.Visible = isWorkPanelOpen
 	workButton.Active = not isWorkPanelOpen
 	workButton.AutoButtonColor = not isWorkPanelOpen
+
+	cooldownToken += 1
+
+	if isWorkPanelOpen then
+		if requestWorkActivities then
+			requestWorkActivities()
+		end
+
+		local currentCooldownToken = cooldownToken
+
+		task.spawn(function()
+			while isWorkPanelOpen and cooldownToken == currentCooldownToken do
+				if renderWorkPanel then
+					renderWorkPanel()
+				end
+
+				task.wait(1)
+			end
+		end)
+	elseif renderWorkPanel then
+		renderWorkPanel()
+	end
 end
 
 local function shouldShowMainMenu()
@@ -474,6 +605,224 @@ local function shouldShowMainMenu()
 
 	return player:GetAttribute("InHotelMainMenu") == true
 		or player:GetAttribute("CurrentRoomName") == nil
+end
+
+local function formatSeconds(seconds)
+	local safeSeconds = tonumber(seconds) or 0
+
+	if safeSeconds < 0 then
+		safeSeconds = 0
+	end
+
+	return tostring(math.ceil(safeSeconds)) .. "s"
+end
+
+local function setWorkStatus(message, isError)
+	lastWorkStatusMessage = tostring(message or "")
+	lastWorkStatusIsError = isError == true
+	workBody.Text = lastWorkStatusMessage
+	workBody.TextColor3 = lastWorkStatusIsError
+		and Color3.fromRGB(136, 55, 45)
+		or Color3.fromRGB(71, 69, 58)
+end
+
+local function setCooldownRemaining(activityId, remainingSeconds)
+	if typeof(activityId) ~= "string" or activityId == "" then
+		return
+	end
+
+	local remaining = tonumber(remainingSeconds) or 0
+
+	if remaining > 0 then
+		workCooldowns[activityId] = os.clock() + remaining
+	else
+		workCooldowns[activityId] = nil
+	end
+end
+
+local function getCooldownRemaining(activityId)
+	local expiresAt = workCooldowns[activityId]
+
+	if typeof(expiresAt) ~= "number" then
+		return 0
+	end
+
+	local remaining = expiresAt - os.clock()
+
+	if remaining <= 0 then
+		workCooldowns[activityId] = nil
+		return 0
+	end
+
+	return remaining
+end
+
+local function getSelectedWorkActivity()
+	if selectedWorkActivityId and workActivityById[selectedWorkActivityId] then
+		return workActivityById[selectedWorkActivityId]
+	end
+
+	local activity = workActivities[1]
+
+	if activity then
+		selectedWorkActivityId = activity.ActivityId
+	end
+
+	return activity
+end
+
+renderWorkPanel = function()
+	workBody.Text = lastWorkStatusMessage
+	workBody.TextColor3 = lastWorkStatusIsError
+		and Color3.fromRGB(136, 55, 45)
+		or Color3.fromRGB(71, 69, 58)
+
+	local activity = getSelectedWorkActivity()
+	local isWorking = activeWorkAttempt ~= nil
+	local cooldownRemaining = activity and getCooldownRemaining(activity.ActivityId) or 0
+	local canStart = isWorkPanelOpen
+		and shouldShowMainMenu()
+		and activity ~= nil
+		and not workRequestPending
+		and not isWorking
+		and cooldownRemaining <= 0
+
+	if not activity then
+		placeholderTitle.Text = "Loading work"
+		placeholderDescription.Text = "Available jobs will appear here."
+		placeholderReward.Text = "Reward: --"
+		activityCooldownLabel.Text = "Cooldown: --"
+		startWorkButton.Text = workRequestPending and "Loading" or "Start"
+		startWorkButton.Active = false
+		startWorkButton.AutoButtonColor = false
+		progressTrack.Visible = false
+		progressText.Visible = false
+		return
+	end
+
+	placeholderTitle.Text = tostring(activity.DisplayName or activity.ActivityId)
+	placeholderDescription.Text = tostring(activity.Description or "")
+	placeholderReward.Text = string.format(
+		"Reward: %s %s  |  Time: %s",
+		tostring(activity.RewardAmount or "--"),
+		tostring(activity.RewardCurrency or "Dollars"),
+		formatSeconds(activity.DurationSeconds)
+	)
+
+	if cooldownRemaining > 0 then
+		activityCooldownLabel.Text = "Cooldown: " .. formatSeconds(cooldownRemaining)
+	elseif isWorking then
+		activityCooldownLabel.Text = "Status: Working"
+	else
+		activityCooldownLabel.Text = "Cooldown: Ready"
+	end
+
+	if workRequestPending then
+		startWorkButton.Text = "..."
+	elseif cooldownRemaining > 0 then
+		startWorkButton.Text = formatSeconds(cooldownRemaining)
+	elseif isWorking then
+		startWorkButton.Text = "Working"
+	else
+		startWorkButton.Text = "Start"
+	end
+
+	startWorkButton.Active = canStart
+	startWorkButton.AutoButtonColor = canStart
+	startWorkButton.BackgroundColor3 = canStart
+		and Color3.fromRGB(42, 67, 83)
+		or Color3.fromRGB(126, 124, 110)
+
+	if activeWorkAttempt then
+		local elapsed = os.clock() - activeWorkAttempt.StartedAt
+		local duration = math.max(0.1, tonumber(activeWorkAttempt.DurationSeconds) or 0.1)
+		local progress = math.clamp(elapsed / duration, 0, 1)
+		local remaining = math.max(0, duration - elapsed)
+
+		progressTrack.Visible = true
+		progressText.Visible = true
+		progressFill.Size = UDim2.fromScale(progress, 1)
+		progressText.Text = activeWorkAttempt.Completing
+			and "Completing work..."
+			or ("Working... " .. formatSeconds(remaining))
+	else
+		progressTrack.Visible = false
+		progressText.Visible = false
+		progressFill.Size = UDim2.fromScale(0, 1)
+		progressText.Text = ""
+	end
+end
+
+requestWorkCooldowns = function()
+	if not isWorkPanelOpen then
+		return
+	end
+
+	workActivityRequest:FireServer("GetCooldowns", {})
+end
+
+requestWorkActivities = function()
+	if not isWorkPanelOpen or not shouldShowMainMenu() then
+		return
+	end
+
+	workRequestPending = true
+	setWorkStatus("Loading work...", false)
+	renderWorkPanel()
+	workActivityRequest:FireServer("GetActivities", {})
+	workActivityRequest:FireServer("GetCooldowns", {})
+end
+
+stopLocalWorkProgress = function()
+	progressToken += 1
+	activeWorkAttempt = nil
+	workRequestPending = false
+
+	if renderWorkPanel then
+		renderWorkPanel()
+	end
+end
+
+local function startLocalWorkProgress(activityId, durationSeconds)
+	progressToken += 1
+
+	local currentToken = progressToken
+	local duration = math.max(0.1, tonumber(durationSeconds) or 0.1)
+
+	activeWorkAttempt = {
+		ActivityId = activityId,
+		StartedAt = os.clock(),
+		DurationSeconds = duration,
+		Completing = false,
+	}
+
+	setWorkStatus("Working...", false)
+	renderWorkPanel()
+
+	task.spawn(function()
+		while activeWorkAttempt
+			and activeWorkAttempt.ActivityId == activityId
+			and progressToken == currentToken
+			and isWorkPanelOpen
+			and background.Visible do
+
+			local elapsed = os.clock() - activeWorkAttempt.StartedAt
+
+			if elapsed >= duration then
+				activeWorkAttempt.Completing = true
+				workRequestPending = true
+				setWorkStatus("Completing work...", false)
+				renderWorkPanel()
+				workActivityRequest:FireServer("CompleteActivity", {
+					ActivityId = activityId,
+				})
+				return
+			end
+
+			renderWorkPanel()
+			task.wait(0.1)
+		end
+	end)
 end
 
 local function suppressGameplayGui(screenGui)
@@ -557,6 +906,145 @@ end)
 
 workBackButton.MouseButton1Click:Connect(function()
 	setWorkPanelOpen(false)
+end)
+
+startWorkButton.MouseButton1Click:Connect(function()
+	if not isWorkPanelOpen or not shouldShowMainMenu() then
+		return
+	end
+
+	local activity = getSelectedWorkActivity()
+
+	if not activity or workRequestPending or activeWorkAttempt then
+		return
+	end
+
+	local cooldownRemaining = getCooldownRemaining(activity.ActivityId)
+
+	if cooldownRemaining > 0 then
+		setWorkStatus("Please wait before working again.", true)
+		renderWorkPanel()
+		return
+	end
+
+	workRequestPending = true
+	setWorkStatus("Starting work...", false)
+	renderWorkPanel()
+	workActivityRequest:FireServer("StartActivity", {
+		ActivityId = activity.ActivityId,
+	})
+end)
+
+workActivityResult.OnClientEvent:Connect(function(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	local kind = response.Kind
+
+	if kind == "Activities" then
+		workRequestPending = false
+		workActivities = {}
+		workActivityById = {}
+
+		if typeof(response.Activities) == "table" then
+			for _, activity in ipairs(response.Activities) do
+				if typeof(activity) == "table" and typeof(activity.ActivityId) == "string" then
+					table.insert(workActivities, activity)
+					workActivityById[activity.ActivityId] = activity
+				end
+			end
+		end
+
+		if not selectedWorkActivityId or not workActivityById[selectedWorkActivityId] then
+			selectedWorkActivityId = workActivities[1] and workActivities[1].ActivityId or nil
+		end
+
+		if typeof(response.Cooldowns) == "table" then
+			for activityId, remaining in pairs(response.Cooldowns) do
+				setCooldownRemaining(activityId, remaining)
+			end
+		end
+
+		setWorkStatus(response.Message or "Work activities loaded.", false)
+		renderWorkPanel()
+		return
+	end
+
+	if kind == "Cooldowns" then
+		if typeof(response.Cooldowns) == "table" then
+			for activityId, remaining in pairs(response.Cooldowns) do
+				setCooldownRemaining(activityId, remaining)
+			end
+		end
+
+		renderWorkPanel()
+		return
+	end
+
+	if kind == "GetActivities" then
+		workRequestPending = false
+		setWorkStatus(response.Message or "Could not load work activities.", true)
+		renderWorkPanel()
+		return
+	end
+
+	if kind == "GetCooldowns" then
+		renderWorkPanel()
+		return
+	end
+
+	if kind == "StartActivity" then
+		workRequestPending = false
+
+		if response.Success == true then
+			if not isWorkPanelOpen or not shouldShowMainMenu() then
+				return
+			end
+
+			local activityId = response.ActivityId
+			local durationSeconds = response.DurationSeconds
+
+			if typeof(activityId) ~= "string" or activityId == "" then
+				local activity = getSelectedWorkActivity()
+				activityId = activity and activity.ActivityId or nil
+			end
+
+			if not activityId then
+				setWorkStatus("Work started, but the activity was missing.", true)
+				renderWorkPanel()
+				return
+			end
+
+			startLocalWorkProgress(activityId, durationSeconds)
+		else
+			if response.RemainingCooldown then
+				setCooldownRemaining(response.ActivityId, response.RemainingCooldown)
+			end
+
+			setWorkStatus(response.Message or "Could not start work.", true)
+			renderWorkPanel()
+		end
+
+		return
+	end
+
+	if kind == "CompleteActivity" then
+		workRequestPending = false
+		progressToken += 1
+		activeWorkAttempt = nil
+
+		if response.RemainingCooldown then
+			setCooldownRemaining(response.ActivityId, response.RemainingCooldown)
+		end
+
+		setWorkStatus(
+			response.Message or (response.Success == true and "Work complete." or "Could not complete work."),
+			response.Success ~= true
+		)
+		renderWorkPanel()
+		requestWorkCooldowns()
+	end
 end)
 
 playerGui.ChildAdded:Connect(function(child)
