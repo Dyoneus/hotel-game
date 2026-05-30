@@ -42,7 +42,6 @@ local REQUEST_COOLDOWN_SECONDS = 0.25
 local ATTEMPT_EXPIRY_GRACE_SECONDS = 10
 
 local activeAttempts = {}
-local cooldowns = {}
 local lastRequestByUserId = {}
 
 local VALID_ACTIONS = {
@@ -111,27 +110,14 @@ local function getUserActivityTable(container, userId)
 	return userTable
 end
 
-local function getCooldownRemaining(userId, activityId)
-	local userCooldowns = cooldowns[userId]
+local function getProfileCooldownRemaining(player, activityId)
+	local remainingCooldown, cooldownRecord, cooldownMessage = RoomPersistence.GetWorkActivityCooldown(player, activityId)
 
-	if not userCooldowns then
-		return 0
+	if typeof(remainingCooldown) ~= "number" then
+		return nil, cooldownMessage or "Profile is not loaded.", cooldownRecord
 	end
 
-	local expiresAt = userCooldowns[activityId]
-
-	if typeof(expiresAt) ~= "number" then
-		return 0
-	end
-
-	local remaining = expiresAt - os.clock()
-
-	if remaining <= 0 then
-		userCooldowns[activityId] = nil
-		return 0
-	end
-
-	return remaining
+	return remainingCooldown, nil, cooldownRecord
 end
 
 local function validateActivity(activityId)
@@ -179,11 +165,34 @@ local function validateWorkReward(activity)
 	return true, nil, rewardAmount
 end
 
-local function buildCooldownsForActivities(userId, activities)
+local function validateWorkCooldown(activity)
+	local cooldownSeconds = activity.CooldownSeconds
+
+	if typeof(cooldownSeconds) ~= "number"
+		or cooldownSeconds ~= cooldownSeconds
+		or cooldownSeconds < 0
+		or cooldownSeconds >= math.huge then
+
+		return false, "Invalid work cooldown."
+	end
+
+	return true, nil, math.max(0, math.ceil(cooldownSeconds))
+end
+
+local function buildCooldownsForActivities(player, activities)
 	local activityCooldowns = {}
+	local cooldownSnapshot = RoomPersistence.GetWorkActivityCooldownSnapshot(player)
+	local now = os.time()
 
 	for _, activity in ipairs(activities) do
-		activityCooldowns[activity.ActivityId] = getCooldownRemaining(userId, activity.ActivityId)
+		local cooldownRecord = cooldownSnapshot[activity.ActivityId]
+		local remainingCooldown = 0
+
+		if typeof(cooldownRecord) == "table" and typeof(cooldownRecord.NextAvailableUnix) == "number" then
+			remainingCooldown = math.max(0, math.ceil(cooldownRecord.NextAvailableUnix - now))
+		end
+
+		activityCooldowns[activity.ActivityId] = remainingCooldown
 	end
 
 	return activityCooldowns
@@ -197,7 +206,7 @@ local function handleGetActivities(player)
 		Success = true,
 		Message = "Work activities loaded.",
 		Activities = activities,
-		Cooldowns = buildCooldownsForActivities(player.UserId, activities),
+		Cooldowns = buildCooldownsForActivities(player, activities),
 	})
 end
 
@@ -208,7 +217,7 @@ local function handleGetCooldowns(player)
 		Kind = "Cooldowns",
 		Success = true,
 		Message = "Work cooldowns loaded.",
-		Cooldowns = buildCooldownsForActivities(player.UserId, activities),
+		Cooldowns = buildCooldownsForActivities(player, activities),
 	})
 end
 
@@ -238,7 +247,17 @@ local function handleStartActivity(player, payload)
 		return
 	end
 
-	local remainingCooldown = getCooldownRemaining(player.UserId, activity.ActivityId)
+	local remainingCooldown, cooldownMessage = getProfileCooldownRemaining(player, activity.ActivityId)
+
+	if remainingCooldown == nil then
+		sendResult(player, {
+			Kind = "StartActivity",
+			Success = false,
+			Message = cooldownMessage,
+			ActivityId = activity.ActivityId,
+		})
+		return
+	end
 
 	if remainingCooldown > 0 then
 		sendResult(player, {
@@ -345,7 +364,19 @@ local function handleCompleteActivity(player, payload)
 		return
 	end
 
-	local remainingCooldown = getCooldownRemaining(player.UserId, activity.ActivityId)
+	local remainingCooldown, cooldownMessage = getProfileCooldownRemaining(player, activity.ActivityId)
+
+	if remainingCooldown == nil then
+		userAttempts[activity.ActivityId] = nil
+
+		sendResult(player, {
+			Kind = "CompleteActivity",
+			Success = false,
+			Message = cooldownMessage,
+			ActivityId = activity.ActivityId,
+		})
+		return
+	end
 
 	if remainingCooldown > 0 then
 		userAttempts[activity.ActivityId] = nil
@@ -374,6 +405,20 @@ local function handleCompleteActivity(player, payload)
 		return
 	end
 
+	local cooldownValid, cooldownValidationMessage, cooldownSeconds = validateWorkCooldown(activity)
+
+	if not cooldownValid then
+		userAttempts[activity.ActivityId] = nil
+
+		sendResult(player, {
+			Kind = "CompleteActivity",
+			Success = false,
+			Message = cooldownValidationMessage,
+			ActivityId = activity.ActivityId,
+		})
+		return
+	end
+
 	userAttempts[activity.ActivityId] = nil
 
 	local grantSuccess, grantMessage, newDollarBalance = RoomPersistence.AddDollars(
@@ -392,7 +437,29 @@ local function handleCompleteActivity(player, payload)
 		return
 	end
 
-	getUserActivityTable(cooldowns, player.UserId)[activity.ActivityId] = now + activity.CooldownSeconds
+	local cooldownSuccess, cooldownSaveMessage, savedRemainingCooldown = RoomPersistence.SetWorkActivityCooldown(
+		player,
+		activity.ActivityId,
+		cooldownSeconds
+	)
+
+	if not cooldownSuccess then
+		sendResult(player, {
+			Kind = "CompleteActivity",
+			Success = true,
+			Message = "Work complete! You earned "
+				.. tostring(rewardAmount)
+				.. " Dollars. "
+				.. tostring(cooldownSaveMessage or "Cooldown could not be saved."),
+			ActivityId = activity.ActivityId,
+			RewardAmount = rewardAmount,
+			RewardCurrency = "Dollars",
+			NewCurrencyBalance = newDollarBalance,
+			RemainingCooldown = 0,
+			Warning = cooldownSaveMessage,
+		})
+		return
+	end
 
 	sendResult(player, {
 		Kind = "CompleteActivity",
@@ -402,7 +469,7 @@ local function handleCompleteActivity(player, payload)
 		RewardAmount = rewardAmount,
 		RewardCurrency = "Dollars",
 		NewCurrencyBalance = newDollarBalance,
-		RemainingCooldown = activity.CooldownSeconds,
+		RemainingCooldown = savedRemainingCooldown or cooldownSeconds,
 	})
 end
 
@@ -462,6 +529,5 @@ end)
 
 Players.PlayerRemoving:Connect(function(player)
 	activeAttempts[player.UserId] = nil
-	cooldowns[player.UserId] = nil
 	lastRequestByUserId[player.UserId] = nil
 end)

@@ -78,6 +78,7 @@ local function createDefaultProfile()
 			LastClaimUnix = nil,
 			Streak = 0,
 		},
+		WorkActivityCooldowns = {},
 
 		UpdatedAt = os.time(),
 	}
@@ -114,6 +115,12 @@ local function isValidRoomFavouriteKey(roomKey)
 			(string.sub(roomKey, 1, #playerRoomPrefix) == playerRoomPrefix and #roomKey > #playerRoomPrefix)
 			or (string.sub(roomKey, 1, #publicSpacePrefix) == publicSpacePrefix and #roomKey > #publicSpacePrefix)
 		)
+end
+
+local function isValidWorkActivityId(activityId)
+	return typeof(activityId) == "string"
+		and activityId ~= ""
+		and activityId:match("%S") ~= nil
 end
 
 local function isPositiveInteger(value)
@@ -376,6 +383,39 @@ local function ensureDailyReward(profile)
 	profile.DailyReward = dailyReward
 
 	return profile.DailyReward
+end
+
+local function normalizeWorkActivityCooldowns(cooldowns, now)
+	local normalized = {}
+
+	if typeof(cooldowns) ~= "table" then
+		return normalized
+	end
+
+	now = now or os.time()
+
+	for activityId, cooldownRecord in pairs(cooldowns) do
+		if isValidWorkActivityId(activityId) and typeof(cooldownRecord) == "table" then
+			local nextAvailableUnix = cooldownRecord.NextAvailableUnix
+
+			if isNonNegativeInteger(nextAvailableUnix) and nextAvailableUnix > now then
+				normalized[activityId] = {
+					LastCompletedUnix = isNonNegativeInteger(cooldownRecord.LastCompletedUnix)
+						and math.floor(cooldownRecord.LastCompletedUnix)
+						or nil,
+					NextAvailableUnix = math.floor(nextAvailableUnix),
+				}
+			end
+		end
+	end
+
+	return normalized
+end
+
+local function ensureWorkActivityCooldowns(profile)
+	profile.WorkActivityCooldowns = normalizeWorkActivityCooldowns(profile.WorkActivityCooldowns)
+
+	return profile.WorkActivityCooldowns
 end
 
 local function getDailyRewardDayIndex(streak)
@@ -789,6 +829,7 @@ local function fillDefaults(profile)
 	ensureInventory(profile)
 	ensureCurrencies(profile)
 	ensureDailyReward(profile)
+	ensureWorkActivityCooldowns(profile)
 	ensureRoomDirectory(profile)
 	ensureFavouriteRooms(profile)
 	ensureRoomPermissions(profile)
@@ -1907,6 +1948,79 @@ end
 
 function RoomPersistence.SetDollars(player, amount, reason)
 	return RoomPersistence.SetCurrency(player, "Dollars", amount, reason)
+end
+
+function RoomPersistence.GetWorkActivityCooldownSnapshot(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return {}
+	end
+
+	return deepCopy(ensureWorkActivityCooldowns(profile))
+end
+
+function RoomPersistence.GetWorkActivityCooldown(player, activityId)
+	if not isValidWorkActivityId(activityId) then
+		return nil, nil, "Invalid work activity."
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil, nil, "Profile is not loaded."
+	end
+
+	local cooldowns = ensureWorkActivityCooldowns(profile)
+	local cooldownRecord = cooldowns[activityId]
+
+	if not cooldownRecord then
+		return 0, nil, nil
+	end
+
+	local remainingSeconds = math.max(0, math.ceil(cooldownRecord.NextAvailableUnix - os.time()))
+
+	if remainingSeconds <= 0 then
+		cooldowns[activityId] = nil
+
+		return 0, nil, nil
+	end
+
+	return remainingSeconds, deepCopy(cooldownRecord), nil
+end
+
+function RoomPersistence.SetWorkActivityCooldown(player, activityId, cooldownSeconds)
+	if not isValidWorkActivityId(activityId) then
+		return false, "Invalid work activity.", nil, nil
+	end
+
+	if typeof(cooldownSeconds) ~= "number"
+		or cooldownSeconds ~= cooldownSeconds
+		or cooldownSeconds < 0
+		or cooldownSeconds >= math.huge then
+
+		return false, "Invalid work cooldown.", nil, nil
+	end
+
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil, nil
+	end
+
+	local now = os.time()
+	local normalizedCooldownSeconds = math.max(0, math.ceil(cooldownSeconds))
+	local cooldownRecord = {
+		LastCompletedUnix = now,
+		NextAvailableUnix = now + normalizedCooldownSeconds,
+	}
+	local cooldowns = ensureWorkActivityCooldowns(profile)
+	cooldowns[activityId] = cooldownRecord
+	profile.UpdatedAt = now
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Work cooldown saved.", normalizedCooldownSeconds, deepCopy(cooldownRecord)
 end
 
 function RoomPersistence.GrantStarterDollarsIfNeeded(player)
