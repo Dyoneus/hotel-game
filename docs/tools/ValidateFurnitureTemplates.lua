@@ -5,6 +5,27 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local furnitureTemplates = ReplicatedStorage:FindFirstChild("FurnitureTemplates")
 
+local VALID_CATALOG_CATEGORIES = {
+	Bed = true,
+	Chair = true,
+	Divider = true,
+	Floor = true,
+	Food = true,
+	Gate = true,
+	Lighting = true,
+	Music = true,
+	Other = true,
+	Pets = true,
+	Present = true,
+	Roller = true,
+	Rug = true,
+	Shelf = true,
+	Table = true,
+	["Wall Decoration"] = true,
+	Wallpaper = true,
+	Window = true,
+}
+
 local function logOk(templateName, message)
 	print("[OK]", templateName, message)
 end
@@ -77,6 +98,12 @@ local function validateTemplate(model)
 	if model:GetAttribute("CurrencyKey") ~= "Dollars" then
 		logError(templateName, "CurrencyKey must be \"Dollars\" for this patch.")
 		hasError = true
+	end
+
+	local category = model:GetAttribute("Category")
+
+	if typeof(category) == "string" and category ~= "" and not VALID_CATALOG_CATEGORIES[category] then
+		logWarn(templateName, "Category should use the current Catalog list. Unknown categories display under Other.")
 	end
 
 	if not isNonNegativeInteger(model:GetAttribute("SellPrice") or 0) then

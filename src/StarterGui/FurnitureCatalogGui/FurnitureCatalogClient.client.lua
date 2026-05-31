@@ -71,8 +71,8 @@ local catalogCurrency = {
 	Serial = 0,
 }
 local catalogNavExpanded = {
-	Furniture = true,
-	Marketplace = true,
+	Furniture = false,
+	Marketplace = false,
 }
 
 local CATALOG_VIEW = {
@@ -94,16 +94,24 @@ local CATALOG_PAGE = {
 	BEST_SELLERS = "BestSellers",
 	VIP = "VIP",
 	FURNITURE_SHOP = "FurnitureShop",
-	FURNITURE_ALL = "FurnitureAll",
-	FURNITURE_SEATING = "FurnitureSeating",
-	FURNITURE_TABLES = "FurnitureTables",
-	FURNITURE_BEDS = "FurnitureBeds",
-	FURNITURE_DECOR = "FurnitureDecor",
-	FURNITURE_ROOM_BUILDING = "FurnitureRoomBuilding",
-	FURNITURE_RUGS = "FurnitureRugs",
-	FURNITURE_PLANTS = "FurniturePlants",
+	FURNITURE_BED = "FurnitureBed",
+	FURNITURE_CHAIR = "FurnitureChair",
+	FURNITURE_DIVIDER = "FurnitureDivider",
+	FURNITURE_FLOOR = "FurnitureFloor",
+	FURNITURE_FOOD = "FurnitureFood",
+	FURNITURE_GATE = "FurnitureGate",
 	FURNITURE_LIGHTING = "FurnitureLighting",
-	FURNITURE_EXTRAS = "FurnitureExtras",
+	FURNITURE_MUSIC = "FurnitureMusic",
+	FURNITURE_OTHER = "FurnitureOther",
+	FURNITURE_PETS = "FurniturePets",
+	FURNITURE_PRESENT = "FurniturePresent",
+	FURNITURE_ROLLER = "FurnitureRoller",
+	FURNITURE_RUG = "FurnitureRug",
+	FURNITURE_SHELF = "FurnitureShelf",
+	FURNITURE_TABLE = "FurnitureTable",
+	FURNITURE_WALL_DECORATION = "FurnitureWallDecoration",
+	FURNITURE_WALLPAPER = "FurnitureWallpaper",
+	FURNITURE_WINDOW = "FurnitureWindow",
 	PETS = "Pets",
 	SPECIAL_OFFERS = "SpecialOffers",
 	MARKETPLACE_OFFERS = "MarketplaceOffers",
@@ -129,17 +137,47 @@ local CATALOG_NAV_ITEMS = {
 }
 
 local CATALOG_SHOP_CATEGORIES = {
-	{ Page = CATALOG_PAGE.FURNITURE_ALL, Label = "All", Category = "All" },
-	{ Page = CATALOG_PAGE.FURNITURE_SEATING, Label = "Seating", Category = "Chairs" },
-	{ Page = CATALOG_PAGE.FURNITURE_TABLES, Label = "Tables", Category = "Tables" },
-	{ Page = CATALOG_PAGE.FURNITURE_BEDS, Label = "Beds", Category = "Beds" },
-	{ Page = CATALOG_PAGE.FURNITURE_DECOR, Label = "Decor", Category = "Decor" },
-	{ Page = CATALOG_PAGE.FURNITURE_ROOM_BUILDING, Label = "Room Building", Category = "Room Building" },
-	{ Page = CATALOG_PAGE.FURNITURE_RUGS, Label = "Rugs", Category = "Rugs" },
-	{ Page = CATALOG_PAGE.FURNITURE_PLANTS, Label = "Plants", Category = "Plants" },
+	{ Page = CATALOG_PAGE.FURNITURE_BED, Label = "Bed", Category = "Bed" },
+	{ Page = CATALOG_PAGE.FURNITURE_CHAIR, Label = "Chair", Category = "Chair" },
+	{ Page = CATALOG_PAGE.FURNITURE_DIVIDER, Label = "Divider", Category = "Divider" },
+	{ Page = CATALOG_PAGE.FURNITURE_FLOOR, Label = "Floor", Category = "Floor" },
+	{ Page = CATALOG_PAGE.FURNITURE_FOOD, Label = "Food", Category = "Food" },
+	{ Page = CATALOG_PAGE.FURNITURE_GATE, Label = "Gate", Category = "Gate" },
 	{ Page = CATALOG_PAGE.FURNITURE_LIGHTING, Label = "Lighting", Category = "Lighting" },
-	{ Page = CATALOG_PAGE.FURNITURE_EXTRAS, Label = "Extras", Category = "Extras" },
+	{ Page = CATALOG_PAGE.FURNITURE_MUSIC, Label = "Music", Category = "Music" },
+	{ Page = CATALOG_PAGE.FURNITURE_OTHER, Label = "Other", Category = "Other" },
+	{ Page = CATALOG_PAGE.FURNITURE_PETS, Label = "Pets", Category = "Pets" },
+	{ Page = CATALOG_PAGE.FURNITURE_PRESENT, Label = "Present", Category = "Present" },
+	{ Page = CATALOG_PAGE.FURNITURE_ROLLER, Label = "Roller", Category = "Roller" },
+	{ Page = CATALOG_PAGE.FURNITURE_RUG, Label = "Rug", Category = "Rug" },
+	{ Page = CATALOG_PAGE.FURNITURE_SHELF, Label = "Shelf", Category = "Shelf" },
+	{ Page = CATALOG_PAGE.FURNITURE_TABLE, Label = "Table", Category = "Table" },
+	{ Page = CATALOG_PAGE.FURNITURE_WALL_DECORATION, Label = "Wall Decoration", Category = "Wall Decoration" },
+	{ Page = CATALOG_PAGE.FURNITURE_WALLPAPER, Label = "Wallpaper", Category = "Wallpaper" },
+	{ Page = CATALOG_PAGE.FURNITURE_WINDOW, Label = "Window", Category = "Window" },
 }
+
+local SHOP_CATEGORY_NORMALIZATION = {
+	Bed = "Bed",
+	Beds = "Bed",
+	Chair = "Chair",
+	Chairs = "Chair",
+	Seating = "Chair",
+	Table = "Table",
+	Tables = "Table",
+	Lighting = "Lighting",
+	Rug = "Rug",
+	Rugs = "Rug",
+	Decor = "Other",
+	["Room Building"] = "Other",
+	Plants = "Other",
+	Extras = "Other",
+	Furniture = "Other",
+}
+
+for _, category in ipairs(CATALOG_SHOP_CATEGORIES) do
+	SHOP_CATEGORY_NORMALIZATION[category.Category] = category.Category
+end
 
 local CATALOG_MARKETPLACE_PAGES = {
 	{ Page = CATALOG_PAGE.MARKETPLACE_OFFERS, Label = "Offers", Icon = "M" },
@@ -171,17 +209,12 @@ local PLACEHOLDER_PAGE_CONTENT = {
 	},
 }
 
-local updateOpenButton = nil
-local destroyCatalogPlacementPreview = nil
 local renderCatalog = nil
 local renderMarketplace = nil
 local selectCatalogPage = nil
 local rebuildCatalogNavigation = nil
 local requestMarketplaceOffers = nil
 local requestMarketplaceMySales = nil
-local cancelMarketplaceSale = nil
-local claimMarketplaceSale = nil
-local requestMarketplacePurchase = nil
 
 local placingItemData = nil
 local placementPreview = nil
@@ -266,8 +299,8 @@ local function setLocalMajorMenuState(isOpen, menuName)
 		openMajorMenuName = nil
 	end
 
-	if updateOpenButton then
-		updateOpenButton()
+	if ui.UpdateOpenButton then
+		ui.UpdateOpenButton()
 	end
 end
 
@@ -809,6 +842,10 @@ local function addCatalogNavButton(key, label, icon, layoutOrder, options)
 		button.MouseButton1Click:Connect(function()
 			catalogNavExpanded[options.Group] = not catalogNavExpanded[options.Group]
 			rebuildCatalogNavigation()
+
+			if options.Group == "Furniture" and selectCatalogPage then
+				selectCatalogPage(CATALOG_PAGE.FURNITURE_SHOP)
+			end
 		end)
 	end
 
@@ -1153,8 +1190,8 @@ local function setPanelVisible(isVisible)
 
 	ui.Panel.Visible = isVisible
 
-	if updateOpenButton then
-		updateOpenButton()
+	if ui.UpdateOpenButton then
+		ui.UpdateOpenButton()
 	else
 		ui.OpenButton.Visible = false
 	end
@@ -1813,7 +1850,7 @@ local function handleCatalogPlacementAction(actionName, inputState)
 	end
 
 	if actionName == CATALOG_CANCEL_ACTION then
-		destroyCatalogPlacementPreview()
+		ui.DestroyCatalogPlacementPreview()
 		setStatus("Placement cancelled.")
 		return Enum.ContextActionResult.Sink
 	end
@@ -1853,7 +1890,7 @@ local function clearPlacementPreviewVisualsOnly()
 	end
 end
 
-destroyCatalogPlacementPreview = function()
+ui.DestroyCatalogPlacementPreview = function()
 	clearPlacementPreviewVisualsOnly()
 
 	unbindCatalogPlacementControls()
@@ -1869,13 +1906,13 @@ destroyCatalogPlacementPreview = function()
 
 	player:SetAttribute("CatalogPlacementActive", false)
 
-	if updateOpenButton then
-		updateOpenButton()
+	if ui.UpdateOpenButton then
+		ui.UpdateOpenButton()
 	end
 end
 
 local function createCatalogPlacementPreview(itemData)
-	destroyCatalogPlacementPreview()
+	ui.DestroyCatalogPlacementPreview()
 
 	local _, _, gridError = getCurrentPlacementGrid()
 
@@ -1986,7 +2023,7 @@ local function confirmCatalogPlacement()
 
 	if placementSource ~= "Inventory" then
 		setStatus("Open Inventory to place furniture.")
-		destroyCatalogPlacementPreview()
+		ui.DestroyCatalogPlacementPreview()
 		return
 	end
 
@@ -2058,11 +2095,10 @@ local function itemMatchesSelectedCategory(itemData)
 		return itemData.Featured == true
 	end
 
-	if selectedCategory == "Chairs" then
-		return itemData.Category == "Chairs" or itemData.Category == "Seating"
-	end
+	local category = tostring(itemData.Category or "")
+	local normalizedCategory = SHOP_CATEGORY_NORMALIZATION[category] or "Other"
 
-	return itemData.Category == selectedCategory
+	return normalizedCategory == selectedCategory
 end
 
 local function getShopCategoryForPage(page)
@@ -2228,7 +2264,7 @@ local function createFrontPageFeatureCard(parent, title, subtitle, accentColor, 
 
 	card.MouseButton1Click:Connect(function()
 		if title == "Fresh Lobby Looks" and selectCatalogPage then
-			selectCatalogPage(CATALOG_PAGE.FURNITURE_ALL)
+			selectCatalogPage(CATALOG_PAGE.FURNITURE_SHOP)
 		else
 			setStatus("Coming soon.")
 		end
@@ -2349,7 +2385,7 @@ local function renderFrontPage()
 
 	viewCollection.MouseButton1Click:Connect(function()
 		if selectCatalogPage then
-			selectCatalogPage(CATALOG_PAGE.FURNITURE_ALL)
+			selectCatalogPage(CATALOG_PAGE.FURNITURE_SHOP)
 		end
 	end)
 
@@ -3548,8 +3584,8 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 		createCorner(cancelButton, 7)
 
 		cancelButton.MouseButton1Click:Connect(function()
-			if cancelMarketplaceSale then
-				cancelMarketplaceSale(listingId)
+			if ui.CancelMarketplaceSale then
+				ui.CancelMarketplaceSale(listingId)
 			end
 		end)
 	elseif isSoldUnclaimed then
@@ -3573,8 +3609,8 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 		createCorner(claimButton, 7)
 
 		claimButton.MouseButton1Click:Connect(function()
-			if claimMarketplaceSale then
-				claimMarketplaceSale(listingId)
+			if ui.ClaimMarketplaceSale then
+				ui.ClaimMarketplaceSale(listingId)
 			end
 		end)
 	end
@@ -3900,7 +3936,7 @@ requestMarketplaceMySales = function(options)
 	end)
 end
 
-cancelMarketplaceSale = function(listingId)
+ui.CancelMarketplaceSale = function(listingId)
 	if typeof(listingId) ~= "string" or listingId == "" then
 		setStatus("Invalid marketplace listing.")
 		return
@@ -3935,7 +3971,7 @@ cancelMarketplaceSale = function(listingId)
 	end)
 end
 
-claimMarketplaceSale = function(listingId)
+ui.ClaimMarketplaceSale = function(listingId)
 	if typeof(listingId) ~= "string" or listingId == "" then
 		setStatus("Invalid marketplace sale.")
 		return
@@ -3970,7 +4006,7 @@ claimMarketplaceSale = function(listingId)
 	end)
 end
 
-requestMarketplacePurchase = function()
+ui.RequestMarketplacePurchase = function()
 	if marketplacePurchaseRequestInFlight then
 		return
 	end
@@ -4073,7 +4109,17 @@ selectCatalogPage = function(page)
 	end
 
 	if selectedCatalogPage == CATALOG_PAGE.FURNITURE_SHOP then
-		selectedCatalogPage = CATALOG_PAGE.FURNITURE_ALL
+		catalogViewMode = CATALOG_VIEW.SHOP
+		selectedCategory = "All"
+		rebuildCatalogNavigation()
+		renderCatalog(latestCatalogItems)
+
+		if #latestCatalogItems == 0 then
+			setStatus("Loading catalog furniture...")
+			furnitureCatalogRequest:FireServer("GetCatalog", {})
+		end
+
+		return
 	end
 
 	local shopCategory = getShopCategoryForPage(selectedCatalogPage)
@@ -4143,7 +4189,7 @@ selectCatalogPage = function(page)
 	renderPlaceholderPage(selectedCatalogPage)
 end
 
-updateOpenButton = function()
+ui.UpdateOpenButton = function()
 	ui.OpenButton.Visible = false
 end
 
@@ -4203,8 +4249,8 @@ end)
 ui.MarketplacePurchaseCancelButton.MouseButton1Click:Connect(closeMarketplacePurchaseModal)
 
 ui.MarketplacePurchaseConfirmButton.MouseButton1Click:Connect(function()
-	if requestMarketplacePurchase then
-		requestMarketplacePurchase()
+	if ui.RequestMarketplacePurchase then
+		ui.RequestMarketplacePurchase()
 	end
 end)
 
@@ -4225,6 +4271,9 @@ local function openCatalogPanel()
 		return
 	end
 
+	catalogNavExpanded.Furniture = false
+	catalogNavExpanded.Marketplace = false
+	rebuildCatalogNavigation()
 	setPanelVisible(true)
 	selectCatalogPage(CATALOG_PAGE.FRONT)
 	requestCatalogCurrencySnapshot(true)
@@ -4248,7 +4297,7 @@ majorMenuOpened.Event:Connect(function(menuName)
 	end
 
 	if placingItemData then
-		destroyCatalogPlacementPreview()
+		ui.DestroyCatalogPlacementPreview()
 	end
 end)
 
@@ -4258,7 +4307,7 @@ closeMajorMenus.Event:Connect(function()
 	end
 
 	if placingItemData then
-		destroyCatalogPlacementPreview()
+		ui.DestroyCatalogPlacementPreview()
 	end
 end)
 
@@ -4730,7 +4779,7 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 		local placedFromInventory = kind == "PlaceInventoryItem"
 			or (typeof(data) == "table" and data.Source == "Inventory")
 
-		destroyCatalogPlacementPreview()
+		ui.DestroyCatalogPlacementPreview()
 		setStatus(message)
 
 		if success then
@@ -4755,7 +4804,7 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 	setStatus(message)
 end)
 
-local function handleCatalogVisibilityChanged()
+ui.HandleCatalogVisibilityChanged = function()
 	local canShowShop = shouldShowCatalogButton()
 
 	if ui.Panel.Visible and not canShowShop then
@@ -4770,24 +4819,24 @@ local function handleCatalogVisibilityChanged()
 				and not canContinueInventoryPlacement()
 			)
 		) then
-		destroyCatalogPlacementPreview()
+		ui.DestroyCatalogPlacementPreview()
 	end
 
-	updateOpenButton()
+	ui.UpdateOpenButton()
 end
 
-player:GetAttributeChangedSignal("CurrentRoomName"):Connect(handleCatalogVisibilityChanged)
-player:GetAttributeChangedSignal("RoomMode"):Connect(handleCatalogVisibilityChanged)
-player:GetAttributeChangedSignal("OnboardingStep"):Connect(handleCatalogVisibilityChanged)
-player:GetAttributeChangedSignal("ControlMode"):Connect(handleCatalogVisibilityChanged)
-player:GetAttributeChangedSignal("HasCreatedRoom"):Connect(handleCatalogVisibilityChanged)
+player:GetAttributeChangedSignal("CurrentRoomName"):Connect(ui.HandleCatalogVisibilityChanged)
+player:GetAttributeChangedSignal("RoomMode"):Connect(ui.HandleCatalogVisibilityChanged)
+player:GetAttributeChangedSignal("OnboardingStep"):Connect(ui.HandleCatalogVisibilityChanged)
+player:GetAttributeChangedSignal("ControlMode"):Connect(ui.HandleCatalogVisibilityChanged)
+player:GetAttributeChangedSignal("HasCreatedRoom"):Connect(ui.HandleCatalogVisibilityChanged)
 
 activeRooms.ChildAdded:Connect(function()
-	task.defer(updateOpenButton)
+	task.defer(ui.UpdateOpenButton)
 end)
 
 activeRooms.ChildRemoved:Connect(function()
-	task.defer(updateOpenButton)
+	task.defer(ui.UpdateOpenButton)
 end)
 
-task.defer(updateOpenButton)
+task.defer(ui.UpdateOpenButton)

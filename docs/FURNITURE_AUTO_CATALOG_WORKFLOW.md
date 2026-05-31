@@ -14,7 +14,7 @@ Regular Dollar furniture can be added to the Catalog by placing a template model
 AutoCatalogEnabled = true
 DisplayName = "Cozy Sofa"
 Description = "A comfy sofa for your room."
-Category = "Seating"
+Category = "Chair"
 CurrencyKey = "Dollars"
 Price = 120
 SellPrice = 30
@@ -39,7 +39,7 @@ Useful optional attributes:
 
 - `DisplayName`, defaults to the model name
 - `Description`, defaults to blank
-- `Category`, defaults to `Furniture`
+- `Category`, defaults to `Other`
 - `SellPrice`, defaults to `0`
 - `TradableOnPurchase`, defaults to `false`
 - `SellableOnPurchase`, defaults to `true`
@@ -48,6 +48,27 @@ Useful optional attributes:
 
 Dollar auto-catalog furniture is untradable by default and sellable by default.
 Coin and Robux purchase backends are not part of this workflow.
+
+Use one of these Catalog categories for auto-catalog furniture:
+
+- `Bed`
+- `Chair`
+- `Divider`
+- `Floor`
+- `Food`
+- `Gate`
+- `Lighting`
+- `Music`
+- `Other`
+- `Pets`
+- `Present`
+- `Roller`
+- `Rug`
+- `Shelf`
+- `Table`
+- `Wall Decoration`
+- `Wallpaper`
+- `Window`
 
 ## Placement Bounds
 

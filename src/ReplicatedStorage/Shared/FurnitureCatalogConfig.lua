@@ -305,7 +305,7 @@ local function buildAutoCatalogItem(model)
 		DisplayName = getStringAttribute(model, "DisplayName", itemId),
 		Description = getStringAttribute(model, "Description", ""),
 		MaxPerRoom = nil,
-		Category = getStringAttribute(model, "Category", "Furniture"),
+		Category = getStringAttribute(model, "Category", "Other"),
 		FootprintWidth = footprintWidth,
 		FootprintDepth = footprintDepth,
 		Price = price,
