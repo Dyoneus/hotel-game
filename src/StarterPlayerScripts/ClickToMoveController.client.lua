@@ -798,7 +798,160 @@ local movePreviewState = {
 	rotationOffsetY = 0,
 	hintGui = nil,
 	hintLabel = nil,
+	helperUi = {
+		mainHudGuiName = "MainHudGui",
+		mainHudBarName = "MainHudBottomBar",
+		fallbackBottomOffset = 180,
+		hudMargin = 12,
+		topMargin = 8,
+		candidateBarNames = { "BottomBar", "HudBar", "MainBar" },
+		labels = setmetatable({}, {
+			__mode = "k",
+		}),
+	},
 }
+
+do
+	local helperUi = movePreviewState.helperUi
+
+	function helperUi.isVisible(guiObject)
+		local current = guiObject
+
+		while current and current ~= playerGui do
+			if current:IsA("ScreenGui") and current.Enabled == false then
+				return false
+			end
+
+			if current:IsA("GuiObject") and current.Visible == false then
+				return false
+			end
+
+			current = current.Parent
+		end
+
+		return true
+	end
+
+	function helperUi.findHudBar()
+		local mainHudGui = playerGui:FindFirstChild(helperUi.mainHudGuiName)
+
+		if not mainHudGui then
+			return nil
+		end
+
+		local namedBar = mainHudGui:FindFirstChild(helperUi.mainHudBarName, true)
+
+		if namedBar and namedBar:IsA("GuiObject") and helperUi.isVisible(namedBar) then
+			return namedBar
+		end
+
+		for _, candidateName in ipairs(helperUi.candidateBarNames) do
+			local candidate = mainHudGui:FindFirstChild(candidateName, true)
+
+			if candidate and candidate:IsA("GuiObject") and helperUi.isVisible(candidate) then
+				return candidate
+			end
+		end
+
+		for _, descendant in ipairs(mainHudGui:GetDescendants()) do
+			if descendant:IsA("GuiObject")
+				and helperUi.isVisible(descendant)
+				and descendant:FindFirstChild("MenuButton")
+				and descendant:FindFirstChild("ChatPlaceholder")
+				and descendant:FindFirstChild("InventoryButton")
+				and descendant:FindFirstChild("CatalogButton")
+				and descendant:FindFirstChild("EditButton") then
+
+				return descendant
+			end
+		end
+
+		return nil
+	end
+
+	function helperUi.getScreenPosition(label)
+		local camera = workspace.CurrentCamera
+		local viewportSize = camera and camera.ViewportSize or Vector2.zero
+		local viewportWidth = viewportSize.X
+		local viewportHeight = viewportSize.Y
+
+		if viewportWidth <= 0 or viewportHeight <= 0 then
+			return nil
+		end
+
+		local labelHeight = label.AbsoluteSize.Y
+
+		if labelHeight <= 0 then
+			labelHeight = label.Size.Y.Offset
+		end
+
+		if labelHeight <= 0 then
+			labelHeight = 34
+		end
+
+		local hudBar = helperUi.findHudBar()
+		local helperBottomY = viewportHeight - helperUi.fallbackBottomOffset
+
+		if hudBar then
+			helperBottomY = hudBar.AbsolutePosition.Y - helperUi.hudMargin
+		end
+
+		local minBottomY = labelHeight + helperUi.topMargin
+		local maxBottomY = viewportHeight - helperUi.topMargin
+		helperBottomY = math.clamp(helperBottomY, minBottomY, maxBottomY)
+
+		return viewportWidth / 2, helperBottomY
+	end
+
+	function helperUi.position(label)
+		if typeof(label) ~= "Instance" or not label:IsA("GuiObject") then
+			return
+		end
+
+		local helperX, helperY = helperUi.getScreenPosition(label)
+
+		label.AnchorPoint = Vector2.new(0.5, 1)
+
+		if helperX and helperY then
+			label.Position = UDim2.fromOffset(helperX, helperY)
+		else
+			label.Position = UDim2.new(0.5, 0, 1, -helperUi.fallbackBottomOffset)
+		end
+	end
+
+	function helperUi.register(label)
+		if typeof(label) ~= "Instance" or not label:IsA("GuiObject") then
+			return
+		end
+
+		helperUi.labels[label] = true
+		helperUi.position(label)
+	end
+
+	function helperUi.update()
+		for label in pairs(helperUi.labels) do
+			if label.Parent then
+				helperUi.position(label)
+			else
+				helperUi.labels[label] = nil
+			end
+		end
+	end
+
+	playerGui.DescendantAdded:Connect(function(descendant)
+		if descendant.Name == "PlacementHintLabel" and descendant:IsA("GuiObject") then
+			helperUi.register(descendant)
+		end
+	end)
+
+	task.defer(function()
+		for _, descendant in ipairs(playerGui:GetDescendants()) do
+			if descendant.Name == "PlacementHintLabel" and descendant:IsA("GuiObject") then
+				helperUi.register(descendant)
+			end
+		end
+	end)
+end
 
 local hiddenFurnitureParts = {}
 local suppressFurnitureMenuUntil = 0
@@ -2624,13 +2777,11 @@ local function getFloorPlacementBounds()
 	local halfX = floor.Size.X / 2
 	local halfZ = floor.Size.Z / 2
 
-	local edgeMargin = 0.05
-
 	return {
-		minX = floor.Position.X - halfX + edgeMargin,
-		maxX = floor.Position.X + halfX - edgeMargin,
-		minZ = floor.Position.Z - halfZ + edgeMargin,
-		maxZ = floor.Position.Z + halfZ - edgeMargin,
+		minX = floor.Position.X - halfX,
+		maxX = floor.Position.X + halfX,
+		minZ = floor.Position.Z - halfZ,
+		maxZ = floor.Position.Z + halfZ,
 	}
 end
 
@@ -2742,6 +2893,8 @@ local function getOverlapCheckSize(size)
 	)
 end
 
+local PLACEMENT_CONTAINMENT_EPSILON = GridConfig.GRID_VALIDATION_TOLERANCE or 0.05
+
 local function getPartWorldCornersFromCFrame(cframe, size)
 	local halfSize = size / 2
 
@@ -2812,15 +2965,15 @@ local function clampFurnitureCFrameInsideRoom(model, targetCFrame)
 	local offsetX = 0
 	local offsetZ = 0
 
-	if modelBounds.minX < floorBounds.minX then
+	if modelBounds.minX < floorBounds.minX - PLACEMENT_CONTAINMENT_EPSILON then
 		offsetX = floorBounds.minX - modelBounds.minX
-	elseif modelBounds.maxX > floorBounds.maxX then
+	elseif modelBounds.maxX > floorBounds.maxX + PLACEMENT_CONTAINMENT_EPSILON then
 		offsetX = floorBounds.maxX - modelBounds.maxX
 	end
 
-	if modelBounds.minZ < floorBounds.minZ then
+	if modelBounds.minZ < floorBounds.minZ - PLACEMENT_CONTAINMENT_EPSILON then
 		offsetZ = floorBounds.minZ - modelBounds.minZ
-	elseif modelBounds.maxZ > floorBounds.maxZ then
+	elseif modelBounds.maxZ > floorBounds.maxZ + PLACEMENT_CONTAINMENT_EPSILON then
 		offsetZ = floorBounds.maxZ - modelBounds.maxZ
 	end
 
@@ -2924,23 +3077,10 @@ local function isPreviewInsideRoom(previewModel)
 		return false
 	end
 
-	if previewBounds.minX < floorBounds.minX then
-		return false
-	end
-
-	if previewBounds.maxX > floorBounds.maxX then
-		return false
-	end
-
-	if previewBounds.minZ < floorBounds.minZ then
-		return false
-	end
-
-	if previewBounds.maxZ > floorBounds.maxZ then
-		return false
-	end
-
-	return true
+	return previewBounds.minX >= floorBounds.minX - PLACEMENT_CONTAINMENT_EPSILON
+		and previewBounds.maxX <= floorBounds.maxX + PLACEMENT_CONTAINMENT_EPSILON
+		and previewBounds.minZ >= floorBounds.minZ - PLACEMENT_CONTAINMENT_EPSILON
+		and previewBounds.maxZ <= floorBounds.maxZ + PLACEMENT_CONTAINMENT_EPSILON
 end
 
 local function isPreviewBlocked(previewModel)
@@ -3149,7 +3289,7 @@ function movePreviewState.ensureHint()
 	local hintLabel = Instance.new("TextLabel")
 	hintLabel.Name = "Hint"
 	hintLabel.AnchorPoint = Vector2.new(0.5, 1)
-	hintLabel.Position = UDim2.new(0.5, 0, 1, -92)
+	hintLabel.Position = UDim2.new(0.5, 0, 1, -movePreviewState.helperUi.fallbackBottomOffset)
 	hintLabel.Size = UDim2.fromOffset(220, 34)
 	hintLabel.BackgroundColor3 = Color3.fromRGB(32, 38, 46)
 	hintLabel.BackgroundTransparency = 0.12
@@ -3166,6 +3306,7 @@ function movePreviewState.ensureHint()
 
 	movePreviewState.hintGui = hintGui
 	movePreviewState.hintLabel = hintLabel
+	movePreviewState.helperUi.register(hintLabel)
 end
 
 function movePreviewState.showHint()
@@ -3339,6 +3480,7 @@ end
 
 RunService.RenderStepped:Connect(updateMenuPosition)
 RunService.RenderStepped:Connect(updatePlacementPreview)
+RunService.RenderStepped:Connect(movePreviewState.helperUi.update)
 RunService.RenderStepped:Connect(maintainActiveGridFacing)
 
 local function openFurnitureMenu(furnitureModel)

@@ -33,6 +33,7 @@ local MAX_PURCHASE_QUANTITY = 99
 -- being treated as a collision.
 local OVERLAP_SHRINK = 0.08
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
+local PLACEMENT_CONTAINMENT_EPSILON = GridConfig.GRID_VALIDATION_TOLERANCE or 0.05
 
 local catalogById = {}
 local catalogByTemplateName = {}
@@ -315,11 +316,11 @@ local function partFitsInsideFloor(part, floor)
 		local worldCorner = part.CFrame:PointToWorldSpace(localCorner)
 		local floorLocalCorner = floor.CFrame:PointToObjectSpace(worldCorner)
 
-		if math.abs(floorLocalCorner.X) > floorHalfX then
+		if math.abs(floorLocalCorner.X) > floorHalfX + PLACEMENT_CONTAINMENT_EPSILON then
 			return false
 		end
 
-		if math.abs(floorLocalCorner.Z) > floorHalfZ then
+		if math.abs(floorLocalCorner.Z) > floorHalfZ + PLACEMENT_CONTAINMENT_EPSILON then
 			return false
 		end
 	end

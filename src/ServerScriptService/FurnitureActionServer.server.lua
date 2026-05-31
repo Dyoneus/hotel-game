@@ -33,6 +33,7 @@ local furnitureActionResult = getOrCreateRemoteEvent("FurnitureActionResult")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
 
 local GRID_SIZE = 2
+local PLACEMENT_CONTAINMENT_EPSILON = GridConfig.GRID_VALIDATION_TOLERANCE or 0.05
 
 local SIT_STAND_COOLDOWN_SECONDS = 0.35
 local ENTRANCE_BRIDGE_DISTANCE = 8
@@ -1480,15 +1481,11 @@ local function getFurnitureRoomBounds(player)
 	local halfX = floor.Size.X / 2
 	local halfZ = floor.Size.Z / 2
 
-	-- Small margin so furniture is not allowed to visually hang over the floor.
-	-- Increase to 0.25 or 0.5 if you want a little border.
-	local edgeMargin = 0.05
-
 	return {
-		minX = floor.Position.X - halfX + edgeMargin,
-		maxX = floor.Position.X + halfX - edgeMargin,
-		minZ = floor.Position.Z - halfZ + edgeMargin,
-		maxZ = floor.Position.Z + halfZ - edgeMargin,
+		minX = floor.Position.X - halfX,
+		maxX = floor.Position.X + halfX,
+		minZ = floor.Position.Z - halfZ,
+		maxZ = floor.Position.Z + halfZ,
 	}
 end
 
@@ -1699,23 +1696,10 @@ local function modelFitsInsideRoom(player, furnitureModel, targetCFrame)
 		return false
 	end
 
-	if modelBounds.minX < roomBounds.minX then
-		return false
-	end
-
-	if modelBounds.maxX > roomBounds.maxX then
-		return false
-	end
-
-	if modelBounds.minZ < roomBounds.minZ then
-		return false
-	end
-
-	if modelBounds.maxZ > roomBounds.maxZ then
-		return false
-	end
-
-	return true
+	return modelBounds.minX >= roomBounds.minX - PLACEMENT_CONTAINMENT_EPSILON
+		and modelBounds.maxX <= roomBounds.maxX + PLACEMENT_CONTAINMENT_EPSILON
+		and modelBounds.minZ >= roomBounds.minZ - PLACEMENT_CONTAINMENT_EPSILON
+		and modelBounds.maxZ <= roomBounds.maxZ + PLACEMENT_CONTAINMENT_EPSILON
 end
 
 local function clampFurnitureCFrameInsideRoom(player, furnitureModel, targetCFrame)
@@ -1729,15 +1713,15 @@ local function clampFurnitureCFrameInsideRoom(player, furnitureModel, targetCFra
 	local offsetX = 0
 	local offsetZ = 0
 
-	if modelBounds.minX < roomBounds.minX then
+	if modelBounds.minX < roomBounds.minX - PLACEMENT_CONTAINMENT_EPSILON then
 		offsetX = roomBounds.minX - modelBounds.minX
-	elseif modelBounds.maxX > roomBounds.maxX then
+	elseif modelBounds.maxX > roomBounds.maxX + PLACEMENT_CONTAINMENT_EPSILON then
 		offsetX = roomBounds.maxX - modelBounds.maxX
 	end
 
-	if modelBounds.minZ < roomBounds.minZ then
+	if modelBounds.minZ < roomBounds.minZ - PLACEMENT_CONTAINMENT_EPSILON then
 		offsetZ = roomBounds.minZ - modelBounds.minZ
-	elseif modelBounds.maxZ > roomBounds.maxZ then
+	elseif modelBounds.maxZ > roomBounds.maxZ + PLACEMENT_CONTAINMENT_EPSILON then
 		offsetZ = roomBounds.maxZ - modelBounds.maxZ
 	end
 

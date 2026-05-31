@@ -30,6 +30,9 @@ local ROOM_DIRECTORY_CATEGORIES = {
 	["Help Centres"] = true,
 	["Gaming & Race Rooms"] = true,
 }
+local PRIMARY_ROOM_ID = "Primary"
+local DEFAULT_PRIMARY_LAYOUT_ID = "Layout_01"
+local DEFAULT_ROOM_DISPLAY_NAME = "My Room"
 
 local profileStore = DataStoreService:GetDataStore(DATASTORE_NAME)
 
@@ -38,7 +41,17 @@ local saveScheduled = {}
 local saveRunning = {}
 local writeBlockedByUserId = {}
 
+local function createEmptyRoomPermissions()
+	return {
+		Editors = {},
+		RoomActions = {},
+		FurniturePermissions = {},
+	}
+end
+
 local function createDefaultProfile()
+	local now = os.time()
+
 	return {
 		Version = 1,
 
@@ -52,7 +65,10 @@ local function createDefaultProfile()
 
 		RoomState = nil,
 		RoomDirectory = {
-			RoomId = "Primary",
+			RoomIds = { PRIMARY_ROOM_ID },
+			PrimaryRoomId = PRIMARY_ROOM_ID,
+			SelectedRoomId = PRIMARY_ROOM_ID,
+			RoomId = PRIMARY_ROOM_ID,
 			DisplayName = nil,
 			Category = "Chat Rooms",
 			IsPublic = true,
@@ -60,12 +76,26 @@ local function createDefaultProfile()
 			Description = "",
 			Tags = {},
 		},
-		FavouriteRooms = {},
-		RoomPermissions = {
-			Editors = {},
-			RoomActions = {},
-			FurniturePermissions = {},
+		Rooms = {
+			[PRIMARY_ROOM_ID] = {
+				RoomId = PRIMARY_ROOM_ID,
+				DisplayName = DEFAULT_ROOM_DISPLAY_NAME,
+				LayoutId = DEFAULT_PRIMARY_LAYOUT_ID,
+				RoomState = {},
+				Category = "Chat Rooms",
+				IsPublic = true,
+				MaxOccupancy = 25,
+				Description = "",
+				Tags = {},
+				CreatedAt = now,
+				UpdatedAt = now,
+				IsPrimary = true,
+				SortOrder = 1,
+				Permissions = createEmptyRoomPermissions(),
+			},
 		},
+		FavouriteRooms = {},
+		RoomPermissions = createEmptyRoomPermissions(),
 		MarketplaceListings = {},
 		Inventory = {},
 		InventoryUntradable = {},
@@ -81,7 +111,7 @@ local function createDefaultProfile()
 		},
 		WorkActivityCooldowns = {},
 
-		UpdatedAt = os.time(),
+		UpdatedAt = now,
 	}
 end
 
@@ -552,6 +582,64 @@ local function trimString(value)
 	return value:match("^%s*(.-)%s*$") or ""
 end
 
+local function normalizeRoomId(roomId)
+	if roomId == nil then
+		return PRIMARY_ROOM_ID
+	end
+
+	if typeof(roomId) ~= "string" then
+		return nil
+	end
+
+	local normalized = trimString(roomId)
+
+	if normalized == "" or not normalized:match("^[%w_%-]+$") then
+		return nil
+	end
+
+	return normalized
+end
+
+local function isValidRoomId(roomId)
+	return normalizeRoomId(roomId) ~= nil
+end
+
+local function roomIdArrayContains(roomIds, roomId)
+	if typeof(roomIds) ~= "table" then
+		return false
+	end
+
+	for _, existingRoomId in ipairs(roomIds) do
+		if existingRoomId == roomId then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function normalizeRoomIds(roomIds)
+	local normalizedRoomIds = {}
+	local seenRoomIds = {}
+
+	if typeof(roomIds) == "table" then
+		for _, roomId in ipairs(roomIds) do
+			local normalizedRoomId = normalizeRoomId(roomId)
+
+			if normalizedRoomId and not seenRoomIds[normalizedRoomId] then
+				seenRoomIds[normalizedRoomId] = true
+				table.insert(normalizedRoomIds, normalizedRoomId)
+			end
+		end
+	end
+
+	if not seenRoomIds[PRIMARY_ROOM_ID] then
+		table.insert(normalizedRoomIds, 1, PRIMARY_ROOM_ID)
+	end
+
+	return normalizedRoomIds
+end
+
 local function normalizePermissionUserId(userId)
 	local numericUserId = nil
 
@@ -622,6 +710,58 @@ local function dictionaryHasEntries(dictionary)
 	return false
 end
 
+local function normalizeRoomPermissions(roomPermissions)
+	if typeof(roomPermissions) ~= "table" then
+		roomPermissions = {}
+	end
+
+	local normalized = {}
+	normalized.Editors = normalizePermissionUserDictionary(roomPermissions.Editors)
+
+	local normalizedRoomActions = {}
+
+	if typeof(roomPermissions.RoomActions) == "table" then
+		for actionName, userDictionary in pairs(roomPermissions.RoomActions) do
+			local normalizedActionName = normalizePermissionActionName(actionName)
+			local normalizedUsers = normalizePermissionUserDictionary(userDictionary)
+
+			if normalizedActionName and dictionaryHasEntries(normalizedUsers) then
+				normalizedRoomActions[normalizedActionName] = normalizedUsers
+			end
+		end
+	end
+
+	normalized.RoomActions = normalizedRoomActions
+
+	local normalizedFurniturePermissions = {}
+
+	if typeof(roomPermissions.FurniturePermissions) == "table" then
+		for persistentId, actionPermissions in pairs(roomPermissions.FurniturePermissions) do
+			local normalizedPersistentId = normalizePermissionPersistentId(persistentId)
+			local normalizedActionPermissions = {}
+
+			if normalizedPersistentId and typeof(actionPermissions) == "table" then
+				for actionName, userDictionary in pairs(actionPermissions) do
+					local normalizedActionName = normalizePermissionActionName(actionName)
+					local normalizedUsers = normalizePermissionUserDictionary(userDictionary)
+
+					if normalizedActionName and dictionaryHasEntries(normalizedUsers) then
+						normalizedActionPermissions[normalizedActionName] = normalizedUsers
+					end
+				end
+			end
+
+			if normalizedPersistentId and dictionaryHasEntries(normalizedActionPermissions) then
+				normalizedFurniturePermissions[normalizedPersistentId] = normalizedActionPermissions
+			end
+		end
+	end
+
+	normalized.FurniturePermissions = normalizedFurniturePermissions
+
+	return normalized
+end
+
 local function ensureRoomDirectory(profile)
 	local roomDirectory = profile.RoomDirectory
 
@@ -630,7 +770,33 @@ local function ensureRoomDirectory(profile)
 	end
 
 	if typeof(roomDirectory.RoomId) ~= "string" or roomDirectory.RoomId == "" then
-		roomDirectory.RoomId = "Primary"
+		roomDirectory.RoomId = PRIMARY_ROOM_ID
+	end
+
+	roomDirectory.RoomIds = normalizeRoomIds(roomDirectory.RoomIds)
+
+	if not roomIdArrayContains(roomDirectory.RoomIds, PRIMARY_ROOM_ID) then
+		table.insert(roomDirectory.RoomIds, 1, PRIMARY_ROOM_ID)
+	end
+
+	if normalizeRoomId(roomDirectory.PrimaryRoomId) == nil then
+		roomDirectory.PrimaryRoomId = PRIMARY_ROOM_ID
+	else
+		roomDirectory.PrimaryRoomId = normalizeRoomId(roomDirectory.PrimaryRoomId)
+	end
+
+	if not roomIdArrayContains(roomDirectory.RoomIds, roomDirectory.PrimaryRoomId) then
+		roomDirectory.PrimaryRoomId = PRIMARY_ROOM_ID
+	end
+
+	if normalizeRoomId(roomDirectory.SelectedRoomId) == nil then
+		roomDirectory.SelectedRoomId = roomDirectory.PrimaryRoomId
+	else
+		roomDirectory.SelectedRoomId = normalizeRoomId(roomDirectory.SelectedRoomId)
+	end
+
+	if not roomIdArrayContains(roomDirectory.RoomIds, roomDirectory.SelectedRoomId) then
+		roomDirectory.SelectedRoomId = roomDirectory.PrimaryRoomId
 	end
 
 	if typeof(roomDirectory.DisplayName) ~= "string" or roomDirectory.DisplayName == "" then
@@ -680,57 +846,352 @@ local function ensureFavouriteRooms(profile)
 end
 
 local function ensureRoomPermissions(profile)
-	local roomPermissions = profile.RoomPermissions
-
-	if typeof(roomPermissions) ~= "table" then
-		roomPermissions = {}
-	end
-
-	roomPermissions.Editors = normalizePermissionUserDictionary(roomPermissions.Editors)
-
-	local normalizedRoomActions = {}
-
-	if typeof(roomPermissions.RoomActions) == "table" then
-		for actionName, userDictionary in pairs(roomPermissions.RoomActions) do
-			local normalizedActionName = normalizePermissionActionName(actionName)
-			local normalizedUsers = normalizePermissionUserDictionary(userDictionary)
-
-			if normalizedActionName and dictionaryHasEntries(normalizedUsers) then
-				normalizedRoomActions[normalizedActionName] = normalizedUsers
-			end
-		end
-	end
-
-	roomPermissions.RoomActions = normalizedRoomActions
-
-	local normalizedFurniturePermissions = {}
-
-	if typeof(roomPermissions.FurniturePermissions) == "table" then
-		for persistentId, actionPermissions in pairs(roomPermissions.FurniturePermissions) do
-			local normalizedPersistentId = normalizePermissionPersistentId(persistentId)
-			local normalizedActionPermissions = {}
-
-			if normalizedPersistentId and typeof(actionPermissions) == "table" then
-				for actionName, userDictionary in pairs(actionPermissions) do
-					local normalizedActionName = normalizePermissionActionName(actionName)
-					local normalizedUsers = normalizePermissionUserDictionary(userDictionary)
-
-					if normalizedActionName and dictionaryHasEntries(normalizedUsers) then
-						normalizedActionPermissions[normalizedActionName] = normalizedUsers
-					end
-				end
-			end
-
-			if normalizedPersistentId and dictionaryHasEntries(normalizedActionPermissions) then
-				normalizedFurniturePermissions[normalizedPersistentId] = normalizedActionPermissions
-			end
-		end
-	end
-
-	roomPermissions.FurniturePermissions = normalizedFurniturePermissions
-	profile.RoomPermissions = roomPermissions
+	profile.RoomPermissions = normalizeRoomPermissions(profile.RoomPermissions)
 
 	return profile.RoomPermissions
+end
+
+local function isNonEmptyString(value)
+	return typeof(value) == "string" and value ~= "" and value:match("%S") ~= nil
+end
+
+local function tableHasEntries(value)
+	if typeof(value) ~= "table" then
+		return false
+	end
+
+	for _ in pairs(value) do
+		return true
+	end
+
+	return false
+end
+
+local function getRoomStateLayoutId(roomState)
+	if typeof(roomState) ~= "table" then
+		return nil
+	end
+
+	return isNonEmptyString(roomState.LayoutId) and roomState.LayoutId or nil
+end
+
+local function ensureIntegerOrDefault(value, defaultValue)
+	if isFiniteInteger(value) then
+		return math.floor(value)
+	end
+
+	return defaultValue
+end
+
+local function normalizeRoomRecord(roomRecord, roomId, defaults)
+	defaults = defaults or {}
+
+	if typeof(roomRecord) ~= "table" then
+		roomRecord = {}
+	end
+
+	roomRecord.RoomId = roomId
+
+	if not isNonEmptyString(roomRecord.DisplayName) then
+		roomRecord.DisplayName = defaults.DisplayName
+	end
+
+	if not isNonEmptyString(roomRecord.LayoutId) then
+		roomRecord.LayoutId = defaults.LayoutId or DEFAULT_PRIMARY_LAYOUT_ID
+	end
+
+	if typeof(roomRecord.RoomState) ~= "table" then
+		roomRecord.RoomState = defaults.RoomState and deepCopy(defaults.RoomState) or {}
+	end
+
+	if typeof(roomRecord.Category) ~= "string"
+		or roomRecord.Category == ""
+		or not ROOM_DIRECTORY_CATEGORIES[roomRecord.Category] then
+
+		roomRecord.Category = defaults.Category or "Chat Rooms"
+	end
+
+	if typeof(roomRecord.IsPublic) ~= "boolean" then
+		roomRecord.IsPublic = defaults.IsPublic
+
+		if typeof(roomRecord.IsPublic) ~= "boolean" then
+			roomRecord.IsPublic = true
+		end
+	end
+
+	if not isPositiveInteger(roomRecord.MaxOccupancy) then
+		roomRecord.MaxOccupancy = defaults.MaxOccupancy or 25
+	end
+
+	if typeof(roomRecord.Description) ~= "string" then
+		roomRecord.Description = defaults.Description or ""
+	end
+
+	roomRecord.Tags = normalizeRoomTags(roomRecord.Tags or defaults.Tags)
+
+	local now = os.time()
+	roomRecord.CreatedAt = isNonNegativeInteger(roomRecord.CreatedAt)
+		and math.floor(roomRecord.CreatedAt)
+		or defaults.CreatedAt
+		or now
+	roomRecord.UpdatedAt = isNonNegativeInteger(roomRecord.UpdatedAt)
+		and math.floor(roomRecord.UpdatedAt)
+		or defaults.UpdatedAt
+		or roomRecord.CreatedAt
+		or now
+	roomRecord.IsPrimary = roomId == PRIMARY_ROOM_ID
+	roomRecord.SortOrder = ensureIntegerOrDefault(
+		roomRecord.SortOrder,
+		roomId == PRIMARY_ROOM_ID and 1 or defaults.SortOrder or 1000
+	)
+	roomRecord.Permissions = normalizeRoomPermissions(roomRecord.Permissions or defaults.Permissions)
+
+	return roomRecord
+end
+
+local function copyLegacyDirectoryMetadata(roomDirectory)
+	return {
+		DisplayName = isNonEmptyString(roomDirectory.DisplayName)
+			and roomDirectory.DisplayName
+			or DEFAULT_ROOM_DISPLAY_NAME,
+		Category = roomDirectory.Category,
+		IsPublic = roomDirectory.IsPublic,
+		MaxOccupancy = roomDirectory.MaxOccupancy,
+		Description = roomDirectory.Description,
+		Tags = roomDirectory.Tags,
+	}
+end
+
+local function syncPrimaryRoomFromLegacy(profile, primaryRoom)
+	local roomDirectory = ensureRoomDirectory(profile)
+	local roomPermissions = ensureRoomPermissions(profile)
+	local legacyMetadata = copyLegacyDirectoryMetadata(roomDirectory)
+	local legacyRoomState = typeof(profile.RoomState) == "table" and profile.RoomState or nil
+	local legacyLayoutId = isNonEmptyString(profile.CurrentLayoutId) and profile.CurrentLayoutId or nil
+
+	if not legacyLayoutId then
+		legacyLayoutId = getRoomStateLayoutId(legacyRoomState)
+	end
+
+	if legacyRoomState then
+		primaryRoom.RoomState = deepCopy(legacyRoomState)
+	elseif typeof(primaryRoom.RoomState) ~= "table" then
+		primaryRoom.RoomState = {}
+	end
+
+	if legacyLayoutId then
+		primaryRoom.LayoutId = legacyLayoutId
+	elseif getRoomStateLayoutId(primaryRoom.RoomState) then
+		primaryRoom.LayoutId = getRoomStateLayoutId(primaryRoom.RoomState)
+	elseif not isNonEmptyString(primaryRoom.LayoutId) then
+		primaryRoom.LayoutId = DEFAULT_PRIMARY_LAYOUT_ID
+	end
+
+	primaryRoom.DisplayName = legacyMetadata.DisplayName
+	primaryRoom.Category = legacyMetadata.Category
+	primaryRoom.IsPublic = legacyMetadata.IsPublic
+	primaryRoom.MaxOccupancy = legacyMetadata.MaxOccupancy
+	primaryRoom.Description = legacyMetadata.Description
+	primaryRoom.Tags = deepCopy(legacyMetadata.Tags)
+	primaryRoom.Permissions = deepCopy(roomPermissions)
+
+	return normalizeRoomRecord(primaryRoom, PRIMARY_ROOM_ID, {
+		DisplayName = legacyMetadata.DisplayName,
+		LayoutId = legacyLayoutId or DEFAULT_PRIMARY_LAYOUT_ID,
+		RoomState = legacyRoomState,
+		Category = legacyMetadata.Category,
+		IsPublic = legacyMetadata.IsPublic,
+		MaxOccupancy = legacyMetadata.MaxOccupancy,
+		Description = legacyMetadata.Description,
+		Tags = legacyMetadata.Tags,
+		Permissions = roomPermissions,
+		SortOrder = 1,
+		CreatedAt = profile.UpdatedAt,
+		UpdatedAt = profile.UpdatedAt,
+	})
+end
+
+local function mirrorPrimaryRoomToLegacy(profile, primaryRoom)
+	if typeof(primaryRoom) ~= "table" then
+		return
+	end
+
+	if typeof(profile.RoomState) == "table" or tableHasEntries(primaryRoom.RoomState) then
+		profile.RoomState = deepCopy(primaryRoom.RoomState)
+	end
+
+	if isNonEmptyString(profile.CurrentLayoutId) or typeof(profile.RoomState) == "table" then
+		profile.CurrentLayoutId = primaryRoom.LayoutId
+	end
+
+	profile.RoomPermissions = deepCopy(primaryRoom.Permissions)
+end
+
+local function ensureRoomsSchema(profile)
+	if typeof(profile) ~= "table" then
+		return profile
+	end
+
+	local roomDirectory = ensureRoomDirectory(profile)
+	local roomPermissions = ensureRoomPermissions(profile)
+
+	if typeof(profile.Rooms) ~= "table" then
+		profile.Rooms = {}
+	end
+
+	local primaryRoom = profile.Rooms[PRIMARY_ROOM_ID]
+
+	if typeof(primaryRoom) ~= "table" then
+		primaryRoom = {
+			RoomId = PRIMARY_ROOM_ID,
+			RoomState = typeof(profile.RoomState) == "table" and deepCopy(profile.RoomState) or {},
+			LayoutId = isNonEmptyString(profile.CurrentLayoutId)
+				and profile.CurrentLayoutId
+				or getRoomStateLayoutId(profile.RoomState)
+				or DEFAULT_PRIMARY_LAYOUT_ID,
+			Permissions = deepCopy(roomPermissions),
+		}
+	end
+
+	profile.Rooms[PRIMARY_ROOM_ID] = syncPrimaryRoomFromLegacy(profile, primaryRoom)
+
+	for roomId, roomRecord in pairs(profile.Rooms) do
+		local normalizedRoomId = normalizeRoomId(roomId)
+
+		if normalizedRoomId and typeof(roomRecord) == "table" then
+			profile.Rooms[roomId] = normalizeRoomRecord(roomRecord, normalizedRoomId, {
+				Permissions = roomId == PRIMARY_ROOM_ID and roomPermissions or createEmptyRoomPermissions(),
+			})
+
+			if not roomIdArrayContains(roomDirectory.RoomIds, normalizedRoomId) then
+				table.insert(roomDirectory.RoomIds, normalizedRoomId)
+			end
+		end
+	end
+
+	roomDirectory.RoomIds = normalizeRoomIds(roomDirectory.RoomIds)
+	roomDirectory.PrimaryRoomId = PRIMARY_ROOM_ID
+
+	if not profile.Rooms[roomDirectory.SelectedRoomId] then
+		roomDirectory.SelectedRoomId = PRIMARY_ROOM_ID
+	end
+
+	roomDirectory.RoomId = PRIMARY_ROOM_ID
+	profile.RoomDirectory = roomDirectory
+	mirrorPrimaryRoomToLegacy(profile, profile.Rooms[PRIMARY_ROOM_ID])
+
+	return profile
+end
+
+local function getMutableRoomRecord(profile, roomId)
+	if typeof(profile) ~= "table" then
+		return nil
+	end
+
+	local normalizedRoomId = normalizeRoomId(roomId)
+
+	if not normalizedRoomId then
+		return nil
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord = profile.Rooms and profile.Rooms[normalizedRoomId]
+
+	if typeof(roomRecord) ~= "table" then
+		return nil
+	end
+
+	return roomRecord, normalizedRoomId
+end
+
+local function getSortedOwnedRoomRecords(profile)
+	ensureRoomsSchema(profile)
+
+	local rooms = {}
+
+	if typeof(profile.Rooms) ~= "table" then
+		return rooms
+	end
+
+	for roomId, roomRecord in pairs(profile.Rooms) do
+		if normalizeRoomId(roomId) and typeof(roomRecord) == "table" then
+			table.insert(rooms, roomRecord)
+		end
+	end
+
+	table.sort(rooms, function(a, b)
+		local aSortOrder = isFiniteInteger(a.SortOrder) and a.SortOrder or math.huge
+		local bSortOrder = isFiniteInteger(b.SortOrder) and b.SortOrder or math.huge
+
+		if aSortOrder ~= bSortOrder then
+			return aSortOrder < bSortOrder
+		end
+
+		local aCreatedAt = isNonNegativeInteger(a.CreatedAt) and a.CreatedAt or math.huge
+		local bCreatedAt = isNonNegativeInteger(b.CreatedAt) and b.CreatedAt or math.huge
+
+		if aCreatedAt ~= bCreatedAt then
+			return aCreatedAt < bCreatedAt
+		end
+
+		return tostring(a.RoomId) < tostring(b.RoomId)
+	end)
+
+	return rooms
+end
+
+local function setRoomStateForRoomProfile(profile, roomId, roomState, layoutId)
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found."
+	end
+
+	if typeof(roomState) ~= "table" then
+		return false, "Invalid room state."
+	end
+
+	local roomStateCopy = deepCopy(roomState)
+
+	roomRecord.RoomState = roomStateCopy
+
+	local nextLayoutId = isNonEmptyString(layoutId) and layoutId or getRoomStateLayoutId(roomStateCopy)
+
+	if nextLayoutId then
+		roomRecord.LayoutId = nextLayoutId
+	end
+
+	roomRecord.UpdatedAt = os.time()
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		profile.RoomState = deepCopy(roomStateCopy)
+
+		if isNonEmptyString(roomRecord.LayoutId) then
+			profile.CurrentLayoutId = roomRecord.LayoutId
+		end
+	end
+
+	return true, "Room state saved.", roomRecord, normalizedRoomId
+end
+
+local function setRoomPermissionsForRoomProfile(profile, roomId, permissions)
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found."
+	end
+
+	local normalizedPermissions = normalizeRoomPermissions(permissions)
+
+	roomRecord.Permissions = normalizedPermissions
+	roomRecord.UpdatedAt = os.time()
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		profile.RoomPermissions = deepCopy(normalizedPermissions)
+	end
+
+	return true, "Room permissions saved.", roomRecord, normalizedRoomId
 end
 
 local MARKETPLACE_LISTING_FIELDS = {
@@ -825,7 +1286,7 @@ local function fillDefaults(profile)
 	local defaults = createDefaultProfile()
 
 	if typeof(profile) ~= "table" then
-		return defaults
+		return ensureRoomsSchema(defaults)
 	end
 
 	local hasHotelIntroFlag = profile.HasSeenHotelIntro ~= nil
@@ -844,6 +1305,7 @@ local function fillDefaults(profile)
 	ensureRoomDirectory(profile)
 	ensureFavouriteRooms(profile)
 	ensureRoomPermissions(profile)
+	ensureRoomsSchema(profile)
 	ensureMarketplaceListings(profile)
 
 	if profile.StarterDollarsGranted ~= true then
@@ -1166,6 +1628,178 @@ end
 
 function RoomPersistence.GetProfile(player)
 	return profilesByPlayer[player]
+end
+
+function RoomPersistence.EnsureRoomsSchema(profile)
+	return ensureRoomsSchema(profile)
+end
+
+function RoomPersistence.GetOwnedRoomsSnapshot(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return {}
+	end
+
+	local snapshot = {}
+
+	for _, roomRecord in ipairs(getSortedOwnedRoomRecords(profile)) do
+		table.insert(snapshot, deepCopy(roomRecord))
+	end
+
+	return snapshot
+end
+
+function RoomPersistence.GetRoomRecord(player, roomId)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil
+	end
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return nil
+	end
+
+	return deepCopy(roomRecord)
+end
+
+-- Internal migration helper. This returns the actual profile table record.
+function RoomPersistence.GetMutableRoomRecord(profile, roomId)
+	return getMutableRoomRecord(profile, roomId)
+end
+
+function RoomPersistence.GetPrimaryRoomId(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return PRIMARY_ROOM_ID
+	end
+
+	ensureRoomsSchema(profile)
+
+	local primaryRoomId = profile.RoomDirectory and profile.RoomDirectory.PrimaryRoomId
+
+	return normalizeRoomId(primaryRoomId) or PRIMARY_ROOM_ID
+end
+
+function RoomPersistence.GetSelectedRoomId(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return PRIMARY_ROOM_ID
+	end
+
+	ensureRoomsSchema(profile)
+
+	local selectedRoomId = profile.RoomDirectory and profile.RoomDirectory.SelectedRoomId
+	local normalizedSelectedRoomId = normalizeRoomId(selectedRoomId)
+
+	if normalizedSelectedRoomId and profile.Rooms and profile.Rooms[normalizedSelectedRoomId] then
+		return normalizedSelectedRoomId
+	end
+
+	return RoomPersistence.GetPrimaryRoomId(player)
+end
+
+function RoomPersistence.SetSelectedRoomId(player, roomId)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found.", nil
+	end
+
+	local roomDirectory = ensureRoomDirectory(profile)
+	roomDirectory.SelectedRoomId = normalizedRoomId
+	profile.UpdatedAt = os.time()
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Selected room saved.", normalizedRoomId
+end
+
+function RoomPersistence.GetRoomStateForRoom(player, roomId)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil
+	end
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return nil
+	end
+
+	return deepCopy(roomRecord.RoomState)
+end
+
+function RoomPersistence.SetRoomStateForRoom(player, roomId, roomState, layoutId)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local success, message, roomRecord, normalizedRoomId =
+		setRoomStateForRoomProfile(profile, roomId, roomState, layoutId)
+
+	if not success then
+		return false, message, nil
+	end
+
+	profile.UpdatedAt = os.time()
+	RoomPersistence.QueueSave(player)
+
+	return true, message, deepCopy(roomRecord), normalizedRoomId
+end
+
+function RoomPersistence.GetRoomPermissionsForRoom(player, roomId)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil
+	end
+
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return nil
+	end
+
+	if normalizedRoomId == PRIMARY_ROOM_ID and typeof(roomRecord.Permissions) ~= "table" then
+		return deepCopy(ensureRoomPermissions(profile))
+	end
+
+	return deepCopy(normalizeRoomPermissions(roomRecord.Permissions))
+end
+
+function RoomPersistence.SetRoomPermissionsForRoom(player, roomId, permissions)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	local success, message, roomRecord, normalizedRoomId =
+		setRoomPermissionsForRoomProfile(profile, roomId, permissions)
+
+	if not success then
+		return false, message, nil
+	end
+
+	profile.UpdatedAt = os.time()
+	RoomPersistence.QueueSave(player)
+
+	return true, message, deepCopy(roomRecord.Permissions), normalizedRoomId
 end
 
 function RoomPersistence.HasSeenHotelIntro(player)
@@ -1620,8 +2254,9 @@ function RoomPersistence.UpdateRoomDirectory(player, updates)
 
 	-- MaxOccupancy is intentionally not client-editable yet.
 	roomDirectory.MaxOccupancy = 25
-	roomDirectory.RoomId = "Primary"
+	roomDirectory.RoomId = PRIMARY_ROOM_ID
 	roomDirectory.Tags = normalizeRoomTags(roomDirectory.Tags)
+	ensureRoomsSchema(profile)
 
 	profile.UpdatedAt = os.time()
 	RoomPersistence.QueueSave(player)
@@ -1718,7 +2353,16 @@ local function getLoadedProfileForPlayer(player)
 end
 
 local function savePermissionMutation(ownerPlayer, profile)
-	profile.UpdatedAt = os.time()
+	local now = os.time()
+	local roomPermissions = ensureRoomPermissions(profile)
+	local primaryRoom = getMutableRoomRecord(profile, PRIMARY_ROOM_ID)
+
+	if primaryRoom then
+		primaryRoom.Permissions = deepCopy(roomPermissions)
+		primaryRoom.UpdatedAt = now
+	end
+
+	profile.UpdatedAt = now
 	RoomPersistence.QueueSave(ownerPlayer)
 end
 
@@ -2681,8 +3325,19 @@ function RoomPersistence.CaptureRoomState(player, roomModel)
 
 	profile.ProfileCreated = true
 	profile.CharacterCreated = true
-	profile.CurrentLayoutId = roomState.LayoutId
-	profile.RoomState = roomState
+
+	local mirroredToPrimary = setRoomStateForRoomProfile(
+		profile,
+		PRIMARY_ROOM_ID,
+		roomState,
+		roomState.LayoutId
+	)
+
+	if not mirroredToPrimary then
+		profile.CurrentLayoutId = roomState.LayoutId
+		profile.RoomState = roomState
+	end
+
 	profile.UpdatedAt = os.time()
 
 	RoomPersistence.QueueSave(player)
