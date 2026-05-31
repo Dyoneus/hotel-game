@@ -232,7 +232,13 @@ local function runMarketplaceMutation(player, callback)
 		return false, lockMessage
 	end
 
-	local success, resultSuccess, resultMessage, resultListing, resultInventoryDetails =
+	local success,
+		resultSuccess,
+		resultMessage,
+		resultListing,
+		resultInventoryDetails,
+		resultNewCurrencyBalance,
+		resultExtra =
 		pcall(callback)
 
 	finishMarketplaceMutation(player)
@@ -242,7 +248,12 @@ local function runMarketplaceMutation(player, callback)
 		return false, "Marketplace request failed."
 	end
 
-	return resultSuccess, resultMessage, resultListing, resultInventoryDetails
+	return resultSuccess,
+		resultMessage,
+		resultListing,
+		resultInventoryDetails,
+		resultNewCurrencyBalance,
+		resultExtra
 end
 
 local function beginMarketplaceMutations(playersToLock)
@@ -506,12 +517,57 @@ local function getListingCatalogMetadata(templateId)
 	return displayName, category
 end
 
+local function getListingCatalogGroupMetadata(templateId)
+	local displayName, category = getListingCatalogMetadata(templateId)
+	local description = ""
+	local item = getCatalogItem(templateId)
+
+	if item and typeof(item.Description) == "string" then
+		description = item.Description
+	end
+
+	return displayName, description, category
+end
+
+local function getSoldUnitPriceForAverage(listing)
+	if typeof(listing) ~= "table" or listing.Status ~= MarketplaceService.STATUS_SOLD then
+		return nil
+	end
+
+	if typeof(listing.SoldAt) ~= "number" or listing.SoldAt <= 0 then
+		return nil
+	end
+
+	local soldUnitPrice = normalizeUnitPriceCoins(listing.SoldUnitPriceCoins)
+
+	if soldUnitPrice then
+		return soldUnitPrice
+	end
+
+	local soldTotal = normalizePositiveInteger(listing.SoldTotalCoins)
+	local quantity = normalizeListingQuantity(listing.Quantity)
+
+	if soldTotal and quantity and soldTotal % quantity == 0 then
+		local unitPrice = soldTotal / quantity
+
+		if normalizeUnitPriceCoins(unitPrice) then
+			return unitPrice
+		end
+	end
+
+	return normalizeUnitPriceCoins(listing.UnitPriceCoins)
+end
+
 function MarketplaceService.GetMyListingSnapshot(listing)
 	if typeof(listing) ~= "table" then
 		return nil
 	end
 
 	local displayName, category = getListingCatalogMetadata(listing.TemplateId)
+	local legacyPaid = listing.Status == MarketplaceService.STATUS_SOLD
+		and listing.ProceedsClaimed == nil
+		and listing.ClaimableCoins == nil
+	local proceedsClaimed = listing.ProceedsClaimed == true or legacyPaid == true
 
 	return {
 		ListingId = listing.ListingId,
@@ -526,6 +582,12 @@ function MarketplaceService.GetMyListingSnapshot(listing)
 		UpdatedAt = listing.UpdatedAt,
 		SoldAt = listing.SoldAt,
 		BuyerUserId = listing.BuyerUserId,
+		SoldUnitPriceCoins = listing.SoldUnitPriceCoins,
+		SoldTotalCoins = listing.SoldTotalCoins,
+		ClaimableCoins = listing.ClaimableCoins,
+		ProceedsClaimed = proceedsClaimed,
+		ClaimedAt = listing.ClaimedAt,
+		LegacyPaid = legacyPaid or nil,
 	}
 end
 
@@ -898,6 +960,108 @@ local function publicListingMatchesSearch(snapshot, searchText)
 	return false
 end
 
+local function marketplaceOfferGroupMatchesSearch(group, searchText)
+	if not searchText then
+		return true
+	end
+
+	local needle = string.lower(searchText)
+	local values = {
+		group.TemplateId,
+		group.DisplayName,
+		group.Description,
+		group.Category,
+	}
+
+	for _, value in ipairs(values) do
+		if typeof(value) == "string" and string.find(string.lower(value), needle, 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function isActiveEscrowedListing(listing)
+	return typeof(listing) == "table"
+		and listing.Status == MarketplaceService.STATUS_ACTIVE
+		and listing.Escrowed == true
+		and listing.CurrencyKey == MarketplaceService.MARKETPLACE_CURRENCY_KEY
+		and normalizeTemplateId(listing.TemplateId) ~= nil
+		and normalizeUnitPriceCoins(listing.UnitPriceCoins) ~= nil
+		and normalizeListingId(listing.ListingId) ~= nil
+end
+
+local function listingSortsBefore(firstListing, secondListing)
+	if not secondListing then
+		return true
+	end
+
+	local firstPrice = normalizeUnitPriceCoins(firstListing.UnitPriceCoins) or math.huge
+	local secondPrice = normalizeUnitPriceCoins(secondListing.UnitPriceCoins) or math.huge
+
+	if firstPrice ~= secondPrice then
+		return firstPrice < secondPrice
+	end
+
+	local firstCreatedAt = typeof(firstListing.CreatedAt) == "number" and firstListing.CreatedAt or math.huge
+	local secondCreatedAt = typeof(secondListing.CreatedAt) == "number" and secondListing.CreatedAt or math.huge
+
+	if firstCreatedAt ~= secondCreatedAt then
+		return firstCreatedAt < secondCreatedAt
+	end
+
+	return tostring(firstListing.ListingId or "") < tostring(secondListing.ListingId or "")
+end
+
+local function findLowestLoadedListingForTemplate(templateId, buyerPlayer)
+	local normalizedTemplateId = normalizeTemplateId(templateId)
+
+	if not normalizedTemplateId then
+		return nil, nil, nil, "Invalid marketplace item."
+	end
+
+	local lowestOwnSeller = nil
+	local lowestOwnListing = nil
+	local lowestSeller = nil
+	local lowestListing = nil
+	local sawOwnListing = false
+
+	for _, sellerPlayer in ipairs(Players:GetPlayers()) do
+		if getLoadedProfile(sellerPlayer) then
+			local sellerListings = RoomPersistence.GetMarketplaceListingsSnapshot(sellerPlayer)
+
+			for _, listing in pairs(sellerListings) do
+				if isActiveEscrowedListing(listing) and listing.TemplateId == normalizedTemplateId then
+					local isOwnListing = buyerPlayer and listing.SellerUserId == buyerPlayer.UserId
+
+					if isOwnListing then
+						sawOwnListing = true
+
+						if listingSortsBefore(listing, lowestOwnListing) then
+							lowestOwnSeller = sellerPlayer
+							lowestOwnListing = listing
+						end
+					elseif listingSortsBefore(listing, lowestListing) then
+						lowestSeller = sellerPlayer
+						lowestListing = listing
+					end
+				end
+			end
+		end
+	end
+
+	if lowestSeller and lowestListing then
+		return lowestSeller, lowestListing, false, nil
+	end
+
+	if lowestOwnSeller and lowestOwnListing then
+		return lowestOwnSeller, lowestOwnListing, sawOwnListing, "You cannot buy your own listing."
+	end
+
+	return nil, nil, sawOwnListing, "This marketplace offer is no longer available."
+end
+
 local function getPublicListingSnapshot(requestingPlayer, sellerPlayer, listing)
 	if typeof(listing) ~= "table" or listing.Status ~= MarketplaceService.STATUS_ACTIVE then
 		return nil
@@ -979,6 +1143,173 @@ function MarketplaceService.GetPublicListings(player, filters)
 	end
 
 	return true, "Marketplace listings loaded.", listings
+end
+
+function MarketplaceService.GetMarketplaceOfferGroups(player, filters)
+	if not playerIsValid(player) then
+		return false, "Invalid player.", {}
+	end
+
+	if not getLoadedProfile(player) then
+		return false, "Profile is not loaded.", {}
+	end
+
+	local categoryFilter = getPublicListingFilterValue(filters, "Category")
+	local searchText = getPublicListingFilterValue(filters, "SearchText")
+	local maxResults = getPublicListingMaxResults(filters)
+	local categoryFilterLower = categoryFilter and string.lower(categoryFilter) or nil
+	local groupsByTemplateId = {}
+
+	-- This patch intentionally reads currently loaded player profiles only.
+	-- A cross-server/offline marketplace index belongs in a later patch.
+	for _, sellerPlayer in ipairs(Players:GetPlayers()) do
+		if getLoadedProfile(sellerPlayer) then
+			local sellerListings = RoomPersistence.GetMarketplaceListingsSnapshot(sellerPlayer)
+
+			for _, listing in pairs(sellerListings) do
+				if isActiveEscrowedListing(listing) then
+					local templateId = listing.TemplateId
+					local group = groupsByTemplateId[templateId]
+
+					if not group then
+						local displayName, description, category = getListingCatalogGroupMetadata(templateId)
+
+						group = {
+							TemplateId = templateId,
+							DisplayName = displayName,
+							Description = description,
+							Category = category,
+							OffersCount = 0,
+							LowestListing = nil,
+							LowestOwnListing = nil,
+							HasOwnListing = false,
+							SoldTotal = 0,
+							SoldCount = 0,
+						}
+						groupsByTemplateId[templateId] = group
+					end
+
+					group.OffersCount += 1
+
+					if listing.SellerUserId == player.UserId then
+						group.HasOwnListing = true
+
+						if listingSortsBefore(listing, group.LowestOwnListing) then
+							group.LowestOwnListing = listing
+						end
+					elseif listingSortsBefore(listing, group.LowestListing) then
+						group.LowestListing = listing
+					end
+				elseif typeof(listing) == "table"
+					and listing.Status == MarketplaceService.STATUS_SOLD
+					and normalizeTemplateId(listing.TemplateId) then
+
+					local soldUnitPrice = getSoldUnitPriceForAverage(listing)
+					local templateId = listing.TemplateId
+
+					if not soldUnitPrice then
+						continue
+					end
+
+					local group = groupsByTemplateId[templateId]
+
+					if not group then
+						local displayName, description, category = getListingCatalogGroupMetadata(templateId)
+
+						group = {
+							TemplateId = templateId,
+							DisplayName = displayName,
+							Description = description,
+							Category = category,
+							OffersCount = 0,
+							LowestListing = nil,
+							LowestOwnListing = nil,
+							HasOwnListing = false,
+							SoldTotal = 0,
+							SoldCount = 0,
+						}
+						groupsByTemplateId[templateId] = group
+					end
+
+					group.SoldTotal += soldUnitPrice
+					group.SoldCount += 1
+				end
+			end
+		end
+	end
+
+	local groups = {}
+
+	for _, group in pairs(groupsByTemplateId) do
+		if group.OffersCount > 0 then
+			local lowestListing = group.LowestListing or group.LowestOwnListing
+			local isOwnOnly = group.LowestListing == nil and group.HasOwnListing == true
+			local averageSalePrice = nil
+
+			if group.SoldCount > 0 then
+				averageSalePrice = math.floor((group.SoldTotal / group.SoldCount) + 0.5)
+			end
+
+			local snapshot = {
+				TemplateId = group.TemplateId,
+				DisplayName = group.DisplayName,
+				Description = group.Description,
+				Category = group.Category,
+				OffersCount = group.OffersCount,
+				LowestUnitPriceCoins = lowestListing and lowestListing.UnitPriceCoins or nil,
+				LowestListingId = lowestListing and lowestListing.ListingId or nil,
+				AverageSalePriceCoins = averageSalePrice,
+				HasOwnListing = group.HasOwnListing == true,
+				IsOwnOnly = isOwnOnly,
+				CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+			}
+
+			if (not categoryFilterLower or string.lower(tostring(snapshot.Category or "")) == categoryFilterLower)
+				and marketplaceOfferGroupMatchesSearch(snapshot, searchText) then
+
+				table.insert(groups, snapshot)
+			end
+		end
+	end
+
+	table.sort(groups, function(a, b)
+		local aPrice = typeof(a.LowestUnitPriceCoins) == "number" and a.LowestUnitPriceCoins or math.huge
+		local bPrice = typeof(b.LowestUnitPriceCoins) == "number" and b.LowestUnitPriceCoins or math.huge
+
+		if aPrice ~= bPrice then
+			return aPrice < bPrice
+		end
+
+		return tostring(a.DisplayName or a.TemplateId or "") < tostring(b.DisplayName or b.TemplateId or "")
+	end)
+
+	while #groups > maxResults do
+		table.remove(groups)
+	end
+
+	return true, "Marketplace offers loaded.", groups
+end
+
+function MarketplaceService.PurchaseMarketplaceOffer(player, templateId)
+	if not playerIsValid(player) then
+		return false, "Invalid player."
+	end
+
+	if not getLoadedProfile(player) then
+		return false, "Profile is not loaded."
+	end
+
+	local _, listing, isOwnOnly, message = findLowestLoadedListingForTemplate(templateId, player)
+
+	if isOwnOnly == true then
+		return false, message or "You cannot buy your own listing."
+	end
+
+	if not listing then
+		return false, message or "This marketplace offer is no longer available."
+	end
+
+	return MarketplaceService.PurchaseListing(player, listing.ListingId)
 end
 
 function MarketplaceService.PurchaseListing(player, listingId)
@@ -1112,37 +1443,6 @@ function MarketplaceService.PurchaseListing(player, listingId)
 				return false, addInventoryMessage or "Could not deliver purchased item."
 			end
 
-			local addedSellerCoins, addSellerCoinsMessage, sellerCoinBalance =
-				RoomPersistence.AddCurrency(
-					sellerPlayer,
-					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
-					totalPrice,
-					"MarketplaceSale:" .. normalizedListingId
-				)
-
-			if not addedSellerCoins then
-				local removedInventory = RoomPersistence.RemoveInventoryItem(
-					player,
-					currentListing.TemplateId,
-					currentListing.Quantity,
-					{
-						ConsumeTradableFirst = true,
-					}
-				)
-				local refunded = RoomPersistence.AddCurrency(
-					player,
-					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
-					totalPrice,
-					"MarketplacePurchaseSellerRollback:" .. normalizedListingId
-				)
-
-				if not removedInventory or not refunded then
-					warn("Marketplace purchase rollback failed after seller currency add failure", player.UserId, normalizedListingId)
-				end
-
-				return false, addSellerCoinsMessage or "Could not complete purchase."
-			end
-
 			local now = os.time()
 			local sold, soldMessage, soldListing =
 				RoomPersistence.UpdateMarketplaceListing(
@@ -1153,17 +1453,16 @@ function MarketplaceService.PurchaseListing(player, listingId)
 						Escrowed = false,
 						BuyerUserId = player.UserId,
 						SoldAt = now,
+						SoldUnitPriceCoins = currentListing.UnitPriceCoins,
+						SoldTotalCoins = totalPrice,
+						ProceedsClaimed = false,
+						ClaimableCoins = totalPrice,
+						ClaimedAt = false,
 						TransactionId = generateTransactionId(sellerPlayer.UserId, player.UserId),
 					}
 				)
 
 			if not sold then
-				local removedSellerCoins = RoomPersistence.RemoveCurrency(
-					sellerPlayer,
-					MarketplaceService.MARKETPLACE_CURRENCY_KEY,
-					totalPrice,
-					"MarketplacePurchaseListingRollback:" .. normalizedListingId
-				)
 				local removedInventory = RoomPersistence.RemoveInventoryItem(
 					player,
 					currentListing.TemplateId,
@@ -1179,7 +1478,7 @@ function MarketplaceService.PurchaseListing(player, listingId)
 					"MarketplacePurchaseListingRollback:" .. normalizedListingId
 				)
 
-				if not removedSellerCoins or not removedInventory or not refunded then
+				if not removedInventory or not refunded then
 					warn("Marketplace purchase rollback failed after listing sale update failure", player.UserId, normalizedListingId)
 				end
 
@@ -1194,7 +1493,6 @@ function MarketplaceService.PurchaseListing(player, listingId)
 				{
 					SellerPlayer = sellerPlayer,
 					SellerUserId = sellerPlayer.UserId,
-					SellerNewCoinBalance = sellerCoinBalance,
 					TotalCoins = totalPrice,
 					TemplateId = currentListing.TemplateId,
 					Quantity = currentListing.Quantity,
@@ -1214,6 +1512,101 @@ function MarketplaceService.PurchaseListing(player, listingId)
 		resultInventoryDetails,
 		resultCoinBalance,
 		resultSaleInfo
+end
+
+function MarketplaceService.ClaimSale(player, listingId)
+	return runMarketplaceMutation(player, function()
+		if not playerIsValid(player) then
+			return false, "Invalid player."
+		end
+
+		if not getLoadedProfile(player) then
+			return false, "Profile is not loaded."
+		end
+
+		local normalizedListingId = normalizeListingId(listingId)
+
+		if not normalizedListingId then
+			return false, "Invalid marketplace listing."
+		end
+
+		local listing = RoomPersistence.GetMarketplaceListing(player, normalizedListingId)
+
+		if not listing then
+			return false, "Marketplace listing not found."
+		end
+
+		if listing.SellerUserId ~= player.UserId then
+			return false, "Only the seller can claim this sale."
+		end
+
+		if listing.Status ~= MarketplaceService.STATUS_SOLD then
+			return false, "Only sold listings can be claimed."
+		end
+
+		if listing.ProceedsClaimed == true then
+			return false, "This sale has already been claimed."
+		end
+
+		if listing.ProceedsClaimed == nil and listing.ClaimableCoins == nil then
+			return false, "This sale has already been claimed."
+		end
+
+		if listing.CurrencyKey ~= MarketplaceService.MARKETPLACE_CURRENCY_KEY then
+			return false, "This sale cannot be claimed."
+		end
+
+		local claimableCoins = normalizePositiveInteger(listing.ClaimableCoins)
+
+		if not claimableCoins then
+			return false, "This sale cannot be claimed."
+		end
+
+		local now = os.time()
+		local markedClaimed, markMessage, markedListing =
+			RoomPersistence.UpdateMarketplaceListing(
+				player,
+				normalizedListingId,
+				{
+					ProceedsClaimed = true,
+					ClaimedAt = now,
+				}
+			)
+
+		if not markedClaimed then
+			return false, markMessage or "Could not claim sale."
+		end
+
+		local addedCoins, addCoinsMessage, newCoinBalance =
+			RoomPersistence.AddCurrency(
+				player,
+				MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+				claimableCoins,
+				"MarketplaceClaim:" .. normalizedListingId
+			)
+
+		if not addedCoins then
+			RoomPersistence.UpdateMarketplaceListing(
+				player,
+				normalizedListingId,
+				{
+					ProceedsClaimed = false,
+					ClaimedAt = false,
+				}
+			)
+
+			return false, addCoinsMessage or "Could not claim sale."
+		end
+
+		return true,
+			"Sale claimed.",
+			MarketplaceService.GetMyListingSnapshot(markedListing),
+			nil,
+			newCoinBalance,
+			{
+				ClaimedCoins = claimableCoins,
+			}
+	end)
 end
 
 Players.PlayerRemoving:Connect(function(player)

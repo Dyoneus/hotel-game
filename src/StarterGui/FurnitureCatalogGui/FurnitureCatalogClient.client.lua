@@ -42,16 +42,19 @@ local catalogViewMode = "FrontPage"
 local marketplaceViewMode = "Offers"
 local catalogNavButtons = {}
 local latestPublicMarketplaceListings = {}
+local latestMarketplaceOfferGroups = {}
 local latestMySalesListings = {}
 local marketplacePublicListingsInFlight = false
 local marketplaceMySalesInFlight = false
 local marketplaceCancelInFlightByListingId = {}
+local marketplaceClaimInFlightByListingId = {}
 local marketplacePurchaseInFlightByListingId = {}
 local marketplacePurchaseListing = nil
 local marketplacePurchaseRequestInFlight = false
 local marketplacePurchaseRequestSerial = 0
 local pendingPurchaseRequestId = nil
 local pendingPurchaseListingId = nil
+local pendingPurchaseTemplateId = nil
 local marketplaceLastRequestAt = -math.huge
 local publicMarketplaceLastRequestAt = -math.huge
 local mySalesLastRequestAt = -math.huge
@@ -174,6 +177,7 @@ local rebuildCatalogNavigation = nil
 local requestMarketplaceOffers = nil
 local requestMarketplaceMySales = nil
 local cancelMarketplaceSale = nil
+local claimMarketplaceSale = nil
 local requestMarketplacePurchase = nil
 
 local placingItemData = nil
@@ -581,6 +585,43 @@ ui.StatusLabel.TextSize = 14
 ui.StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 ui.StatusLabel.Font = Enum.Font.Gotham
 ui.StatusLabel.Parent = ui.Panel
+
+ui.MarketplaceSalesHeaderNote = Instance.new("Frame")
+ui.MarketplaceSalesHeaderNote.Name = "MarketplaceSalesHeaderNote"
+ui.MarketplaceSalesHeaderNote.Position = UDim2.fromOffset(22, 68)
+ui.MarketplaceSalesHeaderNote.Size = UDim2.new(1, -230, 0, 38)
+ui.MarketplaceSalesHeaderNote.BackgroundColor3 = Color3.fromRGB(246, 239, 209)
+ui.MarketplaceSalesHeaderNote.BorderSizePixel = 0
+ui.MarketplaceSalesHeaderNote.Visible = false
+ui.MarketplaceSalesHeaderNote.Parent = ui.Panel
+
+createCorner(ui.MarketplaceSalesHeaderNote, 8)
+createStroke(ui.MarketplaceSalesHeaderNote, Color3.fromRGB(154, 129, 88), 1, 0.38)
+
+ui.MarketplaceSalesHeaderTitle = Instance.new("TextLabel")
+ui.MarketplaceSalesHeaderTitle.Name = "MarketplaceSalesHeaderTitle"
+ui.MarketplaceSalesHeaderTitle.Position = UDim2.fromOffset(10, 3)
+ui.MarketplaceSalesHeaderTitle.Size = UDim2.new(1, -20, 0, 16)
+ui.MarketplaceSalesHeaderTitle.BackgroundTransparency = 1
+ui.MarketplaceSalesHeaderTitle.Text = "Manage your marketplace sales."
+ui.MarketplaceSalesHeaderTitle.TextColor3 = Color3.fromRGB(65, 55, 42)
+ui.MarketplaceSalesHeaderTitle.TextSize = 12
+ui.MarketplaceSalesHeaderTitle.TextXAlignment = Enum.TextXAlignment.Left
+ui.MarketplaceSalesHeaderTitle.Font = Enum.Font.GothamBold
+ui.MarketplaceSalesHeaderTitle.Parent = ui.MarketplaceSalesHeaderNote
+
+ui.MarketplaceSalesHeaderBody = Instance.new("TextLabel")
+ui.MarketplaceSalesHeaderBody.Name = "MarketplaceSalesHeaderBody"
+ui.MarketplaceSalesHeaderBody.Position = UDim2.fromOffset(10, 20)
+ui.MarketplaceSalesHeaderBody.Size = UDim2.new(1, -20, 0, 14)
+ui.MarketplaceSalesHeaderBody.BackgroundTransparency = 1
+ui.MarketplaceSalesHeaderBody.Text = "Sale history will be cleared within 30 days."
+ui.MarketplaceSalesHeaderBody.TextColor3 = Color3.fromRGB(92, 82, 65)
+ui.MarketplaceSalesHeaderBody.TextSize = 11
+ui.MarketplaceSalesHeaderBody.TextXAlignment = Enum.TextXAlignment.Left
+ui.MarketplaceSalesHeaderBody.TextTruncate = Enum.TextTruncate.AtEnd
+ui.MarketplaceSalesHeaderBody.Font = Enum.Font.Gotham
+ui.MarketplaceSalesHeaderBody.Parent = ui.MarketplaceSalesHeaderNote
 
 ui.SectionFrame = Instance.new("Frame")
 ui.SectionFrame.Name = "ShopSectionTabs"
@@ -1246,12 +1287,15 @@ local function updateCatalogChrome()
 	local showingFrontPage = catalogViewMode == CATALOG_VIEW.FRONT_PAGE
 	local showingPlaceholder = catalogViewMode == CATALOG_VIEW.PLACEHOLDER
 	local showingOffers = marketplaceViewMode == MARKETPLACE_VIEW.OFFERS
+	local showingMySales = marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES
 	local showingInstructions = marketplaceViewMode == MARKETPLACE_VIEW.INSTRUCTIONS
 	local marketplaceBusy = showingOffers
 		and marketplacePublicListingsInFlight
 		or marketplaceMySalesInFlight
 
 	ui.TitleLabel.Text = "Catalog"
+	ui.StatusLabel.Visible = not (showingMarketplace and showingMySales)
+	ui.MarketplaceSalesHeaderNote.Visible = showingMarketplace and showingMySales
 	ui.SectionFrame.Visible = false
 	ui.CategoryFrame.Visible = false
 	ui.MarketplaceTabsFrame.Visible = false
@@ -2686,6 +2730,59 @@ local function getMarketplaceSaleStatusText(listing)
 	return status
 end
 
+local function getMarketplaceClaimableCoins(listing)
+	if typeof(listing) ~= "table" then
+		return nil
+	end
+
+	local claimableCoins = listing.ClaimableCoins
+
+	if typeof(claimableCoins) == "number"
+		and claimableCoins == claimableCoins
+		and claimableCoins > 0
+		and claimableCoins < math.huge then
+
+		return math.floor(claimableCoins)
+	end
+
+	return nil
+end
+
+local function isMarketplaceSaleUnclaimed(listing)
+	return typeof(listing) == "table"
+		and tostring(listing.Status or "") == "Sold"
+		and listing.ProceedsClaimed ~= true
+		and getMarketplaceClaimableCoins(listing) ~= nil
+end
+
+local function shouldShowMarketplaceSaleHistory(listing)
+	if isMarketplaceSaleUnclaimed(listing) then
+		return true
+	end
+
+	local status = tostring(listing and listing.Status or "")
+
+	if status == "Active" then
+		return true
+	end
+
+	local historyTime = nil
+
+	if status == "Sold" then
+		historyTime = listing.ClaimedAt or listing.SoldAt or listing.UpdatedAt
+	elseif status == "Cancelled" then
+		historyTime = listing.UpdatedAt or listing.CreatedAt
+	else
+		historyTime = listing.UpdatedAt or listing.CreatedAt
+	end
+
+	if typeof(historyTime) ~= "number" or historyTime <= 0 then
+		return true
+	end
+
+	return os.time() - historyTime <= 30 * 24 * 60 * 60
+end
+
 local function getMarketplaceListingDisplayName(listing)
 	if typeof(listing) == "table"
 		and typeof(listing.DisplayName) == "string"
@@ -2759,6 +2856,33 @@ local function getMarketplaceListingTotalPrice(listing)
 	return math.floor(quantity) * math.floor(unitPriceCoins)
 end
 
+local function getMarketplacePurchaseKey(listing)
+	if typeof(listing) ~= "table" then
+		return nil
+	end
+
+	if listing.IsOfferGroup == true and typeof(listing.TemplateId) == "string" and listing.TemplateId ~= "" then
+		return "Group:" .. listing.TemplateId
+	end
+
+	if typeof(listing.ListingId) == "string" and listing.ListingId ~= "" then
+		return listing.ListingId
+	end
+
+	return nil
+end
+
+local function truncateMarketplaceDescription(description)
+	local text = tostring(description or "")
+	local maxLength = 92
+
+	if #text <= maxLength then
+		return text
+	end
+
+	return string.sub(text, 1, maxLength - 3) .. "..."
+end
+
 local function setMarketplacePurchaseStatus(text, isError)
 	ui.MarketplacePurchaseStatus.Text = tostring(text or "")
 	ui.MarketplacePurchaseStatus.TextColor3 = isError == true
@@ -2780,14 +2904,23 @@ local function updateMarketplacePurchaseModal()
 	local listing = marketplacePurchaseListing
 	local isInFlight = marketplacePurchaseRequestInFlight
 	local itemName = getMarketplaceListingDisplayName(listing)
-	local quantity = typeof(listing) == "table" and listing.Quantity or 0
 	local totalPrice = getMarketplaceListingTotalPrice(listing)
 
-	ui.MarketplacePurchaseMessage.Text = "Buy "
-		.. itemName
-		.. " x" .. tostring(quantity)
-		.. " for " .. tostring(totalPrice)
-		.. " Coins?"
+	if typeof(listing) == "table" and listing.IsOfferGroup == true then
+		ui.MarketplacePurchaseMessage.Text = "Buy "
+			.. itemName
+			.. " for " .. tostring(totalPrice)
+			.. " Coins?"
+	else
+		local quantity = typeof(listing) == "table" and listing.Quantity or 0
+
+		ui.MarketplacePurchaseMessage.Text = "Buy "
+			.. itemName
+			.. " x" .. tostring(quantity)
+			.. " for " .. tostring(totalPrice)
+			.. " Coins?"
+	end
+
 	ui.MarketplacePurchaseConfirmButton.Text = isInFlight and "Buying..." or "Confirm"
 	ui.MarketplacePurchaseConfirmButton.Active = not isInFlight
 	ui.MarketplacePurchaseConfirmButton.AutoButtonColor = not isInFlight
@@ -2799,7 +2932,7 @@ local function updateMarketplacePurchaseModal()
 end
 
 local function openMarketplacePurchaseModal(listing)
-	if typeof(listing) ~= "table" or typeof(listing.ListingId) ~= "string" or listing.ListingId == "" then
+	if typeof(listing) ~= "table" or not getMarketplacePurchaseKey(listing) then
 		setStatus("Invalid marketplace listing.")
 		return
 	end
@@ -3162,19 +3295,173 @@ local function createMarketplaceOfferRow(listing, layoutOrder)
 	createCorner(actionButton, 7)
 end
 
+local function createMarketplaceOfferGroupRow(offerGroup, layoutOrder)
+	local templateId = offerGroup.TemplateId
+	local displayName = tostring(offerGroup.DisplayName or templateId or "Marketplace item")
+	local description = truncateMarketplaceDescription(offerGroup.Description)
+	local lowestPrice = offerGroup.LowestUnitPriceCoins
+	local averagePrice = offerGroup.AverageSalePriceCoins
+	local offersCount = offerGroup.OffersCount or 0
+	local isOwnOnly = offerGroup.IsOwnOnly == true
+	local purchaseKey = typeof(templateId) == "string" and ("Group:" .. templateId) or nil
+	local isPurchaseInFlight = purchaseKey and marketplacePurchaseInFlightByListingId[purchaseKey] == true
+
+	local row = Instance.new("Frame")
+	row.Name = "MarketplaceOfferGroupRow"
+	row.LayoutOrder = layoutOrder
+	row.Size = UDim2.new(1, -4, 0, 116)
+	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
+	row.BorderSizePixel = 0
+	row.Parent = ui.ItemList
+
+	createCorner(row, 10)
+	createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "OfferName"
+	nameLabel.Position = UDim2.fromOffset(12, 8)
+	nameLabel.Size = UDim2.new(1, -200, 0, 22)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = displayName
+	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
+	nameLabel.TextSize = 15
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Parent = row
+
+	local descriptionLabel = Instance.new("TextLabel")
+	descriptionLabel.Name = "OfferDescription"
+	descriptionLabel.Position = UDim2.fromOffset(12, 32)
+	descriptionLabel.Size = UDim2.new(1, -200, 0, 18)
+	descriptionLabel.BackgroundTransparency = 1
+	descriptionLabel.Text = description ~= "" and description or "Marketplace furniture offer."
+	descriptionLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
+	descriptionLabel.TextSize = 12
+	descriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
+	descriptionLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	descriptionLabel.Font = Enum.Font.Gotham
+	descriptionLabel.Parent = row
+
+	local priceText = typeof(lowestPrice) == "number"
+		and ("Price: " .. tostring(lowestPrice) .. " Coins")
+		or "Price: -"
+	local averageText = typeof(averagePrice) == "number"
+		and ("Average: " .. tostring(averagePrice) .. " Coins")
+		or "Average: -"
+	local offersText = "Offers: " .. tostring(offersCount)
+
+	local metaLabel = Instance.new("TextLabel")
+	metaLabel.Name = "OfferMeta"
+	metaLabel.Position = UDim2.fromOffset(12, 56)
+	metaLabel.Size = UDim2.new(1, -200, 0, 18)
+	metaLabel.BackgroundTransparency = 1
+	metaLabel.Text = priceText .. "  |  " .. averageText .. "  |  " .. offersText
+	metaLabel.TextColor3 = Color3.fromRGB(70, 70, 70)
+	metaLabel.TextSize = 12
+	metaLabel.TextXAlignment = Enum.TextXAlignment.Left
+	metaLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	metaLabel.Font = Enum.Font.GothamMedium
+	metaLabel.Parent = row
+
+	local ownershipLabel = Instance.new("TextLabel")
+	ownershipLabel.Name = "Ownership"
+	ownershipLabel.Position = UDim2.fromOffset(12, 78)
+	ownershipLabel.Size = UDim2.new(1, -200, 0, 18)
+	ownershipLabel.BackgroundTransparency = 1
+	ownershipLabel.Text = offerGroup.HasOwnListing == true and "Includes your listing." or tostring(offerGroup.Category or "")
+	ownershipLabel.TextColor3 = offerGroup.HasOwnListing == true
+		and Color3.fromRGB(45, 110, 65)
+		or Color3.fromRGB(105, 105, 105)
+	ownershipLabel.TextSize = 11
+	ownershipLabel.TextXAlignment = Enum.TextXAlignment.Left
+	ownershipLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	ownershipLabel.Font = Enum.Font.Gotham
+	ownershipLabel.Parent = row
+
+	local infoButton = Instance.new("TextButton")
+	infoButton.Name = "MarketplaceItemInfoButton"
+	infoButton.AnchorPoint = Vector2.new(1, 0)
+	infoButton.Position = UDim2.new(1, -112, 0, 22)
+	infoButton.Size = UDim2.fromOffset(94, 28)
+	infoButton.BackgroundColor3 = Color3.fromRGB(225, 228, 224)
+	infoButton.BorderSizePixel = 0
+	infoButton.Text = "Item Info"
+	infoButton.TextColor3 = Color3.fromRGB(55, 58, 55)
+	infoButton.TextSize = 11
+	infoButton.Font = Enum.Font.GothamBold
+	infoButton.Parent = row
+
+	createCorner(infoButton, 7)
+
+	infoButton.MouseButton1Click:Connect(function()
+		setStatus("Item info is coming soon.")
+	end)
+
+	local buyButton = Instance.new("TextButton")
+	buyButton.Name = isOwnOnly and "OwnMarketplaceOfferButton" or "BuyMarketplaceOfferButton"
+	buyButton.AnchorPoint = Vector2.new(1, 0)
+	buyButton.Position = UDim2.new(1, -12, 0, 22)
+	buyButton.Size = UDim2.fromOffset(92, 28)
+	buyButton.BorderSizePixel = 0
+	buyButton.TextSize = 12
+	buyButton.Font = Enum.Font.GothamBold
+	buyButton.Parent = row
+
+	if isOwnOnly then
+		buyButton.BackgroundColor3 = Color3.fromRGB(155, 160, 155)
+		buyButton.Text = "Your Listing"
+		buyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		buyButton.Active = false
+		buyButton.AutoButtonColor = false
+	else
+		buyButton.BackgroundColor3 = isPurchaseInFlight
+			and Color3.fromRGB(155, 160, 155)
+			or Color3.fromRGB(70, 150, 255)
+		buyButton.Text = isPurchaseInFlight and "Buying..." or "Buy"
+		buyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		buyButton.Active = not isPurchaseInFlight
+		buyButton.AutoButtonColor = not isPurchaseInFlight
+
+		buyButton.MouseButton1Click:Connect(function()
+			if isPurchaseInFlight then
+				return
+			end
+
+			openMarketplacePurchaseModal({
+				IsOfferGroup = true,
+				ListingId = offerGroup.LowestListingId or purchaseKey,
+				TemplateId = templateId,
+				DisplayName = displayName,
+				Quantity = 1,
+				UnitPriceCoins = lowestPrice,
+				Status = "Active",
+				IsOwnListing = false,
+			})
+		end)
+	end
+
+	createCorner(buyButton, 7)
+end
+
 local function createMarketplaceSaleRow(listing, layoutOrder)
 	local listingId = listing.ListingId
 	local quantity = listing.Quantity or 0
 	local unitPriceCoins = listing.UnitPriceCoins or 0
 	local status = tostring(listing.Status or "Unknown")
 	local isActive = status == "Active"
+	local isSoldUnclaimed = isMarketplaceSaleUnclaimed(listing)
+	local isClaimedSale = status == "Sold" and listing.ProceedsClaimed == true
 	local isCancelInFlight = marketplaceCancelInFlightByListingId[listingId] == true
+	local isClaimInFlight = marketplaceClaimInFlightByListingId[listingId] == true
+	local claimableCoins = getMarketplaceClaimableCoins(listing)
 	local statusColor = getMarketplaceStatusColor(status)
+	local hasActionButton = isActive or isSoldUnclaimed
 
 	local row = Instance.new("Frame")
 	row.Name = "MarketplaceSaleRow"
 	row.LayoutOrder = layoutOrder
-	row.Size = UDim2.new(1, -4, 0, 94)
+	row.Size = UDim2.new(1, -4, 0, 104)
 	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
 	row.BorderSizePixel = 0
 	row.Parent = ui.ItemList
@@ -3185,7 +3472,7 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Name = "SaleName"
 	nameLabel.Position = UDim2.fromOffset(12, 8)
-	nameLabel.Size = UDim2.new(1, isActive and -120 or -24, 0, 22)
+	nameLabel.Size = UDim2.new(1, hasActionButton and -120 or -24, 0, 22)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = getMarketplaceListingDisplayName(listing)
 	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
@@ -3198,9 +3485,15 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 	local priceLabel = Instance.new("TextLabel")
 	priceLabel.Name = "SalePrice"
 	priceLabel.Position = UDim2.fromOffset(12, 32)
-	priceLabel.Size = UDim2.new(1, isActive and -120 or -24, 0, 18)
+	priceLabel.Size = UDim2.new(1, hasActionButton and -120 or -24, 0, 18)
 	priceLabel.BackgroundTransparency = 1
-	priceLabel.Text = "x" .. tostring(quantity) .. " @ " .. tostring(unitPriceCoins) .. " Coins"
+	if isSoldUnclaimed and claimableCoins then
+		priceLabel.Text = "Claim: " .. tostring(claimableCoins) .. " Coins"
+	elseif isClaimedSale then
+		priceLabel.Text = "Claimed"
+	else
+		priceLabel.Text = "x" .. tostring(quantity) .. " @ " .. tostring(unitPriceCoins) .. " Coins"
+	end
 	priceLabel.TextColor3 = Color3.fromRGB(70, 70, 70)
 	priceLabel.TextSize = 12
 	priceLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -3211,7 +3504,7 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 	local listingStatusLabel = Instance.new("TextLabel")
 	listingStatusLabel.Name = "SaleStatus"
 	listingStatusLabel.Position = UDim2.fromOffset(12, 54)
-	listingStatusLabel.Size = UDim2.new(1, isActive and -120 or -24, 0, 18)
+	listingStatusLabel.Size = UDim2.new(1, hasActionButton and -120 or -24, 0, 18)
 	listingStatusLabel.BackgroundTransparency = 1
 	listingStatusLabel.Text = getMarketplaceSaleStatusText(listing)
 	listingStatusLabel.TextColor3 = statusColor
@@ -3220,6 +3513,19 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 	listingStatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	listingStatusLabel.Font = Enum.Font.GothamMedium
 	listingStatusLabel.Parent = row
+
+	local historyLabel = Instance.new("TextLabel")
+	historyLabel.Name = "SaleHistoryNote"
+	historyLabel.Position = UDim2.fromOffset(12, 76)
+	historyLabel.Size = UDim2.new(1, hasActionButton and -120 or -24, 0, 16)
+	historyLabel.BackgroundTransparency = 1
+	historyLabel.Text = listing.LegacyPaid == true and "Legacy sale paid." or ""
+	historyLabel.TextColor3 = Color3.fromRGB(115, 115, 115)
+	historyLabel.TextSize = 10
+	historyLabel.TextXAlignment = Enum.TextXAlignment.Left
+	historyLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	historyLabel.Font = Enum.Font.Gotham
+	historyLabel.Parent = row
 
 	if isActive then
 		local cancelButton = Instance.new("TextButton")
@@ -3242,6 +3548,31 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 		cancelButton.MouseButton1Click:Connect(function()
 			if cancelMarketplaceSale then
 				cancelMarketplaceSale(listingId)
+			end
+		end)
+	elseif isSoldUnclaimed then
+		local claimButton = Instance.new("TextButton")
+		claimButton.Name = "ClaimMarketplaceSaleButton"
+		claimButton.AnchorPoint = Vector2.new(1, 0.5)
+		claimButton.Position = UDim2.new(1, -12, 0.5, 0)
+		claimButton.Size = UDim2.fromOffset(92, 30)
+		claimButton.BackgroundColor3 = isClaimInFlight
+			and Color3.fromRGB(155, 160, 155)
+			or Color3.fromRGB(70, 150, 255)
+		claimButton.BorderSizePixel = 0
+		claimButton.Text = isClaimInFlight and "Claiming..." or "Claim"
+		claimButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		claimButton.TextSize = 12
+		claimButton.Font = Enum.Font.GothamBold
+		claimButton.Active = not isClaimInFlight
+		claimButton.AutoButtonColor = not isClaimInFlight
+		claimButton.Parent = row
+
+		createCorner(claimButton, 7)
+
+		claimButton.MouseButton1Click:Connect(function()
+			if claimMarketplaceSale then
+				claimMarketplaceSale(listingId)
 			end
 		end)
 	end
@@ -3267,8 +3598,36 @@ end
 
 local function sortMySaleListings()
 	table.sort(latestMySalesListings, function(a, b)
+		local aUnclaimed = isMarketplaceSaleUnclaimed(a)
+		local bUnclaimed = isMarketplaceSaleUnclaimed(b)
+
+		if aUnclaimed ~= bUnclaimed then
+			return aUnclaimed
+		end
+
+		local aStatus = tostring(a and a.Status or "")
+		local bStatus = tostring(b and b.Status or "")
+
+		if aStatus ~= bStatus then
+			if aStatus == "Active" then
+				return true
+			end
+
+			if bStatus == "Active" then
+				return false
+			end
+		end
+
 		local aTime = typeof(a) == "table" and (a.UpdatedAt or a.CreatedAt or 0) or 0
 		local bTime = typeof(b) == "table" and (b.UpdatedAt or b.CreatedAt or 0) or 0
+
+		if aStatus == "Sold" then
+			aTime = a.SoldAt or a.ClaimedAt or a.UpdatedAt or a.CreatedAt or 0
+		end
+
+		if bStatus == "Sold" then
+			bTime = b.SoldAt or b.ClaimedAt or b.UpdatedAt or b.CreatedAt or 0
+		end
 
 		if aTime == bTime then
 			local aId = typeof(a) == "table" and a.ListingId or ""
@@ -3295,44 +3654,40 @@ renderMarketplace = function()
 	end
 
 	if marketplaceViewMode == MARKETPLACE_VIEW.OFFERS then
-		local activeOfferCount = 0
-
-		for _, listing in ipairs(latestPublicMarketplaceListings) do
-			if typeof(listing) == "table" and tostring(listing.Status or "") == "Active" then
-				activeOfferCount += 1
-			end
-		end
-
 		if marketplacePublicListingsInFlight then
 			setStatus("Loading marketplace offers...")
-		elseif activeOfferCount == 0 then
-			setStatus("No active offers right now.")
+		elseif #latestMarketplaceOfferGroups == 0 then
+			setStatus("Browse Marketplace offers.")
 			createEmptyCatalogState("No active offers right now.")
 		else
-			setStatus("Browse marketplace offers.")
+			setStatus("Browse Marketplace offers.")
 		end
 
-		local visibleIndex = 0
-
-		for _, listing in ipairs(latestPublicMarketplaceListings) do
-			if typeof(listing) == "table" and tostring(listing.Status or "") == "Active" then
-				visibleIndex += 1
-				createMarketplaceOfferRow(listing, visibleIndex)
+		for index, offerGroup in ipairs(latestMarketplaceOfferGroups) do
+			if typeof(offerGroup) == "table" then
+				createMarketplaceOfferGroupRow(offerGroup, index)
 			end
 		end
 	else
 		sortMySaleListings()
+		local visibleSales = {}
 
-		if marketplaceMySalesInFlight then
-			setStatus("Loading marketplace sales...")
-		elseif #latestMySalesListings == 0 then
-			setStatus("No marketplace sales yet.")
-			createEmptyCatalogState("No marketplace sales yet.")
-		else
-			setStatus("Manage your marketplace sales.")
+		for _, listing in ipairs(latestMySalesListings) do
+			if typeof(listing) == "table" and shouldShowMarketplaceSaleHistory(listing) then
+				table.insert(visibleSales, listing)
+			end
 		end
 
-		for index, listing in ipairs(latestMySalesListings) do
+		if marketplaceMySalesInFlight then
+			setStatus("")
+		elseif #visibleSales == 0 then
+			setStatus("")
+			createEmptyCatalogState("No marketplace sales yet.")
+		else
+			setStatus("")
+		end
+
+		for index, listing in ipairs(visibleSales) do
 			createMarketplaceSaleRow(listing, index)
 		end
 	end
@@ -3454,7 +3809,7 @@ requestMarketplaceOffers = function(options)
 	marketplaceLastRequestAt = now
 	publicMarketplaceLastRequestAt = now
 	renderMarketplace()
-	marketplaceRequest:FireServer("GetPublicListings", {
+	marketplaceRequest:FireServer("GetMarketplaceOfferGroups", {
 		SearchText = ui.MarketplaceSearchBox.Text,
 		MaxResults = 50,
 	})
@@ -3551,6 +3906,41 @@ cancelMarketplaceSale = function(listingId)
 	end)
 end
 
+claimMarketplaceSale = function(listingId)
+	if typeof(listingId) ~= "string" or listingId == "" then
+		setStatus("Invalid marketplace sale.")
+		return
+	end
+
+	if marketplaceClaimInFlightByListingId[listingId] then
+		return
+	end
+
+	local now = os.clock()
+	local cooldownRemaining = MARKETPLACE_REQUEST_COOLDOWN_SECONDS - (now - marketplaceLastRequestAt)
+
+	if cooldownRemaining > 0 then
+		setStatus("Please wait a moment.")
+		renderMarketplace()
+		return
+	end
+
+	marketplaceClaimInFlightByListingId[listingId] = true
+	marketplaceLastRequestAt = now
+	renderMarketplace()
+	marketplaceRequest:FireServer("ClaimSale", {
+		ListingId = listingId,
+	})
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if marketplaceClaimInFlightByListingId[listingId] then
+			marketplaceClaimInFlightByListingId[listingId] = nil
+			setStatus("Claim sale request timed out.")
+			renderMarketplace()
+		end
+	end)
+end
+
 requestMarketplacePurchase = function()
 	if marketplacePurchaseRequestInFlight then
 		return
@@ -3558,7 +3948,7 @@ requestMarketplacePurchase = function()
 
 	local listing = marketplacePurchaseListing
 
-	if typeof(listing) ~= "table" or typeof(listing.ListingId) ~= "string" or listing.ListingId == "" then
+	if typeof(listing) ~= "table" or not getMarketplacePurchaseKey(listing) then
 		setMarketplacePurchaseStatus("Invalid marketplace listing.", true)
 		return
 	end
@@ -3573,9 +3963,9 @@ requestMarketplacePurchase = function()
 		return
 	end
 
-	local listingId = listing.ListingId
+	local purchaseKey = getMarketplacePurchaseKey(listing)
 
-	if marketplacePurchaseInFlightByListingId[listingId] then
+	if marketplacePurchaseInFlightByListingId[purchaseKey] then
 		return
 	end
 
@@ -3589,17 +3979,26 @@ requestMarketplacePurchase = function()
 
 	marketplacePurchaseRequestSerial += 1
 	pendingPurchaseRequestId = tostring(marketplacePurchaseRequestSerial)
-	pendingPurchaseListingId = listingId
+	pendingPurchaseListingId = purchaseKey
+	pendingPurchaseTemplateId = listing.TemplateId
 	marketplacePurchaseRequestInFlight = true
-	marketplacePurchaseInFlightByListingId[listingId] = true
+	marketplacePurchaseInFlightByListingId[purchaseKey] = true
 	marketplaceLastRequestAt = now
 	setMarketplacePurchaseStatus("Purchasing...", false)
 	updateMarketplacePurchaseModal()
 	renderMarketplace()
-	marketplaceRequest:FireServer("PurchaseListing", {
-		ListingId = listingId,
-		RequestId = pendingPurchaseRequestId,
-	})
+
+	if listing.IsOfferGroup == true then
+		marketplaceRequest:FireServer("PurchaseMarketplaceOffer", {
+			TemplateId = listing.TemplateId,
+			RequestId = pendingPurchaseRequestId,
+		})
+	else
+		marketplaceRequest:FireServer("PurchaseListing", {
+			ListingId = listing.ListingId,
+			RequestId = pendingPurchaseRequestId,
+		})
+	end
 
 	local requestId = pendingPurchaseRequestId
 
@@ -3613,6 +4012,7 @@ requestMarketplacePurchase = function()
 
 			pendingPurchaseRequestId = nil
 			pendingPurchaseListingId = nil
+			pendingPurchaseTemplateId = nil
 			setMarketplacePurchaseStatus("Purchase request timed out.", true)
 			updateMarketplacePurchaseModal()
 			renderMarketplace()
@@ -3892,17 +4292,17 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 	local success = response.Success == true
 	local message = getMarketplaceWaitMessage(response.Message)
 
-	if kind == "PublicListings" or kind == "GetPublicListings" then
+	if kind == "MarketplaceOfferGroups" or kind == "GetMarketplaceOfferGroups" then
 		marketplacePublicListingsInFlight = false
 		local shouldRunQueuedRefresh = publicMarketplaceQueuedRefresh == true
 
 		if success then
-			latestPublicMarketplaceListings = {}
+			latestMarketplaceOfferGroups = {}
 
-			if typeof(response.Listings) == "table" then
-				for _, listing in ipairs(response.Listings) do
-					if typeof(listing) == "table" and tostring(listing.Status or "") == "Active" then
-						table.insert(latestPublicMarketplaceListings, listing)
+			if typeof(response.Offers) == "table" then
+				for _, offerGroup in ipairs(response.Offers) do
+					if typeof(offerGroup) == "table" and typeof(offerGroup.TemplateId) == "string" then
+						table.insert(latestMarketplaceOfferGroups, offerGroup)
 					end
 				end
 			end
@@ -3933,6 +4333,38 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			scheduleQueuedMarketplaceOffersRefresh(
 				MARKETPLACE_REQUEST_COOLDOWN_SECONDS - (os.clock() - publicMarketplaceLastRequestAt)
 			)
+		end
+
+		return
+	end
+
+	if kind == "PublicListings" or kind == "GetPublicListings" then
+		marketplacePublicListingsInFlight = false
+
+		if success then
+			latestPublicMarketplaceListings = {}
+
+			if typeof(response.Listings) == "table" then
+				for _, listing in ipairs(response.Listings) do
+					if typeof(listing) == "table" and tostring(listing.Status or "") == "Active" then
+						table.insert(latestPublicMarketplaceListings, listing)
+					end
+				end
+			end
+		else
+			publicMarketplaceQueuedRefresh = false
+		end
+
+		if catalogViewMode == CATALOG_VIEW.MARKETPLACE
+			and marketplaceViewMode == MARKETPLACE_VIEW.OFFERS then
+
+			renderMarketplace()
+
+			if message ~= "" then
+				setStatus(message)
+			end
+		else
+			updateCatalogChrome()
 		end
 
 		return
@@ -4006,10 +4438,18 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			end)
 		end
 
+		if requestMarketplaceOffers then
+			task.delay(0.5, function()
+				requestMarketplaceOffers({
+					Queue = true,
+				})
+			end)
+		end
+
 		return
 	end
 
-	if kind == "PurchaseListing" then
+	if kind == "PurchaseListing" or kind == "PurchaseMarketplaceOffer" then
 		local responseRequestId = response.RequestId
 
 		if pendingPurchaseRequestId
@@ -4020,8 +4460,9 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 		end
 
 		local listing = response.Listing
+		local pendingPurchaseKey = pendingPurchaseListingId
 		local listingId = pendingPurchaseListingId
-		local templateId = nil
+		local templateId = response.TemplateId or pendingPurchaseTemplateId
 
 		if typeof(listing) == "table" then
 			listingId = listing.ListingId or listingId
@@ -4032,12 +4473,17 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 
 		marketplacePurchaseRequestInFlight = false
 
+		if typeof(pendingPurchaseKey) == "string" then
+			marketplacePurchaseInFlightByListingId[pendingPurchaseKey] = nil
+		end
+
 		if typeof(listingId) == "string" then
 			marketplacePurchaseInFlightByListingId[listingId] = nil
 		end
 
 		pendingPurchaseRequestId = nil
 		pendingPurchaseListingId = nil
+		pendingPurchaseTemplateId = nil
 
 		if success then
 			if typeof(listingId) == "string" then
@@ -4062,7 +4508,7 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			marketplacePurchaseListing = nil
 			setMarketplacePurchaseStatus("", false)
 			renderMarketplace()
-			setStatus("Purchase complete.")
+			setStatus("Purchase successful. Item added to your Inventory.")
 
 			if requestMarketplaceOffers then
 				task.delay(0.5, function()
@@ -4093,6 +4539,52 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 				renderMarketplace()
 				setStatus(errorMessage)
 			end
+		end
+
+		return
+	end
+
+	if kind == "ClaimSale" then
+		marketplaceClaimInFlightByListingId = {}
+
+		local listing = response.Listing
+
+		if typeof(listing) == "table" then
+			upsertMySaleListing(listing)
+		end
+
+		if success then
+			if typeof(response.NewCoinBalance) == "number" then
+				currencyLocalDelta:Fire({
+					CurrencyKey = response.CurrencyKey or "Coins",
+					Balance = response.NewCoinBalance,
+				})
+			elseif typeof(response.ClaimedCoins) == "number" then
+				currencyLocalDelta:Fire({
+					CurrencyKey = response.CurrencyKey or "Coins",
+					Amount = response.ClaimedCoins,
+					Reason = "MarketplaceClaim",
+				})
+			end
+
+			currencyRefreshRequested:Fire()
+			setStatus("Sale claimed.")
+
+			if requestMarketplaceMySales then
+				task.delay(0.4, function()
+					requestMarketplaceMySales({
+						Queue = true,
+					})
+				end)
+			end
+		else
+			setStatus(message ~= "" and message or "Could not claim sale.")
+		end
+
+		if catalogViewMode == CATALOG_VIEW.MARKETPLACE then
+			renderMarketplace()
+		else
+			updateCatalogChrome()
 		end
 
 		return

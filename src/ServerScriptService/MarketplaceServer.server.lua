@@ -142,6 +142,53 @@ local function handleGetPublicListings(player, payload)
 	})
 end
 
+local function notifySellerAfterPurchase(buyerPlayer, listing, saleInfo)
+	if typeof(saleInfo) ~= "table" then
+		return
+	end
+
+	local sellerPlayer = saleInfo.SellerPlayer
+
+	if sellerPlayer and sellerPlayer.Parent == Players then
+		local sellerNewCoinBalance = saleInfo.SellerNewCoinBalance
+
+		sendResult(sellerPlayer, {
+			Kind = "ListingSold",
+			Success = true,
+			Message = "Your listing sold. Claim it in My Sales.",
+			Listing = listing,
+			TemplateId = saleInfo.TemplateId or (typeof(listing) == "table" and listing.TemplateId or nil),
+			Quantity = saleInfo.Quantity or (typeof(listing) == "table" and listing.Quantity or nil),
+			TotalCoins = saleInfo.TotalCoins,
+			CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+			NewCoinBalance = sellerNewCoinBalance,
+			BuyerUserId = buyerPlayer.UserId,
+		})
+
+		if typeof(sellerNewCoinBalance) == "number" then
+			currencyResult:FireClient(sellerPlayer, {
+				Kind = "Currency",
+				Success = true,
+				CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+				Balance = sellerNewCoinBalance,
+				Message = "Coins updated.",
+			})
+		end
+	end
+end
+
+local function handleGetMarketplaceOfferGroups(player, payload)
+	local success, message, offers = MarketplaceService.GetMarketplaceOfferGroups(player, payload)
+
+	sendResult(player, {
+		Kind = "MarketplaceOfferGroups",
+		Success = success,
+		Message = message,
+		Offers = offers or {},
+		RequestId = typeof(payload) == "table" and payload.RequestId or nil,
+	})
+end
+
 local function handlePurchaseListing(player, payload)
 	if typeof(payload) ~= "table" then
 		sendResult(player, {
@@ -166,38 +213,64 @@ local function handlePurchaseListing(player, payload)
 		RequestId = payload.RequestId,
 	})
 
-	if not success or typeof(saleInfo) ~= "table" then
+	if success then
+		notifySellerAfterPurchase(player, listing, saleInfo)
+	end
+end
+
+local function handlePurchaseMarketplaceOffer(player, payload)
+	if typeof(payload) ~= "table" then
+		sendResult(player, {
+			Kind = "PurchaseMarketplaceOffer",
+			Success = false,
+			Message = "Invalid marketplace purchase request.",
+		})
 		return
 	end
 
-	local sellerPlayer = saleInfo.SellerPlayer
+	local success, message, listing, inventoryDetails, newCoinBalance, saleInfo =
+		MarketplaceService.PurchaseMarketplaceOffer(player, payload.TemplateId)
 
-	if sellerPlayer and sellerPlayer.Parent == Players then
-		local sellerNewCoinBalance = saleInfo.SellerNewCoinBalance
+	sendResult(player, {
+		Kind = "PurchaseMarketplaceOffer",
+		Success = success,
+		Message = message,
+		Listing = listing,
+		InventoryDetails = success and inventoryDetails or nil,
+		NewCoinBalance = success and newCoinBalance or nil,
+		CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+		RequestId = payload.RequestId,
+		TemplateId = payload.TemplateId,
+	})
 
-		sendResult(sellerPlayer, {
-			Kind = "ListingSold",
-			Success = true,
-			Message = "Your listing sold.",
-			Listing = listing,
-			TemplateId = saleInfo.TemplateId or (typeof(listing) == "table" and listing.TemplateId or nil),
-			Quantity = saleInfo.Quantity or (typeof(listing) == "table" and listing.Quantity or nil),
-			TotalCoins = saleInfo.TotalCoins,
-			CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
-			NewCoinBalance = sellerNewCoinBalance,
-			BuyerUserId = player.UserId,
-		})
-
-		if typeof(sellerNewCoinBalance) == "number" then
-			currencyResult:FireClient(sellerPlayer, {
-				Kind = "Currency",
-				Success = true,
-				CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
-				Balance = sellerNewCoinBalance,
-				Message = "Coins updated.",
-			})
-		end
+	if success then
+		notifySellerAfterPurchase(player, listing, saleInfo)
 	end
+end
+
+local function handleClaimSale(player, payload)
+	if typeof(payload) ~= "table" then
+		sendResult(player, {
+			Kind = "ClaimSale",
+			Success = false,
+			Message = "Invalid marketplace claim request.",
+		})
+		return
+	end
+
+	local success, message, listing, _, newCoinBalance, claimInfo =
+		MarketplaceService.ClaimSale(player, payload.ListingId)
+
+	sendResult(player, {
+		Kind = "ClaimSale",
+		Success = success,
+		Message = message,
+		Listing = listing,
+		ClaimedCoins = success and typeof(claimInfo) == "table" and claimInfo.ClaimedCoins or nil,
+		NewCoinBalance = success and newCoinBalance or nil,
+		CurrencyKey = MarketplaceService.MARKETPLACE_CURRENCY_KEY,
+		RequestId = payload.RequestId,
+	})
 end
 
 marketplaceRequest.OnServerEvent:Connect(function(player, actionName, payload)
@@ -231,8 +304,23 @@ marketplaceRequest.OnServerEvent:Connect(function(player, actionName, payload)
 		return
 	end
 
+	if actionName == "GetMarketplaceOfferGroups" then
+		handleGetMarketplaceOfferGroups(player, payload)
+		return
+	end
+
 	if actionName == "PurchaseListing" then
 		handlePurchaseListing(player, payload)
+		return
+	end
+
+	if actionName == "PurchaseMarketplaceOffer" then
+		handlePurchaseMarketplaceOffer(player, payload)
+		return
+	end
+
+	if actionName == "ClaimSale" then
+		handleClaimSale(player, payload)
 		return
 	end
 

@@ -745,12 +745,17 @@ local MARKETPLACE_LISTING_FIELDS = {
 	UpdatedAt = true,
 	ExpiresAt = true,
 	SoldAt = true,
+	SoldUnitPriceCoins = true,
+	SoldTotalCoins = true,
 	BuyerUserId = true,
 	TransactionId = true,
 	Escrowed = true,
 	ReturnTradable = true,
 	ReturnSellable = true,
 	LegacyNoEscrow = true,
+	ProceedsClaimed = true,
+	ClaimableCoins = true,
+	ClaimedAt = true,
 }
 
 local function isValidListingRecord(listingRecord)
@@ -769,6 +774,8 @@ local function isValidListingRecord(listingRecord)
 		and (listingRecord.ReturnTradable == nil or typeof(listingRecord.ReturnTradable) == "boolean")
 		and (listingRecord.ReturnSellable == nil or typeof(listingRecord.ReturnSellable) == "boolean")
 		and (listingRecord.LegacyNoEscrow == nil or typeof(listingRecord.LegacyNoEscrow) == "boolean")
+		and (listingRecord.ProceedsClaimed == nil or typeof(listingRecord.ProceedsClaimed) == "boolean")
+		and (listingRecord.ClaimableCoins == nil or isPositiveInteger(listingRecord.ClaimableCoins))
 end
 
 local function copyMarketplaceListing(listingRecord)
@@ -1311,6 +1318,30 @@ function RoomPersistence.UpdateMarketplaceListing(player, listingId, updates)
 		end
 	end
 
+	if updates.SoldUnitPriceCoins ~= nil then
+		if updates.SoldUnitPriceCoins ~= false and not isPositiveInteger(updates.SoldUnitPriceCoins) then
+			return false, "Invalid marketplace sold unit price."
+		end
+
+		if updates.SoldUnitPriceCoins == false then
+			listingRecord.SoldUnitPriceCoins = nil
+		else
+			listingRecord.SoldUnitPriceCoins = math.floor(updates.SoldUnitPriceCoins)
+		end
+	end
+
+	if updates.SoldTotalCoins ~= nil then
+		if updates.SoldTotalCoins ~= false and not isPositiveInteger(updates.SoldTotalCoins) then
+			return false, "Invalid marketplace sold total."
+		end
+
+		if updates.SoldTotalCoins == false then
+			listingRecord.SoldTotalCoins = nil
+		else
+			listingRecord.SoldTotalCoins = math.floor(updates.SoldTotalCoins)
+		end
+	end
+
 	if updates.BuyerUserId ~= nil then
 		if updates.BuyerUserId ~= false and not isFiniteInteger(updates.BuyerUserId) then
 			return false, "Invalid marketplace listing buyer."
@@ -1367,6 +1398,43 @@ function RoomPersistence.UpdateMarketplaceListing(player, listingId, updates)
 		end
 
 		listingRecord.LegacyNoEscrow = updates.LegacyNoEscrow
+	end
+
+	if updates.ProceedsClaimed ~= nil then
+		if typeof(updates.ProceedsClaimed) ~= "boolean" then
+			return false, "Invalid marketplace claim state."
+		end
+
+		listingRecord.ProceedsClaimed = updates.ProceedsClaimed
+	end
+
+	if updates.ClaimableCoins ~= nil then
+		if updates.ClaimableCoins ~= false and not isPositiveInteger(updates.ClaimableCoins) then
+			return false, "Invalid marketplace claim amount."
+		end
+
+		if updates.ClaimableCoins == false then
+			listingRecord.ClaimableCoins = nil
+		else
+			listingRecord.ClaimableCoins = math.floor(updates.ClaimableCoins)
+		end
+	end
+
+	if updates.ClaimedAt ~= nil then
+		if updates.ClaimedAt ~= false
+			and (typeof(updates.ClaimedAt) ~= "number"
+				or updates.ClaimedAt ~= updates.ClaimedAt
+				or updates.ClaimedAt < 0
+				or updates.ClaimedAt >= math.huge) then
+
+			return false, "Invalid marketplace claim time."
+		end
+
+		if updates.ClaimedAt == false then
+			listingRecord.ClaimedAt = nil
+		else
+			listingRecord.ClaimedAt = math.floor(updates.ClaimedAt)
+		end
 	end
 
 	listingRecord.UpdatedAt = os.time()
