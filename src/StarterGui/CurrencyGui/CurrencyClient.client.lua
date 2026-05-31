@@ -26,6 +26,7 @@ local LOCAL_REQUEST_COOLDOWN_SECONDS = 0.6
 local REQUEST_TIMEOUT_SECONDS = 6
 local MARKETPLACE_SALE_TOAST_SECONDS = 2
 local DAILY_DOLLAR_ICON = ""
+local TOP_CURRENCY_HUD_ENABLED = false
 
 local DEFAULT_DAILY_REWARDS = {
 	{ Day = 1, CurrencyKey = "Dollars", Amount = 50, Icon = DAILY_DOLLAR_ICON },
@@ -551,7 +552,8 @@ local function normalizeDailyRewardStatus(status)
 end
 
 local function shouldShowCurrencyHud()
-	return player:GetAttribute("OnboardingStep") == "Complete"
+	return TOP_CURRENCY_HUD_ENABLED
+		and player:GetAttribute("OnboardingStep") == "Complete"
 		and (player:GetAttribute("ControlMode") or "Hotel") ~= "Minigame"
 end
 

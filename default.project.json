@@ -148,6 +148,10 @@
         "$className": "ScreenGui",
         "$path": "src/StarterGui/MainMenuGui"
       },
+      "MainHudGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/MainHudGui"
+      },
       "RoomCreationGui": {
         "$className": "ScreenGui",
         "$path": "src/StarterGui/RoomCreationGui"

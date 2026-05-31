@@ -13,6 +13,8 @@ local furnitureCatalogRequest = remoteEvents:WaitForChild("FurnitureCatalogReque
 local furnitureCatalogResult = remoteEvents:WaitForChild("FurnitureCatalogResult")
 local marketplaceRequest = remoteEvents:WaitForChild("MarketplaceRequest")
 local marketplaceResult = remoteEvents:WaitForChild("MarketplaceResult")
+local currencyRequest = remoteEvents:WaitForChild("CurrencyRequest")
+local currencyResult = remoteEvents:WaitForChild("CurrencyResult")
 local GridConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GridConfig"))
 
 local activeRooms = workspace:WaitForChild("ActiveRooms")
@@ -22,6 +24,8 @@ local gui = script.Parent
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.DisplayOrder = 160
+
+local ui = {}
 
 for _, child in ipairs(gui:GetChildren()) do
 	if child ~= script then
@@ -34,9 +38,9 @@ local requestInFlight = false
 local activePurchaseButton = nil
 local activePurchaseButtonText = nil
 local selectedCategory = "All"
-local catalogViewMode = "Shop"
+local catalogViewMode = "FrontPage"
 local marketplaceViewMode = "Offers"
-local categoryButtons = {}
+local catalogNavButtons = {}
 local latestPublicMarketplaceListings = {}
 local latestMySalesListings = {}
 local marketplacePublicListingsInFlight = false
@@ -55,26 +59,121 @@ local publicMarketplaceQueuedRefresh = false
 local mySalesQueuedRefresh = false
 local publicMarketplaceQueuedRefreshScheduled = false
 local mySalesQueuedRefreshScheduled = false
-
-local CATEGORY_ORDER = {
-	"All",
-	"Featured",
-	"Chairs",
-	"Tables",
-	"Beds",
+local catalogCurrency = {
+	Coins = 0,
+	Dollars = 0,
+	Loaded = false,
+	RequestInFlight = false,
+	LastRequestAt = -math.huge,
+	Serial = 0,
+}
+local catalogNavExpanded = {
+	Furniture = true,
+	Marketplace = true,
 }
 
-local CATALOG_VIEW_SHOP = "Shop"
-local CATALOG_VIEW_MARKETPLACE = "Marketplace"
-local MARKETPLACE_VIEW_OFFERS = "Offers"
-local MARKETPLACE_VIEW_MY_SALES = "MySales"
+local CATALOG_VIEW = {
+	SHOP = "Shop",
+	MARKETPLACE = "Marketplace",
+	FRONT_PAGE = "FrontPage",
+	PLACEHOLDER = "Placeholder",
+}
+local MARKETPLACE_VIEW = {
+	OFFERS = "Offers",
+	MY_SALES = "MySales",
+	INSTRUCTIONS = "Instructions",
+}
+local CATALOG_PAGE = {
+	FRONT = "FrontPage",
+	COINS = "Coins",
+	BEST_SELLERS = "BestSellers",
+	VIP = "VIP",
+	FURNITURE_SHOP = "FurnitureShop",
+	FURNITURE_ALL = "FurnitureAll",
+	FURNITURE_SEATING = "FurnitureSeating",
+	FURNITURE_TABLES = "FurnitureTables",
+	FURNITURE_BEDS = "FurnitureBeds",
+	FURNITURE_DECOR = "FurnitureDecor",
+	FURNITURE_ROOM_BUILDING = "FurnitureRoomBuilding",
+	FURNITURE_RUGS = "FurnitureRugs",
+	FURNITURE_PLANTS = "FurniturePlants",
+	FURNITURE_LIGHTING = "FurnitureLighting",
+	FURNITURE_EXTRAS = "FurnitureExtras",
+	PETS = "Pets",
+	SPECIAL_OFFERS = "SpecialOffers",
+	MARKETPLACE_OFFERS = "MarketplaceOffers",
+	MARKETPLACE_MY_SALES = "MarketplaceMySales",
+	MARKETPLACE_INSTRUCTIONS = "MarketplaceInstructions",
+}
 local MARKETPLACE_REQUEST_COOLDOWN_SECONDS = 0.7
 local REQUEST_TIMEOUT_SECONDS = 6
+local selectedCatalogPage = CATALOG_PAGE.FRONT
+local placeholderCatalogPage = CATALOG_PAGE.COINS
+
+local CATALOG_NAV_ITEMS = {
+	{ Page = CATALOG_PAGE.FRONT, Label = "Front Page", Icon = "FP" },
+	{ Page = CATALOG_PAGE.COINS, Label = "Coins", Icon = "$" },
+	{ Page = CATALOG_PAGE.BEST_SELLERS, Label = "Best Sellers", Icon = "*" },
+	{ Page = CATALOG_PAGE.VIP, Label = "VIP", Icon = "V" },
+	{ Group = "Furniture", Label = "Furniture Shop", Icon = "F" },
+	{ Page = CATALOG_PAGE.PETS, Label = "Pets", Icon = "P" },
+	{ Page = CATALOG_PAGE.SPECIAL_OFFERS, Label = "Special Offers", Icon = "!" },
+	{ Group = "Marketplace", Label = "Marketplace", Icon = "M" },
+}
+
+local CATALOG_SHOP_CATEGORIES = {
+	{ Page = CATALOG_PAGE.FURNITURE_ALL, Label = "All", Category = "All" },
+	{ Page = CATALOG_PAGE.FURNITURE_SEATING, Label = "Seating", Category = "Chairs" },
+	{ Page = CATALOG_PAGE.FURNITURE_TABLES, Label = "Tables", Category = "Tables" },
+	{ Page = CATALOG_PAGE.FURNITURE_BEDS, Label = "Beds", Category = "Beds" },
+	{ Page = CATALOG_PAGE.FURNITURE_DECOR, Label = "Decor", Category = "Decor" },
+	{ Page = CATALOG_PAGE.FURNITURE_ROOM_BUILDING, Label = "Room Building", Category = "Room Building" },
+	{ Page = CATALOG_PAGE.FURNITURE_RUGS, Label = "Rugs", Category = "Rugs" },
+	{ Page = CATALOG_PAGE.FURNITURE_PLANTS, Label = "Plants", Category = "Plants" },
+	{ Page = CATALOG_PAGE.FURNITURE_LIGHTING, Label = "Lighting", Category = "Lighting" },
+	{ Page = CATALOG_PAGE.FURNITURE_EXTRAS, Label = "Extras", Category = "Extras" },
+}
+
+local CATALOG_MARKETPLACE_PAGES = {
+	{ Page = CATALOG_PAGE.MARKETPLACE_OFFERS, Label = "Offers", Icon = "M" },
+	{ Page = CATALOG_PAGE.MARKETPLACE_MY_SALES, Label = "My Sales", Icon = "M" },
+	{ Page = CATALOG_PAGE.MARKETPLACE_INSTRUCTIONS, Label = "Instructions", Icon = "?" },
+}
+
+local PLACEHOLDER_PAGE_CONTENT = {
+	[CATALOG_PAGE.COINS] = {
+		Title = "Coins",
+		Body = "Coins are used for premium furniture and Marketplace purchases.",
+		Button = "Coming Soon",
+	},
+	[CATALOG_PAGE.BEST_SELLERS] = {
+		Title = "Best Sellers",
+		Body = "Popular furniture picks will be featured here soon.",
+		Button = "Coming Soon",
+	},
+	[CATALOG_PAGE.VIP] = {
+		Title = "VIP",
+		Body = "VIP furniture and membership previews are coming later.",
+		Button = "Coming Soon",
+	},
+	[CATALOG_PAGE.PETS] = {
+		Title = "Pets",
+		Body = "Pets are planned for a future catalog update.",
+		Button = "Coming Soon",
+	},
+	[CATALOG_PAGE.SPECIAL_OFFERS] = {
+		Title = "Special Offers",
+		Body = "Limited-time catalog offers will appear here when available.",
+		Button = "Coming Soon",
+	},
+}
 
 local updateOpenButton = nil
 local destroyCatalogPlacementPreview = nil
 local renderCatalog = nil
 local renderMarketplace = nil
+local selectCatalogPage = nil
+local rebuildCatalogNavigation = nil
 local requestMarketplaceOffers = nil
 local requestMarketplaceMySales = nil
 local cancelMarketplaceSale = nil
@@ -391,350 +490,573 @@ local function canContinueInventoryPlacement()
 		and player:GetAttribute("RoomMode") == "Edit"
 end
 
-local openButton = Instance.new("TextButton")
-openButton.Name = "OpenFurnitureCatalogButton"
-openButton.AnchorPoint = Vector2.new(1, 1)
-openButton.Position = UDim2.new(1, -20, 1, -74)
-openButton.Size = UDim2.fromOffset(150, 44)
-openButton.BackgroundColor3 = Color3.fromRGB(60, 110, 170)
-openButton.BorderSizePixel = 0
-openButton.Text = "Shop"
-openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-openButton.TextScaled = true
-openButton.Font = Enum.Font.GothamBold
-openButton.Visible = false
-openButton.Parent = gui
+ui.OpenButton = Instance.new("TextButton")
+ui.OpenButton.Name = "OpenFurnitureCatalogButton"
+ui.OpenButton.AnchorPoint = Vector2.new(1, 1)
+ui.OpenButton.Position = UDim2.new(1, -20, 1, -74)
+ui.OpenButton.Size = UDim2.fromOffset(150, 44)
+ui.OpenButton.BackgroundColor3 = Color3.fromRGB(92, 72, 48)
+ui.OpenButton.BorderSizePixel = 0
+ui.OpenButton.Text = "Catalog"
+ui.OpenButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.OpenButton.TextSize = 17
+ui.OpenButton.Font = Enum.Font.GothamBold
+ui.OpenButton.Visible = false
+ui.OpenButton.Parent = gui
 
-createCorner(openButton, 10)
-createStroke(openButton, Color3.fromRGB(255, 255, 255), 1, 0.25)
+createCorner(ui.OpenButton, 10)
+createStroke(ui.OpenButton, Color3.fromRGB(255, 255, 255), 1, 0.25)
 
-local panel = Instance.new("Frame")
-panel.Name = "FurnitureCatalogPanel"
-panel.AnchorPoint = Vector2.new(1, 0.5)
-panel.Position = UDim2.new(1, -24, 0.5, 0)
-panel.Size = UDim2.fromOffset(390, 500)
-panel.BackgroundColor3 = Color3.fromRGB(245, 245, 238)
-panel.BorderSizePixel = 0
-panel.Visible = false
-panel.Parent = gui
+ui.Panel = Instance.new("Frame")
+ui.Panel.Name = "FurnitureCatalogPanel"
+ui.Panel.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.Panel.Position = UDim2.fromScale(0.5, 0.5)
+ui.Panel.Size = UDim2.fromOffset(760, 560)
+ui.Panel.BackgroundColor3 = Color3.fromRGB(238, 229, 198)
+ui.Panel.BorderSizePixel = 0
+ui.Panel.Visible = false
+ui.Panel.Parent = gui
 
-createCorner(panel, 16)
-createStroke(panel, Color3.fromRGB(255, 255, 255), 2, 0.1)
+createCorner(ui.Panel, 10)
+createStroke(ui.Panel, Color3.fromRGB(84, 68, 48), 2, 0.08)
 
-local titleLabel = Instance.new("TextLabel")
-titleLabel.Name = "TitleLabel"
-titleLabel.Position = UDim2.fromOffset(18, 14)
-titleLabel.Size = UDim2.new(1, -70, 0, 36)
-titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Furniture Shop"
-titleLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
-titleLabel.TextScaled = true
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Font = Enum.Font.GothamBold
-titleLabel.Parent = panel
+ui.PanelSize = Instance.new("UISizeConstraint")
+ui.PanelSize.MinSize = Vector2.new(680, 500)
+ui.PanelSize.MaxSize = Vector2.new(820, 620)
+ui.PanelSize.Parent = ui.Panel
 
-local closeButton = Instance.new("TextButton")
-closeButton.Name = "CloseButton"
-closeButton.AnchorPoint = Vector2.new(1, 0)
-closeButton.Position = UDim2.new(1, -18, 0, 18)
-closeButton.Size = UDim2.fromOffset(34, 34)
-closeButton.BackgroundColor3 = Color3.fromRGB(160, 70, 70)
-closeButton.BorderSizePixel = 0
-closeButton.Text = "X"
-closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeButton.TextScaled = true
-closeButton.Font = Enum.Font.GothamBold
-closeButton.Parent = panel
+ui.SpiralFrame = Instance.new("Frame")
+ui.SpiralFrame.Name = "SpiralBinding"
+ui.SpiralFrame.Position = UDim2.fromOffset(18, 8)
+ui.SpiralFrame.Size = UDim2.new(1, -36, 0, 22)
+ui.SpiralFrame.BackgroundTransparency = 1
+ui.SpiralFrame.Parent = ui.Panel
 
-createCorner(closeButton, 8)
+for index = 1, 17 do
+	local ring = Instance.new("Frame")
+	ring.Name = "Spiral_" .. tostring(index)
+	ring.Position = UDim2.new((index - 1) / 16, -5, 0, 2)
+	ring.Size = UDim2.fromOffset(10, 18)
+	ring.BackgroundColor3 = Color3.fromRGB(77, 70, 62)
+	ring.BorderSizePixel = 0
+	ring.Parent = ui.SpiralFrame
 
-local statusLabel = Instance.new("TextLabel")
-statusLabel.Name = "StatusLabel"
-statusLabel.Position = UDim2.fromOffset(18, 56)
-statusLabel.Size = UDim2.new(1, -36, 0, 42)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Text = "Choose furniture to add to your Inventory."
-statusLabel.TextColor3 = Color3.fromRGB(90, 90, 90)
-statusLabel.TextWrapped = true
-statusLabel.TextScaled = true
-statusLabel.Font = Enum.Font.Gotham
-statusLabel.Parent = panel
+	createCorner(ring, 5)
+end
 
-local sectionFrame = Instance.new("Frame")
-sectionFrame.Name = "ShopSectionTabs"
-sectionFrame.Position = UDim2.fromOffset(18, 104)
-sectionFrame.Size = UDim2.new(1, -36, 0, 30)
-sectionFrame.BackgroundTransparency = 1
-sectionFrame.Parent = panel
+ui.TitleLabel = Instance.new("TextLabel")
+ui.TitleLabel.Name = "TitleLabel"
+ui.TitleLabel.Position = UDim2.fromOffset(22, 34)
+ui.TitleLabel.Size = UDim2.new(1, -230, 0, 34)
+ui.TitleLabel.BackgroundTransparency = 1
+ui.TitleLabel.Text = "Catalog"
+ui.TitleLabel.TextColor3 = Color3.fromRGB(62, 48, 34)
+ui.TitleLabel.TextSize = 28
+ui.TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.TitleLabel.Font = Enum.Font.GothamBold
+ui.TitleLabel.Parent = ui.Panel
 
-local sectionLayout = Instance.new("UIListLayout")
-sectionLayout.FillDirection = Enum.FillDirection.Horizontal
-sectionLayout.SortOrder = Enum.SortOrder.LayoutOrder
-sectionLayout.Padding = UDim.new(0, 6)
-sectionLayout.Parent = sectionFrame
+ui.CloseButton = Instance.new("TextButton")
+ui.CloseButton.Name = "CloseButton"
+ui.CloseButton.AnchorPoint = Vector2.new(1, 0)
+ui.CloseButton.Position = UDim2.new(1, -18, 0, 34)
+ui.CloseButton.Size = UDim2.fromOffset(34, 34)
+ui.CloseButton.BackgroundColor3 = Color3.fromRGB(132, 70, 58)
+ui.CloseButton.BorderSizePixel = 0
+ui.CloseButton.Text = "X"
+ui.CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.CloseButton.TextSize = 16
+ui.CloseButton.Font = Enum.Font.GothamBold
+ui.CloseButton.Parent = ui.Panel
 
-local shopSectionButton = Instance.new("TextButton")
-shopSectionButton.Name = "ShopSectionButton"
-shopSectionButton.LayoutOrder = 1
-shopSectionButton.Size = UDim2.fromOffset(86, 28)
-shopSectionButton.BorderSizePixel = 0
-shopSectionButton.Text = "Shop"
-shopSectionButton.TextSize = 13
-shopSectionButton.Font = Enum.Font.GothamBold
-shopSectionButton.Parent = sectionFrame
+createCorner(ui.CloseButton, 7)
 
-createCorner(shopSectionButton, 7)
+ui.StatusLabel = Instance.new("TextLabel")
+ui.StatusLabel.Name = "StatusLabel"
+ui.StatusLabel.Position = UDim2.fromOffset(22, 68)
+ui.StatusLabel.Size = UDim2.new(1, -230, 0, 34)
+ui.StatusLabel.BackgroundTransparency = 1
+ui.StatusLabel.Text = "Browse the latest hotel furniture and marketplace offers."
+ui.StatusLabel.TextColor3 = Color3.fromRGB(95, 80, 62)
+ui.StatusLabel.TextWrapped = true
+ui.StatusLabel.TextSize = 14
+ui.StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.StatusLabel.Font = Enum.Font.Gotham
+ui.StatusLabel.Parent = ui.Panel
 
-local marketplaceSectionButton = Instance.new("TextButton")
-marketplaceSectionButton.Name = "MarketplaceSectionButton"
-marketplaceSectionButton.LayoutOrder = 2
-marketplaceSectionButton.Size = UDim2.fromOffset(116, 28)
-marketplaceSectionButton.BorderSizePixel = 0
-marketplaceSectionButton.Text = "Marketplace"
-marketplaceSectionButton.TextSize = 13
-marketplaceSectionButton.Font = Enum.Font.GothamBold
-marketplaceSectionButton.Parent = sectionFrame
+ui.SectionFrame = Instance.new("Frame")
+ui.SectionFrame.Name = "ShopSectionTabs"
+ui.SectionFrame.Position = UDim2.fromOffset(18, 104)
+ui.SectionFrame.Size = UDim2.new(1, -36, 0, 30)
+ui.SectionFrame.BackgroundTransparency = 1
+ui.SectionFrame.Visible = false
+ui.SectionFrame.Parent = ui.Panel
 
-createCorner(marketplaceSectionButton, 7)
+ui.SectionLayout = Instance.new("UIListLayout")
+ui.SectionLayout.FillDirection = Enum.FillDirection.Horizontal
+ui.SectionLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.SectionLayout.Padding = UDim.new(0, 6)
+ui.SectionLayout.Parent = ui.SectionFrame
 
-local categoryFrame = Instance.new("Frame")
-categoryFrame.Name = "CategoryTabs"
-categoryFrame.Position = UDim2.fromOffset(18, 140)
-categoryFrame.Size = UDim2.new(1, -36, 0, 32)
-categoryFrame.BackgroundTransparency = 1
-categoryFrame.Parent = panel
+ui.ShopSectionButton = Instance.new("TextButton")
+ui.ShopSectionButton.Name = "ShopSectionButton"
+ui.ShopSectionButton.LayoutOrder = 1
+ui.ShopSectionButton.Size = UDim2.fromOffset(86, 28)
+ui.ShopSectionButton.BorderSizePixel = 0
+ui.ShopSectionButton.Text = "Shop"
+ui.ShopSectionButton.TextSize = 13
+ui.ShopSectionButton.Font = Enum.Font.GothamBold
+ui.ShopSectionButton.Parent = ui.SectionFrame
 
-local categoryLayout = Instance.new("UIListLayout")
-categoryLayout.FillDirection = Enum.FillDirection.Horizontal
-categoryLayout.SortOrder = Enum.SortOrder.LayoutOrder
-categoryLayout.Padding = UDim.new(0, 6)
-categoryLayout.Parent = categoryFrame
+createCorner(ui.ShopSectionButton, 7)
 
-local marketplaceTabsFrame = Instance.new("Frame")
-marketplaceTabsFrame.Name = "MarketplaceTabs"
-marketplaceTabsFrame.Position = UDim2.fromOffset(18, 140)
-marketplaceTabsFrame.Size = UDim2.new(1, -36, 0, 32)
-marketplaceTabsFrame.BackgroundTransparency = 1
-marketplaceTabsFrame.Visible = false
-marketplaceTabsFrame.Parent = panel
+ui.MarketplaceSectionButton = Instance.new("TextButton")
+ui.MarketplaceSectionButton.Name = "MarketplaceSectionButton"
+ui.MarketplaceSectionButton.LayoutOrder = 2
+ui.MarketplaceSectionButton.Size = UDim2.fromOffset(116, 28)
+ui.MarketplaceSectionButton.BorderSizePixel = 0
+ui.MarketplaceSectionButton.Text = "Marketplace"
+ui.MarketplaceSectionButton.TextSize = 13
+ui.MarketplaceSectionButton.Font = Enum.Font.GothamBold
+ui.MarketplaceSectionButton.Parent = ui.SectionFrame
 
-local marketplaceTabsLayout = Instance.new("UIListLayout")
-marketplaceTabsLayout.FillDirection = Enum.FillDirection.Horizontal
-marketplaceTabsLayout.SortOrder = Enum.SortOrder.LayoutOrder
-marketplaceTabsLayout.Padding = UDim.new(0, 6)
-marketplaceTabsLayout.Parent = marketplaceTabsFrame
+createCorner(ui.MarketplaceSectionButton, 7)
 
-local marketplaceOffersButton = Instance.new("TextButton")
-marketplaceOffersButton.Name = "MarketplaceOffersButton"
-marketplaceOffersButton.LayoutOrder = 1
-marketplaceOffersButton.Size = UDim2.fromOffset(78, 30)
-marketplaceOffersButton.BorderSizePixel = 0
-marketplaceOffersButton.Text = "Offers"
-marketplaceOffersButton.TextSize = 13
-marketplaceOffersButton.Font = Enum.Font.GothamBold
-marketplaceOffersButton.Parent = marketplaceTabsFrame
+ui.CategoryFrame = Instance.new("Frame")
+ui.CategoryFrame.Name = "CategoryTabs"
+ui.CategoryFrame.Position = UDim2.fromOffset(22, 112)
+ui.CategoryFrame.Size = UDim2.new(1, -226, 0, 32)
+ui.CategoryFrame.BackgroundTransparency = 1
+ui.CategoryFrame.Parent = ui.Panel
 
-createCorner(marketplaceOffersButton, 8)
+ui.CategoryLayout = Instance.new("UIListLayout")
+ui.CategoryLayout.FillDirection = Enum.FillDirection.Horizontal
+ui.CategoryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.CategoryLayout.Padding = UDim.new(0, 6)
+ui.CategoryLayout.Parent = ui.CategoryFrame
 
-local marketplaceMySalesButton = Instance.new("TextButton")
-marketplaceMySalesButton.Name = "MarketplaceMySalesButton"
-marketplaceMySalesButton.LayoutOrder = 2
-marketplaceMySalesButton.Size = UDim2.fromOffset(86, 30)
-marketplaceMySalesButton.BorderSizePixel = 0
-marketplaceMySalesButton.Text = "My Sales"
-marketplaceMySalesButton.TextSize = 13
-marketplaceMySalesButton.Font = Enum.Font.GothamBold
-marketplaceMySalesButton.Parent = marketplaceTabsFrame
+ui.MarketplaceTabsFrame = Instance.new("Frame")
+ui.MarketplaceTabsFrame.Name = "MarketplaceTabs"
+ui.MarketplaceTabsFrame.Position = UDim2.fromOffset(18, 140)
+ui.MarketplaceTabsFrame.Size = UDim2.new(1, -36, 0, 32)
+ui.MarketplaceTabsFrame.BackgroundTransparency = 1
+ui.MarketplaceTabsFrame.Visible = false
+ui.MarketplaceTabsFrame.Parent = ui.Panel
 
-createCorner(marketplaceMySalesButton, 8)
+ui.MarketplaceTabsLayout = Instance.new("UIListLayout")
+ui.MarketplaceTabsLayout.FillDirection = Enum.FillDirection.Horizontal
+ui.MarketplaceTabsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.MarketplaceTabsLayout.Padding = UDim.new(0, 6)
+ui.MarketplaceTabsLayout.Parent = ui.MarketplaceTabsFrame
 
-local marketplaceRefreshButton = Instance.new("TextButton")
-marketplaceRefreshButton.Name = "MarketplaceRefreshButton"
-marketplaceRefreshButton.LayoutOrder = 3
-marketplaceRefreshButton.Size = UDim2.fromOffset(72, 30)
-marketplaceRefreshButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
-marketplaceRefreshButton.BorderSizePixel = 0
-marketplaceRefreshButton.Text = "Refresh"
-marketplaceRefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-marketplaceRefreshButton.TextSize = 12
-marketplaceRefreshButton.Font = Enum.Font.GothamBold
-marketplaceRefreshButton.Parent = marketplaceTabsFrame
+ui.MarketplaceOffersButton = Instance.new("TextButton")
+ui.MarketplaceOffersButton.Name = "MarketplaceOffersButton"
+ui.MarketplaceOffersButton.LayoutOrder = 1
+ui.MarketplaceOffersButton.Size = UDim2.fromOffset(78, 30)
+ui.MarketplaceOffersButton.BorderSizePixel = 0
+ui.MarketplaceOffersButton.Text = "Offers"
+ui.MarketplaceOffersButton.TextSize = 13
+ui.MarketplaceOffersButton.Font = Enum.Font.GothamBold
+ui.MarketplaceOffersButton.Parent = ui.MarketplaceTabsFrame
 
-createCorner(marketplaceRefreshButton, 8)
+createCorner(ui.MarketplaceOffersButton, 8)
 
-local marketplaceSearchBox = Instance.new("TextBox")
-marketplaceSearchBox.Name = "MarketplaceSearchBox"
-marketplaceSearchBox.Position = UDim2.fromOffset(18, 178)
-marketplaceSearchBox.Size = UDim2.new(1, -36, 0, 30)
-marketplaceSearchBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-marketplaceSearchBox.BorderSizePixel = 0
-marketplaceSearchBox.ClearTextOnFocus = false
-marketplaceSearchBox.PlaceholderText = "Search marketplace"
-marketplaceSearchBox.Text = ""
-marketplaceSearchBox.TextColor3 = Color3.fromRGB(40, 40, 40)
-marketplaceSearchBox.PlaceholderColor3 = Color3.fromRGB(135, 135, 135)
-marketplaceSearchBox.TextSize = 13
-marketplaceSearchBox.TextXAlignment = Enum.TextXAlignment.Left
-marketplaceSearchBox.Font = Enum.Font.Gotham
-marketplaceSearchBox.Visible = false
-marketplaceSearchBox.Parent = panel
+ui.MarketplaceMySalesButton = Instance.new("TextButton")
+ui.MarketplaceMySalesButton.Name = "MarketplaceMySalesButton"
+ui.MarketplaceMySalesButton.LayoutOrder = 2
+ui.MarketplaceMySalesButton.Size = UDim2.fromOffset(86, 30)
+ui.MarketplaceMySalesButton.BorderSizePixel = 0
+ui.MarketplaceMySalesButton.Text = "My Sales"
+ui.MarketplaceMySalesButton.TextSize = 13
+ui.MarketplaceMySalesButton.Font = Enum.Font.GothamBold
+ui.MarketplaceMySalesButton.Parent = ui.MarketplaceTabsFrame
 
-createCorner(marketplaceSearchBox, 8)
-createStroke(marketplaceSearchBox, Color3.fromRGB(220, 220, 220), 1, 0)
+createCorner(ui.MarketplaceMySalesButton, 8)
 
-local placementHintLabel = Instance.new("TextLabel")
-placementHintLabel.Name = "PlacementHintLabel"
-placementHintLabel.AnchorPoint = Vector2.new(0.5, 1)
-placementHintLabel.Position = UDim2.new(0.5, 0, 1, -24)
-placementHintLabel.Size = UDim2.fromOffset(560, 46)
-placementHintLabel.BackgroundColor3 = Color3.fromRGB(35, 45, 60)
-placementHintLabel.BackgroundTransparency = 0.08
-placementHintLabel.BorderSizePixel = 0
-placementHintLabel.Text = ""
-placementHintLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-placementHintLabel.TextScaled = true
-placementHintLabel.TextWrapped = true
-placementHintLabel.Font = Enum.Font.GothamBold
-placementHintLabel.Visible = false
-placementHintLabel.Parent = gui
+ui.MarketplaceRefreshButton = Instance.new("TextButton")
+ui.MarketplaceRefreshButton.Name = "MarketplaceRefreshButton"
+ui.MarketplaceRefreshButton.LayoutOrder = 3
+ui.MarketplaceRefreshButton.Size = UDim2.fromOffset(72, 30)
+ui.MarketplaceRefreshButton.BackgroundColor3 = Color3.fromRGB(70, 135, 90)
+ui.MarketplaceRefreshButton.BorderSizePixel = 0
+ui.MarketplaceRefreshButton.Text = "Refresh"
+ui.MarketplaceRefreshButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.MarketplaceRefreshButton.TextSize = 12
+ui.MarketplaceRefreshButton.Font = Enum.Font.GothamBold
+ui.MarketplaceRefreshButton.Parent = ui.MarketplaceTabsFrame
 
-createCorner(placementHintLabel, 12)
-createStroke(placementHintLabel, Color3.fromRGB(255, 255, 255), 1, 0.35)
+createCorner(ui.MarketplaceRefreshButton, 8)
 
-local itemList = Instance.new("ScrollingFrame")
-itemList.Name = "ItemList"
-itemList.Position = UDim2.fromOffset(18, 184)
-itemList.Size = UDim2.new(1, -36, 1, -204)
-itemList.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-itemList.BorderSizePixel = 0
-itemList.ScrollBarThickness = 6
-itemList.CanvasSize = UDim2.fromOffset(0, 0)
-itemList.Parent = panel
+ui.MarketplaceSearchBox = Instance.new("TextBox")
+ui.MarketplaceSearchBox.Name = "MarketplaceSearchBox"
+ui.MarketplaceSearchBox.Position = UDim2.fromOffset(22, 112)
+ui.MarketplaceSearchBox.Size = UDim2.new(1, -226, 0, 30)
+ui.MarketplaceSearchBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.MarketplaceSearchBox.BorderSizePixel = 0
+ui.MarketplaceSearchBox.ClearTextOnFocus = false
+ui.MarketplaceSearchBox.PlaceholderText = "Search marketplace"
+ui.MarketplaceSearchBox.Text = ""
+ui.MarketplaceSearchBox.TextColor3 = Color3.fromRGB(40, 40, 40)
+ui.MarketplaceSearchBox.PlaceholderColor3 = Color3.fromRGB(135, 135, 135)
+ui.MarketplaceSearchBox.TextSize = 13
+ui.MarketplaceSearchBox.TextXAlignment = Enum.TextXAlignment.Left
+ui.MarketplaceSearchBox.Font = Enum.Font.Gotham
+ui.MarketplaceSearchBox.Visible = false
+ui.MarketplaceSearchBox.Parent = ui.Panel
 
-createCorner(itemList, 12)
-createStroke(itemList, Color3.fromRGB(220, 220, 220), 1, 0)
+createCorner(ui.MarketplaceSearchBox, 8)
+createStroke(ui.MarketplaceSearchBox, Color3.fromRGB(220, 220, 220), 1, 0)
 
-local listLayout = Instance.new("UIListLayout")
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Padding = UDim.new(0, 8)
-listLayout.Parent = itemList
+ui.CatalogNavFrame = Instance.new("ScrollingFrame")
+ui.CatalogNavFrame.Name = "CatalogCategoryNavigation"
+ui.CatalogNavFrame.AnchorPoint = Vector2.new(1, 0)
+ui.CatalogNavFrame.Position = UDim2.new(1, -18, 0, 78)
+ui.CatalogNavFrame.Size = UDim2.fromOffset(164, 454)
+ui.CatalogNavFrame.BackgroundColor3 = Color3.fromRGB(218, 205, 170)
+ui.CatalogNavFrame.BorderSizePixel = 0
+ui.CatalogNavFrame.CanvasSize = UDim2.fromOffset(0, 0)
+ui.CatalogNavFrame.ScrollBarThickness = 4
+ui.CatalogNavFrame.Parent = ui.Panel
 
-local listPadding = Instance.new("UIPadding")
-listPadding.PaddingTop = UDim.new(0, 10)
-listPadding.PaddingBottom = UDim.new(0, 10)
-listPadding.PaddingLeft = UDim.new(0, 10)
-listPadding.PaddingRight = UDim.new(0, 10)
-listPadding.Parent = itemList
+createCorner(ui.CatalogNavFrame, 9)
+createStroke(ui.CatalogNavFrame, Color3.fromRGB(101, 80, 55), 1, 0.18)
 
-local marketplacePurchaseOverlay = Instance.new("Frame")
-marketplacePurchaseOverlay.Name = "MarketplacePurchaseOverlay"
-marketplacePurchaseOverlay.Position = UDim2.fromOffset(0, 0)
-marketplacePurchaseOverlay.Size = UDim2.fromScale(1, 1)
-marketplacePurchaseOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-marketplacePurchaseOverlay.BackgroundTransparency = 0.45
-marketplacePurchaseOverlay.BorderSizePixel = 0
-marketplacePurchaseOverlay.Visible = false
-marketplacePurchaseOverlay.ZIndex = 80
-marketplacePurchaseOverlay.Parent = panel
+ui.NavPadding = Instance.new("UIPadding")
+ui.NavPadding.PaddingTop = UDim.new(0, 8)
+ui.NavPadding.PaddingBottom = UDim.new(0, 8)
+ui.NavPadding.PaddingLeft = UDim.new(0, 8)
+ui.NavPadding.PaddingRight = UDim.new(0, 8)
+ui.NavPadding.Parent = ui.CatalogNavFrame
 
-local marketplacePurchaseWindow = Instance.new("Frame")
-marketplacePurchaseWindow.Name = "MarketplacePurchaseConfirm"
-marketplacePurchaseWindow.AnchorPoint = Vector2.new(0.5, 0.5)
-marketplacePurchaseWindow.Position = UDim2.fromScale(0.5, 0.5)
-marketplacePurchaseWindow.Size = UDim2.fromOffset(322, 188)
-marketplacePurchaseWindow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-marketplacePurchaseWindow.BorderSizePixel = 0
-marketplacePurchaseWindow.ZIndex = 81
-marketplacePurchaseWindow.Parent = marketplacePurchaseOverlay
+ui.NavLayout = Instance.new("UIListLayout")
+ui.NavLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.NavLayout.Padding = UDim.new(0, 4)
+ui.NavLayout.Parent = ui.CatalogNavFrame
 
-createCorner(marketplacePurchaseWindow, 12)
-createStroke(marketplacePurchaseWindow, Color3.fromRGB(210, 215, 220), 1, 0)
+local function addCatalogNavButton(key, label, icon, layoutOrder, options)
+	options = options or {}
 
-local marketplacePurchaseTitle = Instance.new("TextLabel")
-marketplacePurchaseTitle.Name = "PurchaseTitle"
-marketplacePurchaseTitle.Position = UDim2.fromOffset(16, 14)
-marketplacePurchaseTitle.Size = UDim2.new(1, -32, 0, 26)
-marketplacePurchaseTitle.BackgroundTransparency = 1
-marketplacePurchaseTitle.Text = "Buy Marketplace Item"
-marketplacePurchaseTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
-marketplacePurchaseTitle.TextSize = 18
-marketplacePurchaseTitle.TextXAlignment = Enum.TextXAlignment.Left
-marketplacePurchaseTitle.Font = Enum.Font.GothamBold
-marketplacePurchaseTitle.ZIndex = 82
-marketplacePurchaseTitle.Parent = marketplacePurchaseWindow
+	local button = Instance.new("TextButton")
+	button.Name = tostring(key) .. "CatalogNavButton"
+	button.LayoutOrder = layoutOrder
+	button.Size = UDim2.new(1, 0, 0, options.Height or 24)
+	button.BackgroundColor3 = Color3.fromRGB(239, 229, 194)
+	button.BorderSizePixel = 0
+	button.TextColor3 = Color3.fromRGB(63, 54, 44)
+	button.TextSize = options.TextSize or 12
+	button.TextXAlignment = Enum.TextXAlignment.Left
+	button.TextTruncate = Enum.TextTruncate.AtEnd
+	button.Font = options.Font or Enum.Font.GothamBold
+	button.Parent = ui.CatalogNavFrame
 
-local marketplacePurchaseMessage = Instance.new("TextLabel")
-marketplacePurchaseMessage.Name = "PurchaseMessage"
-marketplacePurchaseMessage.Position = UDim2.fromOffset(16, 48)
-marketplacePurchaseMessage.Size = UDim2.new(1, -32, 0, 54)
-marketplacePurchaseMessage.BackgroundTransparency = 1
-marketplacePurchaseMessage.Text = ""
-marketplacePurchaseMessage.TextColor3 = Color3.fromRGB(70, 70, 70)
-marketplacePurchaseMessage.TextSize = 14
-marketplacePurchaseMessage.TextWrapped = true
-marketplacePurchaseMessage.TextXAlignment = Enum.TextXAlignment.Left
-marketplacePurchaseMessage.Font = Enum.Font.Gotham
-marketplacePurchaseMessage.ZIndex = 82
-marketplacePurchaseMessage.Parent = marketplacePurchaseWindow
+	local prefix = options.Indent == true and "   " or ""
+	local caret = options.Caret or ""
 
-local marketplacePurchaseStatus = Instance.new("TextLabel")
-marketplacePurchaseStatus.Name = "PurchaseStatus"
-marketplacePurchaseStatus.Position = UDim2.fromOffset(16, 106)
-marketplacePurchaseStatus.Size = UDim2.new(1, -32, 0, 24)
-marketplacePurchaseStatus.BackgroundTransparency = 1
-marketplacePurchaseStatus.Text = ""
-marketplacePurchaseStatus.TextColor3 = Color3.fromRGB(85, 85, 85)
-marketplacePurchaseStatus.TextSize = 12
-marketplacePurchaseStatus.TextXAlignment = Enum.TextXAlignment.Left
-marketplacePurchaseStatus.TextTruncate = Enum.TextTruncate.AtEnd
-marketplacePurchaseStatus.Font = Enum.Font.Gotham
-marketplacePurchaseStatus.ZIndex = 82
-marketplacePurchaseStatus.Parent = marketplacePurchaseWindow
+	button.Text = prefix .. tostring(icon or "") .. "  " .. tostring(label or key) .. caret
 
-local marketplacePurchaseCancelButton = Instance.new("TextButton")
-marketplacePurchaseCancelButton.Name = "PurchaseCancelButton"
-marketplacePurchaseCancelButton.Position = UDim2.new(1, -160, 1, -44)
-marketplacePurchaseCancelButton.Size = UDim2.fromOffset(64, 30)
-marketplacePurchaseCancelButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
-marketplacePurchaseCancelButton.BorderSizePixel = 0
-marketplacePurchaseCancelButton.Text = "Cancel"
-marketplacePurchaseCancelButton.TextColor3 = Color3.fromRGB(45, 45, 45)
-marketplacePurchaseCancelButton.TextSize = 12
-marketplacePurchaseCancelButton.Font = Enum.Font.GothamBold
-marketplacePurchaseCancelButton.ZIndex = 82
-marketplacePurchaseCancelButton.Parent = marketplacePurchaseWindow
+	createCorner(button, 7)
+	createStroke(button, Color3.fromRGB(154, 129, 88), 1, 0.45)
 
-createCorner(marketplacePurchaseCancelButton, 7)
+	if options.Page then
+		button.MouseButton1Click:Connect(function()
+			if selectCatalogPage then
+				selectCatalogPage(options.Page)
+			end
+		end)
+	elseif options.Group then
+		button.MouseButton1Click:Connect(function()
+			catalogNavExpanded[options.Group] = not catalogNavExpanded[options.Group]
+			rebuildCatalogNavigation()
+		end)
+	end
 
-local marketplacePurchaseConfirmButton = Instance.new("TextButton")
-marketplacePurchaseConfirmButton.Name = "PurchaseConfirmButton"
-marketplacePurchaseConfirmButton.Position = UDim2.new(1, -88, 1, -44)
-marketplacePurchaseConfirmButton.Size = UDim2.fromOffset(72, 30)
-marketplacePurchaseConfirmButton.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
-marketplacePurchaseConfirmButton.BorderSizePixel = 0
-marketplacePurchaseConfirmButton.Text = "Confirm"
-marketplacePurchaseConfirmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-marketplacePurchaseConfirmButton.TextSize = 12
-marketplacePurchaseConfirmButton.Font = Enum.Font.GothamBold
-marketplacePurchaseConfirmButton.ZIndex = 82
-marketplacePurchaseConfirmButton.Parent = marketplacePurchaseWindow
+	catalogNavButtons[key] = button
+	return button
+end
 
-createCorner(marketplacePurchaseConfirmButton, 7)
+rebuildCatalogNavigation = function()
+	for _, child in ipairs(ui.CatalogNavFrame:GetChildren()) do
+		if child:IsA("GuiObject") then
+			child:Destroy()
+		end
+	end
+
+	table.clear(catalogNavButtons)
+
+	local order = 0
+
+	for _, navItem in ipairs(CATALOG_NAV_ITEMS) do
+		order += 1
+
+		if navItem.Group == "Furniture" then
+			addCatalogNavButton(
+				"FurnitureGroup",
+				navItem.Label,
+				navItem.Icon,
+				order,
+				{
+					Group = "Furniture",
+					Caret = catalogNavExpanded.Furniture and "  v" or "  >",
+				}
+			)
+
+			if catalogNavExpanded.Furniture then
+				for _, category in ipairs(CATALOG_SHOP_CATEGORIES) do
+					order += 1
+					addCatalogNavButton(
+						category.Page,
+						category.Label,
+						"-",
+						order,
+						{
+							Page = category.Page,
+							Indent = true,
+							Height = 22,
+							TextSize = 11,
+							Font = Enum.Font.Gotham,
+						}
+					)
+				end
+			end
+		elseif navItem.Group == "Marketplace" then
+			addCatalogNavButton(
+				"MarketplaceGroup",
+				navItem.Label,
+				navItem.Icon,
+				order,
+				{
+					Group = "Marketplace",
+					Caret = catalogNavExpanded.Marketplace and "  v" or "  >",
+				}
+			)
+
+			if catalogNavExpanded.Marketplace then
+				for _, page in ipairs(CATALOG_MARKETPLACE_PAGES) do
+					order += 1
+					addCatalogNavButton(
+						page.Page,
+						page.Label,
+						"-",
+						order,
+						{
+							Page = page.Page,
+							Indent = true,
+							Height = 22,
+							TextSize = 11,
+							Font = Enum.Font.Gotham,
+						}
+					)
+				end
+			end
+		elseif navItem.Page then
+			addCatalogNavButton(navItem.Page, navItem.Label, navItem.Icon, order, {
+				Page = navItem.Page,
+			})
+		end
+	end
+
+	task.defer(function()
+		ui.CatalogNavFrame.CanvasSize = UDim2.fromOffset(0, ui.NavLayout.AbsoluteContentSize.Y + 18)
+	end)
+end
+
+rebuildCatalogNavigation()
+
+ui.CatalogCurrencyPanel = Instance.new("Frame")
+ui.CatalogCurrencyPanel.Name = "CatalogCurrencyPanel"
+ui.CatalogCurrencyPanel.AnchorPoint = Vector2.new(0, 1)
+ui.CatalogCurrencyPanel.Position = UDim2.new(0, 22, 1, -18)
+ui.CatalogCurrencyPanel.Size = UDim2.new(1, -226, 0, 42)
+ui.CatalogCurrencyPanel.BackgroundColor3 = Color3.fromRGB(218, 205, 170)
+ui.CatalogCurrencyPanel.BorderSizePixel = 0
+ui.CatalogCurrencyPanel.Parent = ui.Panel
+
+createCorner(ui.CatalogCurrencyPanel, 9)
+createStroke(ui.CatalogCurrencyPanel, Color3.fromRGB(101, 80, 55), 1, 0.18)
+
+ui.CatalogCoinsLabel = Instance.new("TextLabel")
+ui.CatalogCoinsLabel.Name = "CatalogCoinsLabel"
+ui.CatalogCoinsLabel.Position = UDim2.fromOffset(12, 8)
+ui.CatalogCoinsLabel.Size = UDim2.fromOffset(148, 26)
+ui.CatalogCoinsLabel.BackgroundColor3 = Color3.fromRGB(244, 207, 95)
+ui.CatalogCoinsLabel.BorderSizePixel = 0
+ui.CatalogCoinsLabel.Text = "  Coins: 0"
+ui.CatalogCoinsLabel.TextColor3 = Color3.fromRGB(62, 48, 34)
+ui.CatalogCoinsLabel.TextSize = 13
+ui.CatalogCoinsLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.CatalogCoinsLabel.Font = Enum.Font.GothamBold
+ui.CatalogCoinsLabel.Parent = ui.CatalogCurrencyPanel
+
+createCorner(ui.CatalogCoinsLabel, 7)
+
+ui.CatalogDollarsLabel = Instance.new("TextLabel")
+ui.CatalogDollarsLabel.Name = "CatalogDollarsLabel"
+ui.CatalogDollarsLabel.Position = UDim2.fromOffset(172, 8)
+ui.CatalogDollarsLabel.Size = UDim2.fromOffset(166, 26)
+ui.CatalogDollarsLabel.BackgroundColor3 = Color3.fromRGB(112, 150, 101)
+ui.CatalogDollarsLabel.BorderSizePixel = 0
+ui.CatalogDollarsLabel.Text = "  Dollars: 0"
+ui.CatalogDollarsLabel.TextColor3 = Color3.fromRGB(255, 247, 219)
+ui.CatalogDollarsLabel.TextSize = 13
+ui.CatalogDollarsLabel.TextXAlignment = Enum.TextXAlignment.Left
+ui.CatalogDollarsLabel.Font = Enum.Font.GothamBold
+ui.CatalogDollarsLabel.Parent = ui.CatalogCurrencyPanel
+
+createCorner(ui.CatalogDollarsLabel, 7)
+
+ui.PlacementHintLabel = Instance.new("TextLabel")
+ui.PlacementHintLabel.Name = "PlacementHintLabel"
+ui.PlacementHintLabel.AnchorPoint = Vector2.new(0.5, 1)
+ui.PlacementHintLabel.Position = UDim2.new(0.5, 0, 1, -24)
+ui.PlacementHintLabel.Size = UDim2.fromOffset(560, 46)
+ui.PlacementHintLabel.BackgroundColor3 = Color3.fromRGB(35, 45, 60)
+ui.PlacementHintLabel.BackgroundTransparency = 0.08
+ui.PlacementHintLabel.BorderSizePixel = 0
+ui.PlacementHintLabel.Text = ""
+ui.PlacementHintLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.PlacementHintLabel.TextScaled = true
+ui.PlacementHintLabel.TextWrapped = true
+ui.PlacementHintLabel.Font = Enum.Font.GothamBold
+ui.PlacementHintLabel.Visible = false
+ui.PlacementHintLabel.Parent = gui
+
+createCorner(ui.PlacementHintLabel, 12)
+createStroke(ui.PlacementHintLabel, Color3.fromRGB(255, 255, 255), 1, 0.35)
+
+ui.ItemList = Instance.new("ScrollingFrame")
+ui.ItemList.Name = "ItemList"
+ui.ItemList.Position = UDim2.fromOffset(22, 112)
+ui.ItemList.Size = UDim2.new(1, -226, 1, -172)
+ui.ItemList.BackgroundColor3 = Color3.fromRGB(251, 247, 229)
+ui.ItemList.BorderSizePixel = 0
+ui.ItemList.ScrollBarThickness = 6
+ui.ItemList.CanvasSize = UDim2.fromOffset(0, 0)
+ui.ItemList.Parent = ui.Panel
+
+createCorner(ui.ItemList, 9)
+createStroke(ui.ItemList, Color3.fromRGB(174, 153, 112), 1, 0.22)
+
+ui.ListLayout = Instance.new("UIListLayout")
+ui.ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.ListLayout.Padding = UDim.new(0, 8)
+ui.ListLayout.Parent = ui.ItemList
+
+ui.ListPadding = Instance.new("UIPadding")
+ui.ListPadding.PaddingTop = UDim.new(0, 10)
+ui.ListPadding.PaddingBottom = UDim.new(0, 10)
+ui.ListPadding.PaddingLeft = UDim.new(0, 10)
+ui.ListPadding.PaddingRight = UDim.new(0, 10)
+ui.ListPadding.Parent = ui.ItemList
+
+ui.MarketplacePurchaseOverlay = Instance.new("Frame")
+ui.MarketplacePurchaseOverlay.Name = "MarketplacePurchaseOverlay"
+ui.MarketplacePurchaseOverlay.Position = UDim2.fromOffset(0, 0)
+ui.MarketplacePurchaseOverlay.Size = UDim2.fromScale(1, 1)
+ui.MarketplacePurchaseOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ui.MarketplacePurchaseOverlay.BackgroundTransparency = 0.45
+ui.MarketplacePurchaseOverlay.BorderSizePixel = 0
+ui.MarketplacePurchaseOverlay.Visible = false
+ui.MarketplacePurchaseOverlay.ZIndex = 80
+ui.MarketplacePurchaseOverlay.Parent = ui.Panel
+
+ui.MarketplacePurchaseWindow = Instance.new("Frame")
+ui.MarketplacePurchaseWindow.Name = "MarketplacePurchaseConfirm"
+ui.MarketplacePurchaseWindow.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.MarketplacePurchaseWindow.Position = UDim2.fromScale(0.5, 0.5)
+ui.MarketplacePurchaseWindow.Size = UDim2.fromOffset(322, 188)
+ui.MarketplacePurchaseWindow.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.MarketplacePurchaseWindow.BorderSizePixel = 0
+ui.MarketplacePurchaseWindow.ZIndex = 81
+ui.MarketplacePurchaseWindow.Parent = ui.MarketplacePurchaseOverlay
+
+createCorner(ui.MarketplacePurchaseWindow, 12)
+createStroke(ui.MarketplacePurchaseWindow, Color3.fromRGB(210, 215, 220), 1, 0)
+
+ui.MarketplacePurchaseTitle = Instance.new("TextLabel")
+ui.MarketplacePurchaseTitle.Name = "PurchaseTitle"
+ui.MarketplacePurchaseTitle.Position = UDim2.fromOffset(16, 14)
+ui.MarketplacePurchaseTitle.Size = UDim2.new(1, -32, 0, 26)
+ui.MarketplacePurchaseTitle.BackgroundTransparency = 1
+ui.MarketplacePurchaseTitle.Text = "Buy Marketplace Item"
+ui.MarketplacePurchaseTitle.TextColor3 = Color3.fromRGB(40, 40, 40)
+ui.MarketplacePurchaseTitle.TextSize = 18
+ui.MarketplacePurchaseTitle.TextXAlignment = Enum.TextXAlignment.Left
+ui.MarketplacePurchaseTitle.Font = Enum.Font.GothamBold
+ui.MarketplacePurchaseTitle.ZIndex = 82
+ui.MarketplacePurchaseTitle.Parent = ui.MarketplacePurchaseWindow
+
+ui.MarketplacePurchaseMessage = Instance.new("TextLabel")
+ui.MarketplacePurchaseMessage.Name = "PurchaseMessage"
+ui.MarketplacePurchaseMessage.Position = UDim2.fromOffset(16, 48)
+ui.MarketplacePurchaseMessage.Size = UDim2.new(1, -32, 0, 54)
+ui.MarketplacePurchaseMessage.BackgroundTransparency = 1
+ui.MarketplacePurchaseMessage.Text = ""
+ui.MarketplacePurchaseMessage.TextColor3 = Color3.fromRGB(70, 70, 70)
+ui.MarketplacePurchaseMessage.TextSize = 14
+ui.MarketplacePurchaseMessage.TextWrapped = true
+ui.MarketplacePurchaseMessage.TextXAlignment = Enum.TextXAlignment.Left
+ui.MarketplacePurchaseMessage.Font = Enum.Font.Gotham
+ui.MarketplacePurchaseMessage.ZIndex = 82
+ui.MarketplacePurchaseMessage.Parent = ui.MarketplacePurchaseWindow
+
+ui.MarketplacePurchaseStatus = Instance.new("TextLabel")
+ui.MarketplacePurchaseStatus.Name = "PurchaseStatus"
+ui.MarketplacePurchaseStatus.Position = UDim2.fromOffset(16, 106)
+ui.MarketplacePurchaseStatus.Size = UDim2.new(1, -32, 0, 24)
+ui.MarketplacePurchaseStatus.BackgroundTransparency = 1
+ui.MarketplacePurchaseStatus.Text = ""
+ui.MarketplacePurchaseStatus.TextColor3 = Color3.fromRGB(85, 85, 85)
+ui.MarketplacePurchaseStatus.TextSize = 12
+ui.MarketplacePurchaseStatus.TextXAlignment = Enum.TextXAlignment.Left
+ui.MarketplacePurchaseStatus.TextTruncate = Enum.TextTruncate.AtEnd
+ui.MarketplacePurchaseStatus.Font = Enum.Font.Gotham
+ui.MarketplacePurchaseStatus.ZIndex = 82
+ui.MarketplacePurchaseStatus.Parent = ui.MarketplacePurchaseWindow
+
+ui.MarketplacePurchaseCancelButton = Instance.new("TextButton")
+ui.MarketplacePurchaseCancelButton.Name = "PurchaseCancelButton"
+ui.MarketplacePurchaseCancelButton.Position = UDim2.new(1, -160, 1, -44)
+ui.MarketplacePurchaseCancelButton.Size = UDim2.fromOffset(64, 30)
+ui.MarketplacePurchaseCancelButton.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
+ui.MarketplacePurchaseCancelButton.BorderSizePixel = 0
+ui.MarketplacePurchaseCancelButton.Text = "Cancel"
+ui.MarketplacePurchaseCancelButton.TextColor3 = Color3.fromRGB(45, 45, 45)
+ui.MarketplacePurchaseCancelButton.TextSize = 12
+ui.MarketplacePurchaseCancelButton.Font = Enum.Font.GothamBold
+ui.MarketplacePurchaseCancelButton.ZIndex = 82
+ui.MarketplacePurchaseCancelButton.Parent = ui.MarketplacePurchaseWindow
+
+createCorner(ui.MarketplacePurchaseCancelButton, 7)
+
+ui.MarketplacePurchaseConfirmButton = Instance.new("TextButton")
+ui.MarketplacePurchaseConfirmButton.Name = "PurchaseConfirmButton"
+ui.MarketplacePurchaseConfirmButton.Position = UDim2.new(1, -88, 1, -44)
+ui.MarketplacePurchaseConfirmButton.Size = UDim2.fromOffset(72, 30)
+ui.MarketplacePurchaseConfirmButton.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
+ui.MarketplacePurchaseConfirmButton.BorderSizePixel = 0
+ui.MarketplacePurchaseConfirmButton.Text = "Confirm"
+ui.MarketplacePurchaseConfirmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.MarketplacePurchaseConfirmButton.TextSize = 12
+ui.MarketplacePurchaseConfirmButton.Font = Enum.Font.GothamBold
+ui.MarketplacePurchaseConfirmButton.ZIndex = 82
+ui.MarketplacePurchaseConfirmButton.Parent = ui.MarketplacePurchaseWindow
+
+createCorner(ui.MarketplacePurchaseConfirmButton, 7)
 
 local function setPanelVisible(isVisible)
-	local wasVisible = panel.Visible
+	local wasVisible = ui.Panel.Visible
 
 	if isVisible then
 		publishMajorMenuState(true)
 		majorMenuOpened:Fire(MENU_NAME)
 	end
 
-	panel.Visible = isVisible
+	ui.Panel.Visible = isVisible
 
 	if updateOpenButton then
 		updateOpenButton()
 	else
-		openButton.Visible = (not isVisible)
+		ui.OpenButton.Visible = (not isVisible)
 			and not anyMajorMenuOpen
 			and shouldShowCatalogButton()
 	end
@@ -745,7 +1067,89 @@ local function setPanelVisible(isVisible)
 end
 
 local function setStatus(text)
-	statusLabel.Text = tostring(text or "")
+	ui.StatusLabel.Text = tostring(text or "")
+end
+
+local function normalizeCatalogCurrencyBalance(value)
+	if typeof(value) ~= "number"
+		or value ~= value
+		or value < 0
+		or value == math.huge then
+
+		return 0
+	end
+
+	return math.floor(value)
+end
+
+local function updateCatalogCurrencyDisplay()
+	ui.CatalogCoinsLabel.Text = "  Coins: " .. tostring(normalizeCatalogCurrencyBalance(catalogCurrency.Coins))
+	ui.CatalogDollarsLabel.Text = "  Dollars: " .. tostring(normalizeCatalogCurrencyBalance(catalogCurrency.Dollars))
+end
+
+local function applyCatalogCurrencySnapshot(currencies)
+	if typeof(currencies) ~= "table" then
+		return
+	end
+
+	catalogCurrency.Coins = normalizeCatalogCurrencyBalance(currencies.Coins)
+	catalogCurrency.Dollars = normalizeCatalogCurrencyBalance(currencies.Dollars)
+	catalogCurrency.Loaded = true
+	updateCatalogCurrencyDisplay()
+end
+
+local function applyCatalogCurrencyLocalDelta(payload)
+	if typeof(payload) ~= "table" then
+		return
+	end
+
+	local currencyKey = payload.CurrencyKey
+
+	if currencyKey ~= "Coins" and currencyKey ~= "Dollars" then
+		return
+	end
+
+	local currentBalance = normalizeCatalogCurrencyBalance(catalogCurrency[currencyKey])
+	local newBalance = nil
+
+	if typeof(payload.Balance) == "number" then
+		newBalance = normalizeCatalogCurrencyBalance(payload.Balance)
+	elseif typeof(payload.Delta) == "number" then
+		newBalance = math.max(currentBalance + math.floor(payload.Delta), 0)
+	end
+
+	if not newBalance then
+		return
+	end
+
+	catalogCurrency[currencyKey] = newBalance
+	catalogCurrency.Loaded = true
+	updateCatalogCurrencyDisplay()
+end
+
+local function requestCatalogCurrencySnapshot(force)
+	if catalogCurrency.RequestInFlight then
+		return
+	end
+
+	local now = os.clock()
+
+	if force ~= true and now - catalogCurrency.LastRequestAt < 1 then
+		return
+	end
+
+	catalogCurrency.RequestInFlight = true
+	catalogCurrency.LastRequestAt = now
+	catalogCurrency.Serial += 1
+
+	local requestSerial = catalogCurrency.Serial
+	currencyRequest:FireServer("GetCurrencies")
+
+	task.delay(REQUEST_TIMEOUT_SECONDS, function()
+		if catalogCurrency.RequestInFlight and catalogCurrency.Serial == requestSerial then
+			catalogCurrency.RequestInFlight = false
+		end
+	end)
 end
 
 local function styleToggleButton(button, isSelected)
@@ -758,44 +1162,82 @@ local function styleToggleButton(button, isSelected)
 	end
 end
 
+local function styleCatalogNavButton(button, isSelected)
+	if isSelected then
+		button.BackgroundColor3 = Color3.fromRGB(94, 73, 48)
+		button.TextColor3 = Color3.fromRGB(255, 247, 219)
+	else
+		button.BackgroundColor3 = Color3.fromRGB(239, 229, 194)
+		button.TextColor3 = Color3.fromRGB(63, 54, 44)
+	end
+end
+
+local function updateCatalogNavigation()
+	for key, button in pairs(catalogNavButtons) do
+		local isSelected = key == selectedCatalogPage
+
+		if key == "FurnitureGroup" and catalogViewMode == CATALOG_VIEW.SHOP then
+			isSelected = true
+		elseif key == "MarketplaceGroup" and catalogViewMode == CATALOG_VIEW.MARKETPLACE then
+			isSelected = true
+		end
+
+		styleCatalogNavButton(button, isSelected)
+	end
+end
+
 local function updateCatalogChrome()
-	local showingMarketplace = catalogViewMode == CATALOG_VIEW_MARKETPLACE
-	local showingOffers = marketplaceViewMode == MARKETPLACE_VIEW_OFFERS
+	local showingMarketplace = catalogViewMode == CATALOG_VIEW.MARKETPLACE
+	local showingShop = catalogViewMode == CATALOG_VIEW.SHOP
+	local showingFrontPage = catalogViewMode == CATALOG_VIEW.FRONT_PAGE
+	local showingPlaceholder = catalogViewMode == CATALOG_VIEW.PLACEHOLDER
+	local showingOffers = marketplaceViewMode == MARKETPLACE_VIEW.OFFERS
+	local showingInstructions = marketplaceViewMode == MARKETPLACE_VIEW.INSTRUCTIONS
 	local marketplaceBusy = showingOffers
 		and marketplacePublicListingsInFlight
 		or marketplaceMySalesInFlight
 
-	titleLabel.Text = showingMarketplace and "Marketplace" or "Furniture Shop"
-	categoryFrame.Visible = not showingMarketplace
-	marketplaceTabsFrame.Visible = showingMarketplace
-	marketplaceSearchBox.Visible = showingMarketplace and showingOffers
+	ui.TitleLabel.Text = "Catalog"
+	ui.SectionFrame.Visible = false
+	ui.CategoryFrame.Visible = false
+	ui.MarketplaceTabsFrame.Visible = false
+	ui.MarketplaceSearchBox.Visible = showingMarketplace and showingOffers
+	updateCatalogNavigation()
 
-	if showingMarketplace and showingOffers then
-		itemList.Position = UDim2.fromOffset(18, 218)
-		itemList.Size = UDim2.new(1, -36, 1, -238)
+	if showingShop or (showingMarketplace and showingOffers) then
+		ui.ItemList.Position = UDim2.fromOffset(22, 154)
+		ui.ItemList.Size = UDim2.new(1, -226, 1, -214)
 	else
-		itemList.Position = UDim2.fromOffset(18, 184)
-		itemList.Size = UDim2.new(1, -36, 1, -204)
+		ui.ItemList.Position = UDim2.fromOffset(22, 112)
+		ui.ItemList.Size = UDim2.new(1, -226, 1, -172)
 	end
 
-	styleToggleButton(shopSectionButton, not showingMarketplace)
-	styleToggleButton(marketplaceSectionButton, showingMarketplace)
-	styleToggleButton(marketplaceOffersButton, showingMarketplace and showingOffers)
-	styleToggleButton(marketplaceMySalesButton, showingMarketplace and marketplaceViewMode == MARKETPLACE_VIEW_MY_SALES)
+	styleToggleButton(ui.ShopSectionButton, not showingMarketplace)
+	styleToggleButton(ui.MarketplaceSectionButton, showingMarketplace)
+	styleToggleButton(ui.MarketplaceOffersButton, showingMarketplace and showingOffers)
+	styleToggleButton(ui.MarketplaceMySalesButton, showingMarketplace and marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES)
 
-	marketplaceRefreshButton.Active = not marketplaceBusy
-	marketplaceRefreshButton.AutoButtonColor = not marketplaceBusy
-	marketplaceRefreshButton.Text = marketplaceBusy and "Loading..." or "Refresh"
-	marketplaceRefreshButton.BackgroundColor3 = marketplaceBusy
+	ui.MarketplaceRefreshButton.Visible = showingMarketplace and not showingInstructions
+	ui.MarketplaceRefreshButton.Active = showingMarketplace and not showingInstructions and not marketplaceBusy
+	ui.MarketplaceRefreshButton.AutoButtonColor = showingMarketplace and not showingInstructions and not marketplaceBusy
+	ui.MarketplaceRefreshButton.Text = marketplaceBusy and "Loading..." or "Refresh"
+	ui.MarketplaceRefreshButton.BackgroundColor3 = marketplaceBusy
 		and Color3.fromRGB(155, 160, 155)
 		or Color3.fromRGB(70, 135, 90)
+
+	if showingFrontPage then
+		setStatus("Read the latest catalog highlights.")
+	elseif showingPlaceholder then
+		local placeholder = PLACEHOLDER_PAGE_CONTENT[placeholderCatalogPage]
+		setStatus(placeholder and placeholder.Title or "Coming soon.")
+	end
 end
 
 local function setPlacementHint(text)
 	text = tostring(text or "")
 
-	placementHintLabel.Text = text
-	placementHintLabel.Visible = text ~= ""
+	ui.PlacementHintLabel.Text = text
+	ui.PlacementHintLabel.Visible = text ~= ""
 end
 
 local function getActivePlacementHint(isBlocked)
@@ -1393,7 +1835,7 @@ local function createCatalogPlacementPreview(itemData)
 	setPlacementPreviewValidity(false)
 
 	setPanelVisible(false)
-	openButton.Visible = false
+	ui.OpenButton.Visible = false
 
 	if placementSource == "Inventory" then
 		setStatus("Move your cursor over the floor to place an owned item.")
@@ -1467,8 +1909,8 @@ local function confirmCatalogPlacement()
 end
 
 local function clearItemRows()
-	for _, child in ipairs(itemList:GetChildren()) do
-		if child:IsA("Frame") or child:IsA("TextButton") or child:IsA("TextLabel") then
+	for _, child in ipairs(ui.ItemList:GetChildren()) do
+		if child:IsA("GuiObject") then
 			child:Destroy()
 		end
 	end
@@ -1505,24 +1947,6 @@ local function getPurchaseCurrencyForItem(itemData)
 	return purchaseCurrency
 end
 
-local function categoryHasItems(categoryName, items)
-	if categoryName == "All" then
-		return true
-	end
-
-	for _, itemData in ipairs(items or {}) do
-		if categoryName == "Featured" then
-			if itemData.Featured == true then
-				return true
-			end
-		elseif itemData.Category == categoryName then
-			return true
-		end
-	end
-
-	return false
-end
-
 local function itemMatchesSelectedCategory(itemData)
 	if selectedCategory == "All" then
 		return true
@@ -1535,73 +1959,21 @@ local function itemMatchesSelectedCategory(itemData)
 	return itemData.Category == selectedCategory
 end
 
-local function styleCategoryButton(button, isSelected)
-	if isSelected then
-		button.BackgroundColor3 = Color3.fromRGB(70, 150, 255)
-		button.TextColor3 = Color3.fromRGB(255, 255, 255)
-	else
-		button.BackgroundColor3 = Color3.fromRGB(235, 238, 242)
-		button.TextColor3 = Color3.fromRGB(55, 55, 55)
+local function getShopCategoryForPage(page)
+	for _, category in ipairs(CATALOG_SHOP_CATEGORIES) do
+		if category.Page == page then
+			return category.Category or "All"
+		end
 	end
+
+	return nil
 end
 
-local function clearCategoryButtons()
-	for _, child in ipairs(categoryFrame:GetChildren()) do
+local function updateCategoryTabs()
+	for _, child in ipairs(ui.CategoryFrame:GetChildren()) do
 		if child:IsA("TextButton") then
 			child:Destroy()
 		end
-	end
-
-	table.clear(categoryButtons)
-end
-
-local function updateCategoryTabs(items)
-	local availableCategories = {}
-	local selectedCategoryAvailable = false
-
-	for _, categoryName in ipairs(CATEGORY_ORDER) do
-		if categoryName ~= "Featured" or categoryHasItems(categoryName, items) then
-			table.insert(availableCategories, categoryName)
-
-			if selectedCategory == categoryName then
-				selectedCategoryAvailable = true
-			end
-		end
-	end
-
-	if not selectedCategoryAvailable then
-		selectedCategory = "All"
-	end
-
-	clearCategoryButtons()
-
-	for index, categoryName in ipairs(availableCategories) do
-		local button = Instance.new("TextButton")
-		button.Name = categoryName .. "CategoryButton"
-		button.LayoutOrder = index
-		button.Size = UDim2.fromOffset(categoryName == "Featured" and 76 or 62, 30)
-		button.BorderSizePixel = 0
-		button.Text = categoryName
-		button.TextSize = 13
-		button.Font = Enum.Font.GothamBold
-		button.Parent = categoryFrame
-
-		createCorner(button, 8)
-		styleCategoryButton(button, selectedCategory == categoryName)
-
-		button.MouseButton1Click:Connect(function()
-			if selectedCategory == categoryName then
-				return
-			end
-
-			selectedCategory = categoryName
-
-			if renderCatalog then
-				renderCatalog(latestCatalogItems)
-			end
-		end)
-
-		categoryButtons[categoryName] = button
 	end
 end
 
@@ -1615,7 +1987,398 @@ local function createEmptyCatalogState(message)
 	emptyLabel.TextSize = 15
 	emptyLabel.TextWrapped = true
 	emptyLabel.Font = Enum.Font.Gotham
-	emptyLabel.Parent = itemList
+	emptyLabel.Parent = ui.ItemList
+end
+
+local function createPageLabel(name, text, size, textSize, font, color)
+	local label = Instance.new("TextLabel")
+	label.Name = name
+	label.Size = size
+	label.BackgroundTransparency = 1
+	label.Text = tostring(text or "")
+	label.TextColor3 = color or Color3.fromRGB(62, 53, 42)
+	label.TextSize = textSize
+	label.TextWrapped = true
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.TextYAlignment = Enum.TextYAlignment.Top
+	label.Font = font
+	label.Parent = ui.ItemList
+	return label
+end
+
+local function createPageButton(name, text, size)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.Size = size
+	button.BackgroundColor3 = Color3.fromRGB(94, 73, 48)
+	button.BorderSizePixel = 0
+	button.Text = tostring(text or "Open")
+	button.TextColor3 = Color3.fromRGB(255, 247, 219)
+	button.TextSize = 14
+	button.Font = Enum.Font.GothamBold
+	button.Parent = ui.ItemList
+
+	createCorner(button, 8)
+
+	return button
+end
+
+local function createFrontPageOfferCard(title, body, order, accentColor)
+	local card = Instance.new("Frame")
+	card.Name = "FeaturedOfferCard"
+	card.LayoutOrder = order
+	card.Size = UDim2.new(1, -4, 0, 74)
+	card.BackgroundColor3 = Color3.fromRGB(246, 239, 209)
+	card.BorderSizePixel = 0
+	card.Parent = ui.ItemList
+
+	createCorner(card, 9)
+	createStroke(card, Color3.fromRGB(176, 153, 110), 1, 0.3)
+
+	local swatch = Instance.new("Frame")
+	swatch.Name = "OfferSwatch"
+	swatch.Position = UDim2.fromOffset(12, 13)
+	swatch.Size = UDim2.fromOffset(48, 48)
+	swatch.BackgroundColor3 = accentColor
+	swatch.BorderSizePixel = 0
+	swatch.Parent = card
+
+	createCorner(swatch, 8)
+
+	local titleLabel = Instance.new("TextLabel")
+	titleLabel.Name = "OfferTitle"
+	titleLabel.Position = UDim2.fromOffset(72, 10)
+	titleLabel.Size = UDim2.new(1, -88, 0, 22)
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.Text = title
+	titleLabel.TextColor3 = Color3.fromRGB(59, 48, 34)
+	titleLabel.TextSize = 15
+	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	titleLabel.Font = Enum.Font.GothamBold
+	titleLabel.Parent = card
+
+	local bodyLabel = Instance.new("TextLabel")
+	bodyLabel.Name = "OfferBody"
+	bodyLabel.Position = UDim2.fromOffset(72, 34)
+	bodyLabel.Size = UDim2.new(1, -88, 0, 30)
+	bodyLabel.BackgroundTransparency = 1
+	bodyLabel.Text = body
+	bodyLabel.TextColor3 = Color3.fromRGB(88, 76, 60)
+	bodyLabel.TextSize = 12
+	bodyLabel.TextWrapped = true
+	bodyLabel.TextXAlignment = Enum.TextXAlignment.Left
+	bodyLabel.Font = Enum.Font.Gotham
+	bodyLabel.Parent = card
+end
+
+local function createFrontPageFeatureCard(parent, title, subtitle, accentColor, layoutOrder)
+	local card = Instance.new("TextButton")
+	card.Name = title:gsub("%W+", "") .. "FeatureCard"
+	card.LayoutOrder = layoutOrder
+	card.Size = UDim2.new(1, 0, 0, 68)
+	card.BackgroundColor3 = Color3.fromRGB(247, 239, 209)
+	card.BorderSizePixel = 0
+	card.Text = ""
+	card.Parent = parent
+
+	createCorner(card, 8)
+	createStroke(card, Color3.fromRGB(176, 153, 110), 1, 0.25)
+
+	local graphic = Instance.new("Frame")
+	graphic.Name = "Graphic"
+	graphic.Position = UDim2.fromOffset(8, 8)
+	graphic.Size = UDim2.fromOffset(52, 52)
+	graphic.BackgroundColor3 = accentColor
+	graphic.BorderSizePixel = 0
+	graphic.Parent = card
+
+	createCorner(graphic, 8)
+
+	local titleLabel = Instance.new("TextLabel")
+	titleLabel.Name = "Title"
+	titleLabel.Position = UDim2.fromOffset(68, 8)
+	titleLabel.Size = UDim2.new(1, -76, 0, 22)
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.Text = title
+	titleLabel.TextColor3 = Color3.fromRGB(59, 48, 34)
+	titleLabel.TextSize = 13
+	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	titleLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	titleLabel.Font = Enum.Font.GothamBold
+	titleLabel.Parent = card
+
+	local subtitleLabel = Instance.new("TextLabel")
+	subtitleLabel.Name = "Subtitle"
+	subtitleLabel.Position = UDim2.fromOffset(68, 31)
+	subtitleLabel.Size = UDim2.new(1, -76, 0, 28)
+	subtitleLabel.BackgroundTransparency = 1
+	subtitleLabel.Text = subtitle
+	subtitleLabel.TextColor3 = Color3.fromRGB(88, 76, 60)
+	subtitleLabel.TextSize = 11
+	subtitleLabel.TextWrapped = true
+	subtitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	subtitleLabel.Font = Enum.Font.Gotham
+	subtitleLabel.Parent = card
+
+	card.MouseButton1Click:Connect(function()
+		if title == "Fresh Lobby Looks" and selectCatalogPage then
+			selectCatalogPage(CATALOG_PAGE.FURNITURE_ALL)
+		else
+			setStatus("Coming soon.")
+		end
+	end)
+
+	return card
+end
+
+local function renderFrontPage()
+	updateCatalogChrome()
+	clearItemRows()
+	setStatus("Read the latest catalog highlights.")
+
+	local header = Instance.new("Frame")
+	header.Name = "FrontPageHeader"
+	header.LayoutOrder = 1
+	header.Size = UDim2.new(1, -4, 0, 48)
+	header.BackgroundColor3 = Color3.fromRGB(96, 75, 49)
+	header.BorderSizePixel = 0
+	header.Parent = ui.ItemList
+
+	createCorner(header, 9)
+
+	local headerTitle = Instance.new("TextLabel")
+	headerTitle.Name = "Title"
+	headerTitle.Position = UDim2.fromOffset(16, 5)
+	headerTitle.Size = UDim2.new(1, -32, 0, 24)
+	headerTitle.BackgroundTransparency = 1
+	headerTitle.Text = "Catalog Front Page"
+	headerTitle.TextColor3 = Color3.fromRGB(255, 247, 219)
+	headerTitle.TextSize = 20
+	headerTitle.TextXAlignment = Enum.TextXAlignment.Left
+	headerTitle.Font = Enum.Font.GothamBlack
+	headerTitle.Parent = header
+
+	local headerSubtitle = Instance.new("TextLabel")
+	headerSubtitle.Name = "Subtitle"
+	headerSubtitle.Position = UDim2.fromOffset(16, 28)
+	headerSubtitle.Size = UDim2.new(1, -32, 0, 16)
+	headerSubtitle.BackgroundTransparency = 1
+	headerSubtitle.Text = "Featured furniture, room ideas, and hotel offers"
+	headerSubtitle.TextColor3 = Color3.fromRGB(235, 224, 190)
+	headerSubtitle.TextSize = 12
+	headerSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+	headerSubtitle.Font = Enum.Font.Gotham
+	headerSubtitle.Parent = header
+
+	local featureArea = Instance.new("Frame")
+	featureArea.Name = "FeatureArea"
+	featureArea.LayoutOrder = 2
+	featureArea.Size = UDim2.new(1, -4, 0, 234)
+	featureArea.BackgroundTransparency = 1
+	featureArea.Parent = ui.ItemList
+
+	local mainFeature = Instance.new("Frame")
+	mainFeature.Name = "MainFeature"
+	mainFeature.Position = UDim2.fromOffset(0, 0)
+	mainFeature.Size = UDim2.new(0.61, -6, 1, 0)
+	mainFeature.BackgroundColor3 = Color3.fromRGB(74, 97, 132)
+	mainFeature.BorderSizePixel = 0
+	mainFeature.Parent = featureArea
+
+	createCorner(mainFeature, 10)
+	createStroke(mainFeature, Color3.fromRGB(59, 48, 34), 1, 0.18)
+
+	local mainTitle = Instance.new("TextLabel")
+	mainTitle.Name = "MainTitle"
+	mainTitle.Position = UDim2.fromOffset(16, 14)
+	mainTitle.Size = UDim2.new(1, -32, 0, 30)
+	mainTitle.BackgroundTransparency = 1
+	mainTitle.Text = "NEW FURNI: Studio Set"
+	mainTitle.TextColor3 = Color3.fromRGB(255, 247, 219)
+	mainTitle.TextSize = 21
+	mainTitle.TextXAlignment = Enum.TextXAlignment.Left
+	mainTitle.Font = Enum.Font.GothamBlack
+	mainTitle.Parent = mainFeature
+
+	local mainSubtitle = Instance.new("TextLabel")
+	mainSubtitle.Name = "MainSubtitle"
+	mainSubtitle.Position = UDim2.fromOffset(16, 46)
+	mainSubtitle.Size = UDim2.new(1, -32, 0, 42)
+	mainSubtitle.BackgroundTransparency = 1
+	mainSubtitle.Text = "Build your own broadcast room!"
+	mainSubtitle.TextColor3 = Color3.fromRGB(235, 229, 198)
+	mainSubtitle.TextSize = 15
+	mainSubtitle.TextWrapped = true
+	mainSubtitle.TextXAlignment = Enum.TextXAlignment.Left
+	mainSubtitle.Font = Enum.Font.GothamBold
+	mainSubtitle.Parent = mainFeature
+
+	for index = 1, 4 do
+		local prop = Instance.new("Frame")
+		prop.Name = "StudioProp_" .. tostring(index)
+		prop.Position = UDim2.fromOffset(24 + index * 38, 120 - (index % 2) * 18)
+		prop.Size = UDim2.fromOffset(32 + index * 4, 44 + index * 6)
+		prop.BackgroundColor3 = index % 2 == 0
+			and Color3.fromRGB(244, 207, 95)
+			or Color3.fromRGB(180, 205, 220)
+		prop.BorderSizePixel = 0
+		prop.Parent = mainFeature
+
+		createCorner(prop, 7)
+	end
+
+	local viewCollection = Instance.new("TextButton")
+	viewCollection.Name = "ViewCollectionButton"
+	viewCollection.Position = UDim2.fromOffset(16, 188)
+	viewCollection.Size = UDim2.fromOffset(132, 32)
+	viewCollection.BackgroundColor3 = Color3.fromRGB(244, 207, 95)
+	viewCollection.BorderSizePixel = 0
+	viewCollection.Text = "View Collection"
+	viewCollection.TextColor3 = Color3.fromRGB(62, 48, 34)
+	viewCollection.TextSize = 13
+	viewCollection.Font = Enum.Font.GothamBold
+	viewCollection.Parent = mainFeature
+
+	createCorner(viewCollection, 8)
+
+	viewCollection.MouseButton1Click:Connect(function()
+		if selectCatalogPage then
+			selectCatalogPage(CATALOG_PAGE.FURNITURE_ALL)
+		end
+	end)
+
+	local rightStack = Instance.new("Frame")
+	rightStack.Name = "FeatureStack"
+	rightStack.Position = UDim2.new(0.61, 8, 0, 0)
+	rightStack.Size = UDim2.new(0.39, -8, 1, 0)
+	rightStack.BackgroundTransparency = 1
+	rightStack.Parent = featureArea
+
+	local rightLayout = Instance.new("UIListLayout")
+	rightLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	rightLayout.Padding = UDim.new(0, 8)
+	rightLayout.Parent = rightStack
+
+	createFrontPageFeatureCard(rightStack, "Fresh Lobby Looks", "Clean welcomes for every guest.", Color3.fromRGB(84, 132, 98), 1)
+	createFrontPageFeatureCard(rightStack, "Cozy Cafe Collection", "Warm seats and soft details.", Color3.fromRGB(132, 82, 70), 2)
+	createFrontPageFeatureCard(rightStack, "Become a VIP Member", "Member perks are coming later.", Color3.fromRGB(112, 94, 150), 3)
+
+	local voucherFrame = Instance.new("Frame")
+	voucherFrame.Name = "VoucherStrip"
+	voucherFrame.LayoutOrder = 3
+	voucherFrame.Size = UDim2.new(1, -4, 0, 58)
+	voucherFrame.BackgroundColor3 = Color3.fromRGB(246, 239, 209)
+	voucherFrame.BorderSizePixel = 0
+	voucherFrame.Parent = ui.ItemList
+
+	createCorner(voucherFrame, 9)
+	createStroke(voucherFrame, Color3.fromRGB(176, 153, 110), 1, 0.28)
+
+	local voucherBox = Instance.new("TextBox")
+	voucherBox.Name = "VoucherBox"
+	voucherBox.Position = UDim2.fromOffset(14, 13)
+	voucherBox.Size = UDim2.new(1, -126, 0, 32)
+	voucherBox.BackgroundColor3 = Color3.fromRGB(255, 252, 235)
+	voucherBox.BorderSizePixel = 0
+	voucherBox.ClearTextOnFocus = false
+	voucherBox.PlaceholderText = "Redeem a voucher code here..."
+	voucherBox.Text = ""
+	voucherBox.TextColor3 = Color3.fromRGB(62, 48, 34)
+	voucherBox.PlaceholderColor3 = Color3.fromRGB(122, 106, 82)
+	voucherBox.TextSize = 13
+	voucherBox.TextXAlignment = Enum.TextXAlignment.Left
+	voucherBox.Font = Enum.Font.Gotham
+	voucherBox.Parent = voucherFrame
+
+	createCorner(voucherBox, 8)
+	createStroke(voucherBox, Color3.fromRGB(176, 153, 110), 1, 0.3)
+
+	local redeemButton = Instance.new("TextButton")
+	redeemButton.Name = "RedeemVoucherButton"
+	redeemButton.AnchorPoint = Vector2.new(1, 0)
+	redeemButton.Position = UDim2.new(1, -14, 0, 13)
+	redeemButton.Size = UDim2.fromOffset(96, 32)
+	redeemButton.BackgroundColor3 = Color3.fromRGB(94, 73, 48)
+	redeemButton.BorderSizePixel = 0
+	redeemButton.Text = "Redeem"
+	redeemButton.TextColor3 = Color3.fromRGB(255, 247, 219)
+	redeemButton.TextSize = 13
+	redeemButton.Font = Enum.Font.GothamBold
+	redeemButton.Parent = voucherFrame
+
+	createCorner(redeemButton, 8)
+
+	redeemButton.MouseButton1Click:Connect(function()
+		setStatus("Vouchers are coming soon.")
+	end)
+
+	task.defer(function()
+		ui.ItemList.CanvasSize = UDim2.fromOffset(0, ui.ListLayout.AbsoluteContentSize.Y + 20)
+	end)
+end
+
+local function renderPlaceholderPage(page)
+	local placeholder = PLACEHOLDER_PAGE_CONTENT[page] or PLACEHOLDER_PAGE_CONTENT[CATALOG_PAGE.COINS]
+
+	updateCatalogChrome()
+	clearItemRows()
+	setStatus(placeholder.Title .. " is coming soon.")
+
+	createPageLabel(
+		"PlaceholderTitle",
+		placeholder.Title,
+		UDim2.new(1, -4, 0, 32),
+		22,
+		Enum.Font.GothamBold,
+		Color3.fromRGB(62, 48, 34)
+	).LayoutOrder = 1
+	createPageLabel(
+		"PlaceholderBody",
+		placeholder.Body,
+		UDim2.new(1, -4, 0, 58),
+		15,
+		Enum.Font.Gotham,
+		Color3.fromRGB(88, 76, 60)
+	).LayoutOrder = 2
+
+	local button = createPageButton("PlaceholderActionButton", placeholder.Button, UDim2.fromOffset(158, 34))
+	button.LayoutOrder = 3
+	button.MouseButton1Click:Connect(function()
+		setStatus(placeholder.Title .. " is coming soon.")
+	end)
+
+	task.defer(function()
+		ui.ItemList.CanvasSize = UDim2.fromOffset(0, ui.ListLayout.AbsoluteContentSize.Y + 20)
+	end)
+end
+
+local function renderMarketplaceInstructions()
+	updateCatalogChrome()
+	clearItemRows()
+	setStatus("Read how Marketplace listings work.")
+
+	createPageLabel(
+		"InstructionsTitle",
+		"Marketplace Instructions",
+		UDim2.new(1, -4, 0, 32),
+		22,
+		Enum.Font.GothamBold,
+		Color3.fromRGB(62, 48, 34)
+	).LayoutOrder = 1
+
+	local instructions = {
+		"List tradable items from your Inventory.",
+		"Buy Marketplace items with Coins.",
+		"Untradable items cannot be listed.",
+	}
+
+	for index, text in ipairs(instructions) do
+		createFrontPageOfferCard(tostring(index) .. ". " .. text, "Marketplace systems stay server-authoritative.", index + 1, Color3.fromRGB(94, 73, 48))
+	end
+
+	task.defer(function()
+		ui.ItemList.CanvasSize = UDim2.fromOffset(0, ui.ListLayout.AbsoluteContentSize.Y + 20)
+	end)
 end
 
 local function getMarketplaceWaitMessage(message)
@@ -1761,8 +2524,8 @@ local function getMarketplaceListingTotalPrice(listing)
 end
 
 local function setMarketplacePurchaseStatus(text, isError)
-	marketplacePurchaseStatus.Text = tostring(text or "")
-	marketplacePurchaseStatus.TextColor3 = isError == true
+	ui.MarketplacePurchaseStatus.Text = tostring(text or "")
+	ui.MarketplacePurchaseStatus.TextColor3 = isError == true
 		and Color3.fromRGB(150, 60, 60)
 		or Color3.fromRGB(85, 85, 85)
 end
@@ -1772,7 +2535,7 @@ local function closeMarketplacePurchaseModal()
 		return
 	end
 
-	marketplacePurchaseOverlay.Visible = false
+	ui.MarketplacePurchaseOverlay.Visible = false
 	marketplacePurchaseListing = nil
 	setMarketplacePurchaseStatus("", false)
 end
@@ -1784,19 +2547,19 @@ local function updateMarketplacePurchaseModal()
 	local quantity = typeof(listing) == "table" and listing.Quantity or 0
 	local totalPrice = getMarketplaceListingTotalPrice(listing)
 
-	marketplacePurchaseMessage.Text = "Buy "
+	ui.MarketplacePurchaseMessage.Text = "Buy "
 		.. itemName
 		.. " x" .. tostring(quantity)
 		.. " for " .. tostring(totalPrice)
 		.. " Coins?"
-	marketplacePurchaseConfirmButton.Text = isInFlight and "Buying..." or "Confirm"
-	marketplacePurchaseConfirmButton.Active = not isInFlight
-	marketplacePurchaseConfirmButton.AutoButtonColor = not isInFlight
-	marketplacePurchaseConfirmButton.BackgroundColor3 = isInFlight
+	ui.MarketplacePurchaseConfirmButton.Text = isInFlight and "Buying..." or "Confirm"
+	ui.MarketplacePurchaseConfirmButton.Active = not isInFlight
+	ui.MarketplacePurchaseConfirmButton.AutoButtonColor = not isInFlight
+	ui.MarketplacePurchaseConfirmButton.BackgroundColor3 = isInFlight
 		and Color3.fromRGB(155, 160, 155)
 		or Color3.fromRGB(70, 150, 255)
-	marketplacePurchaseCancelButton.Active = not isInFlight
-	marketplacePurchaseCancelButton.AutoButtonColor = not isInFlight
+	ui.MarketplacePurchaseCancelButton.Active = not isInFlight
+	ui.MarketplacePurchaseCancelButton.AutoButtonColor = not isInFlight
 end
 
 local function openMarketplacePurchaseModal(listing)
@@ -1816,7 +2579,7 @@ local function openMarketplacePurchaseModal(listing)
 	end
 
 	marketplacePurchaseListing = listing
-	marketplacePurchaseOverlay.Visible = true
+	ui.MarketplacePurchaseOverlay.Visible = true
 	setMarketplacePurchaseStatus("", false)
 	updateMarketplacePurchaseModal()
 end
@@ -1869,7 +2632,7 @@ local function createItemRow(itemData, layoutOrder)
 	row.Size = UDim2.new(1, -4, 0, 142)
 	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
 	row.BorderSizePixel = 0
-	row.Parent = itemList
+	row.Parent = ui.ItemList
 
 	createCorner(row, 10)
 	createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
@@ -2063,7 +2826,7 @@ local function createMarketplaceOfferRow(listing, layoutOrder)
 	row.Size = UDim2.new(1, -4, 0, 106)
 	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
 	row.BorderSizePixel = 0
-	row.Parent = itemList
+	row.Parent = ui.ItemList
 
 	createCorner(row, 10)
 	createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
@@ -2178,7 +2941,7 @@ local function createMarketplaceSaleRow(listing, layoutOrder)
 	row.Size = UDim2.new(1, -4, 0, 94)
 	row.BackgroundColor3 = Color3.fromRGB(250, 250, 250)
 	row.BorderSizePixel = 0
-	row.Parent = itemList
+	row.Parent = ui.ItemList
 
 	createCorner(row, 10)
 	createStroke(row, Color3.fromRGB(220, 220, 220), 1, 0)
@@ -2283,10 +3046,19 @@ local function sortMySaleListings()
 end
 
 renderMarketplace = function()
+	if catalogViewMode ~= CATALOG_VIEW.MARKETPLACE then
+		return
+	end
+
 	updateCatalogChrome()
 	clearItemRows()
 
-	if marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+	if marketplaceViewMode == MARKETPLACE_VIEW.INSTRUCTIONS then
+		renderMarketplaceInstructions()
+		return
+	end
+
+	if marketplaceViewMode == MARKETPLACE_VIEW.OFFERS then
 		local activeOfferCount = 0
 
 		for _, listing in ipairs(latestPublicMarketplaceListings) do
@@ -2330,16 +3102,16 @@ renderMarketplace = function()
 	end
 
 	task.defer(function()
-		itemList.CanvasSize = UDim2.fromOffset(
+		ui.ItemList.CanvasSize = UDim2.fromOffset(
 			0,
-			listLayout.AbsoluteContentSize.Y + 20
+			ui.ListLayout.AbsoluteContentSize.Y + 20
 		)
 	end)
 end
 
 renderCatalog = function(items)
 	latestCatalogItems = items or {}
-	if catalogViewMode ~= CATALOG_VIEW_SHOP then
+	if catalogViewMode ~= CATALOG_VIEW.SHOP then
 		return
 	end
 
@@ -2370,9 +3142,9 @@ renderCatalog = function(items)
 	end
 
 	task.defer(function()
-		itemList.CanvasSize = UDim2.fromOffset(
+		ui.ItemList.CanvasSize = UDim2.fromOffset(
 			0,
-			listLayout.AbsoluteContentSize.Y + 20
+			ui.ListLayout.AbsoluteContentSize.Y + 20
 		)
 	end)
 end
@@ -2447,7 +3219,7 @@ requestMarketplaceOffers = function(options)
 	publicMarketplaceLastRequestAt = now
 	renderMarketplace()
 	marketplaceRequest:FireServer("GetPublicListings", {
-		SearchText = marketplaceSearchBox.Text,
+		SearchText = ui.MarketplaceSearchBox.Text,
 		MaxResults = 50,
 	})
 
@@ -2612,87 +3384,131 @@ requestMarketplacePurchase = function()
 	end)
 end
 
-updateOpenButton = function()
-	if placingItemData then
-		openButton.Visible = false
+selectCatalogPage = function(page)
+	selectedCatalogPage = page or CATALOG_PAGE.FRONT
+
+	if selectedCatalogPage == CATALOG_PAGE.FRONT then
+		catalogViewMode = CATALOG_VIEW.FRONT_PAGE
+		renderFrontPage()
 		return
 	end
 
-	if panel.Visible or anyMajorMenuOpen then
-		openButton.Visible = false
-	else
-		openButton.Visible = shouldShowCatalogButton()
+	if selectedCatalogPage == CATALOG_PAGE.FURNITURE_SHOP then
+		selectedCatalogPage = CATALOG_PAGE.FURNITURE_ALL
 	end
-end
 
-shopSectionButton.MouseButton1Click:Connect(function()
-	if catalogViewMode == CATALOG_VIEW_SHOP then
+	local shopCategory = getShopCategoryForPage(selectedCatalogPage)
+
+	if shopCategory then
+		catalogNavExpanded.Furniture = true
+		catalogViewMode = CATALOG_VIEW.SHOP
+		selectedCategory = shopCategory
+		rebuildCatalogNavigation()
+		renderCatalog(latestCatalogItems)
+
+		if #latestCatalogItems == 0 then
+			setStatus("Loading catalog furniture...")
+			furnitureCatalogRequest:FireServer("GetCatalog", {})
+		end
+
 		return
 	end
 
-	catalogViewMode = CATALOG_VIEW_SHOP
-	selectedCategory = "All"
-	renderCatalog(latestCatalogItems)
-
-	if #latestCatalogItems == 0 then
-		setStatus("Loading shop...")
-		furnitureCatalogRequest:FireServer("GetCatalog", {})
-	end
-end)
-
-marketplaceSectionButton.MouseButton1Click:Connect(function()
-	catalogViewMode = CATALOG_VIEW_MARKETPLACE
-	marketplaceViewMode = MARKETPLACE_VIEW_OFFERS
-	renderMarketplace()
-	requestMarketplaceOffers({
-		Queue = true,
-	})
-end)
-
-marketplaceOffersButton.MouseButton1Click:Connect(function()
-	if marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
-		return
-	end
-
-	marketplaceViewMode = MARKETPLACE_VIEW_OFFERS
-	renderMarketplace()
-	requestMarketplaceOffers({
-		Queue = true,
-	})
-end)
-
-marketplaceMySalesButton.MouseButton1Click:Connect(function()
-	if marketplaceViewMode == MARKETPLACE_VIEW_MY_SALES then
-		return
-	end
-
-	marketplaceViewMode = MARKETPLACE_VIEW_MY_SALES
-	renderMarketplace()
-	requestMarketplaceMySales({
-		Queue = true,
-	})
-end)
-
-marketplaceRefreshButton.MouseButton1Click:Connect(function()
-	if catalogViewMode ~= CATALOG_VIEW_MARKETPLACE then
-		return
-	end
-
-	if marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+	if selectedCatalogPage == CATALOG_PAGE.MARKETPLACE_OFFERS then
+		catalogNavExpanded.Marketplace = true
+		catalogViewMode = CATALOG_VIEW.MARKETPLACE
+		marketplaceViewMode = MARKETPLACE_VIEW.OFFERS
+		rebuildCatalogNavigation()
+		renderMarketplace()
 		requestMarketplaceOffers({
 			Queue = true,
 		})
+		return
+	end
+
+	if selectedCatalogPage == CATALOG_PAGE.MARKETPLACE_MY_SALES then
+		catalogNavExpanded.Marketplace = true
+		catalogViewMode = CATALOG_VIEW.MARKETPLACE
+		marketplaceViewMode = MARKETPLACE_VIEW.MY_SALES
+		rebuildCatalogNavigation()
+		renderMarketplace()
+		requestMarketplaceMySales({
+			Queue = true,
+		})
+		return
+	end
+
+	if selectedCatalogPage == CATALOG_PAGE.MARKETPLACE_INSTRUCTIONS then
+		catalogNavExpanded.Marketplace = true
+		catalogViewMode = CATALOG_VIEW.MARKETPLACE
+		marketplaceViewMode = MARKETPLACE_VIEW.INSTRUCTIONS
+		rebuildCatalogNavigation()
+		renderMarketplaceInstructions()
+		return
+	end
+
+	catalogViewMode = CATALOG_VIEW.PLACEHOLDER
+	placeholderCatalogPage = selectedCatalogPage
+	renderPlaceholderPage(selectedCatalogPage)
+end
+
+updateOpenButton = function()
+	if placingItemData then
+		ui.OpenButton.Visible = false
+		return
+	end
+
+	if ui.Panel.Visible or anyMajorMenuOpen then
+		ui.OpenButton.Visible = false
 	else
+		ui.OpenButton.Visible = shouldShowCatalogButton()
+	end
+end
+
+ui.ShopSectionButton.MouseButton1Click:Connect(function()
+	selectCatalogPage(CATALOG_PAGE.FURNITURE_SHOP)
+end)
+
+ui.MarketplaceSectionButton.MouseButton1Click:Connect(function()
+	selectCatalogPage(CATALOG_PAGE.MARKETPLACE_OFFERS)
+end)
+
+ui.MarketplaceOffersButton.MouseButton1Click:Connect(function()
+	if marketplaceViewMode == MARKETPLACE_VIEW.OFFERS then
+		return
+	end
+
+	selectCatalogPage(CATALOG_PAGE.MARKETPLACE_OFFERS)
+end)
+
+ui.MarketplaceMySalesButton.MouseButton1Click:Connect(function()
+	if marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES then
+		return
+	end
+
+	selectCatalogPage(CATALOG_PAGE.MARKETPLACE_MY_SALES)
+end)
+
+ui.MarketplaceRefreshButton.MouseButton1Click:Connect(function()
+	if catalogViewMode ~= CATALOG_VIEW.MARKETPLACE then
+		return
+	end
+
+	if marketplaceViewMode == MARKETPLACE_VIEW.OFFERS then
+		requestMarketplaceOffers({
+			Queue = true,
+		})
+	elseif marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES then
 		requestMarketplaceMySales({
 			Queue = true,
 		})
 	end
 end)
 
-marketplaceSearchBox.FocusLost:Connect(function(enterPressed)
+ui.MarketplaceSearchBox.FocusLost:Connect(function(enterPressed)
 	if enterPressed
-		and catalogViewMode == CATALOG_VIEW_MARKETPLACE
-		and marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+		and catalogViewMode == CATALOG_VIEW.MARKETPLACE
+		and marketplaceViewMode == MARKETPLACE_VIEW.OFFERS then
 
 		requestMarketplaceOffers({
 			Queue = true,
@@ -2700,25 +3516,22 @@ marketplaceSearchBox.FocusLost:Connect(function(enterPressed)
 	end
 end)
 
-marketplacePurchaseCancelButton.MouseButton1Click:Connect(closeMarketplacePurchaseModal)
+ui.MarketplacePurchaseCancelButton.MouseButton1Click:Connect(closeMarketplacePurchaseModal)
 
-marketplacePurchaseConfirmButton.MouseButton1Click:Connect(function()
+ui.MarketplacePurchaseConfirmButton.MouseButton1Click:Connect(function()
 	if requestMarketplacePurchase then
 		requestMarketplacePurchase()
 	end
 end)
 
-openButton.MouseButton1Click:Connect(function()
-	catalogViewMode = CATALOG_VIEW_SHOP
-	selectedCategory = "All"
+ui.OpenButton.MouseButton1Click:Connect(function()
 	setPanelVisible(true)
-	updateCatalogChrome()
-	renderCatalog(latestCatalogItems)
-	setStatus("Loading shop...")
+	selectCatalogPage(CATALOG_PAGE.FRONT)
+	requestCatalogCurrencySnapshot(true)
 	furnitureCatalogRequest:FireServer("GetCatalog", {})
 end)
 
-closeButton.MouseButton1Click:Connect(function()
+ui.CloseButton.MouseButton1Click:Connect(function()
 	setPanelVisible(false)
 end)
 
@@ -2727,7 +3540,7 @@ majorMenuOpened.Event:Connect(function(menuName)
 		return
 	end
 
-	if panel.Visible then
+	if ui.Panel.Visible then
 		setPanelVisible(false)
 	end
 
@@ -2737,7 +3550,7 @@ majorMenuOpened.Event:Connect(function(menuName)
 end)
 
 closeMajorMenus.Event:Connect(function()
-	if panel.Visible then
+	if ui.Panel.Visible then
 		setPanelVisible(false)
 	end
 
@@ -2778,6 +3591,38 @@ mouse.Button1Down:Connect(function()
 	confirmCatalogPlacement()
 end)
 
+currencyLocalDelta.Event:Connect(applyCatalogCurrencyLocalDelta)
+
+currencyResult.OnClientEvent:Connect(function(response)
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	local kind = response.Kind
+
+	if kind == "Currencies" or kind == "Currency" or kind == "Coins" then
+		catalogCurrency.RequestInFlight = false
+	end
+
+	if response.Success ~= true then
+		return
+	end
+
+	if kind == "Currencies" then
+		applyCatalogCurrencySnapshot(response.Currencies)
+	elseif kind == "Currency" then
+		applyCatalogCurrencyLocalDelta({
+			CurrencyKey = response.CurrencyKey,
+			Balance = response.Balance,
+		})
+	elseif kind == "Coins" then
+		applyCatalogCurrencyLocalDelta({
+			CurrencyKey = "Coins",
+			Balance = response.Coins,
+		})
+	end
+end)
+
 marketplaceResult.OnClientEvent:Connect(function(response)
 	if typeof(response) ~= "table" then
 		return
@@ -2812,8 +3657,8 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			end
 		end
 
-		if catalogViewMode == CATALOG_VIEW_MARKETPLACE
-			and marketplaceViewMode == MARKETPLACE_VIEW_OFFERS then
+		if catalogViewMode == CATALOG_VIEW.MARKETPLACE
+			and marketplaceViewMode == MARKETPLACE_VIEW.OFFERS then
 
 			renderMarketplace()
 
@@ -2852,8 +3697,8 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			end
 		end
 
-		if catalogViewMode == CATALOG_VIEW_MARKETPLACE
-			and marketplaceViewMode == MARKETPLACE_VIEW_MY_SALES then
+		if catalogViewMode == CATALOG_VIEW.MARKETPLACE
+			and marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES then
 
 			renderMarketplace()
 
@@ -2886,7 +3731,7 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			removePublicMarketplaceListing(listingId)
 		end
 
-		if catalogViewMode == CATALOG_VIEW_MARKETPLACE then
+		if catalogViewMode == CATALOG_VIEW.MARKETPLACE then
 			renderMarketplace()
 			setStatus(message ~= "" and message or "Your listing sold.")
 		else
@@ -2953,7 +3798,7 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 				Force = true,
 			})
 			currencyRefreshRequested:Fire()
-			marketplacePurchaseOverlay.Visible = false
+			ui.MarketplacePurchaseOverlay.Visible = false
 			marketplacePurchaseListing = nil
 			setMarketplacePurchaseStatus("", false)
 			renderMarketplace()
@@ -2968,8 +3813,8 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			end
 
 			if requestMarketplaceMySales
-				and catalogViewMode == CATALOG_VIEW_MARKETPLACE
-				and marketplaceViewMode == MARKETPLACE_VIEW_MY_SALES then
+				and catalogViewMode == CATALOG_VIEW.MARKETPLACE
+				and marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES then
 
 				task.delay(0.5, function()
 					requestMarketplaceMySales({
@@ -2980,7 +3825,7 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 		else
 			local errorMessage = message ~= "" and message or "Could not complete purchase."
 
-			if marketplacePurchaseOverlay.Visible then
+			if ui.MarketplacePurchaseOverlay.Visible then
 				setMarketplacePurchaseStatus(errorMessage, true)
 				updateMarketplacePurchaseModal()
 				renderMarketplace()
@@ -3031,7 +3876,7 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			setStatus(message ~= "" and message or "Could not cancel listing.")
 		end
 
-		if catalogViewMode == CATALOG_VIEW_MARKETPLACE then
+		if catalogViewMode == CATALOG_VIEW.MARKETPLACE then
 			renderMarketplace()
 		end
 	end
@@ -3053,7 +3898,7 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 		else
 			renderCatalog({})
 
-			if catalogViewMode == CATALOG_VIEW_SHOP then
+			if catalogViewMode == CATALOG_VIEW.SHOP then
 				setStatus(message)
 			end
 		end
@@ -3113,7 +3958,7 @@ end)
 local function handleCatalogVisibilityChanged()
 	local canShowShop = shouldShowCatalogButton()
 
-	if panel.Visible and not canShowShop then
+	if ui.Panel.Visible and not canShowShop then
 		setPanelVisible(false)
 	end
 

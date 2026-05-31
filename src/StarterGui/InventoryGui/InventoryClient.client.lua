@@ -160,6 +160,7 @@ local currencyLocalDelta = getOrCreateClientEvent("CurrencyLocalDelta")
 local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
 local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
 local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
+local openInventory = getOrCreateClientEvent("OpenInventory")
 
 local MENU_NAME = "Inventory"
 local anyMajorMenuOpen = false
@@ -2958,6 +2959,12 @@ end
 
 ui.openButton.MouseButton1Click:Connect(function()
 	setPanelVisible(true)
+end)
+
+openInventory.Event:Connect(function()
+	if shouldShowInventoryButton() then
+		setPanelVisible(true)
+	end
 end)
 
 ui.closeButton.MouseButton1Click:Connect(function()
