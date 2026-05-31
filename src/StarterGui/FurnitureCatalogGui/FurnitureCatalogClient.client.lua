@@ -2058,6 +2058,10 @@ local function itemMatchesSelectedCategory(itemData)
 		return itemData.Featured == true
 	end
 
+	if selectedCategory == "Chairs" then
+		return itemData.Category == "Chairs" or itemData.Category == "Seating"
+	end
+
 	return itemData.Category == selectedCategory
 end
 
