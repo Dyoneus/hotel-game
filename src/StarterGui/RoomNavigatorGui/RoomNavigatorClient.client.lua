@@ -93,6 +93,32 @@ local DETAIL_HEIGHT_EMPTY = 96
 local DETAIL_HEIGHT_SELECTED = 146
 local DETAIL_HEIGHT_SETTINGS = 420
 local ROOM_EDITOR_USER_INPUT_MAX_LENGTH = 20
+local ROOM_PLANNER_LAYOUTS = {
+	{
+		Id = "StarterStudio",
+		DisplayName = "Starter Studio",
+		SizeText = "5 x 7",
+		Description = "A simple starter layout.",
+		GridColumns = 5,
+		GridRows = 7,
+	},
+	{
+		Id = "CozyCorner",
+		DisplayName = "Cozy Corner",
+		SizeText = "Coming Soon",
+		Description = "A compact social layout.",
+		GridColumns = 4,
+		GridRows = 5,
+	},
+	{
+		Id = "WideSuite",
+		DisplayName = "Wide Suite",
+		SizeText = "Coming Soon",
+		Description = "A larger room layout.",
+		GridColumns = 7,
+		GridRows = 5,
+	},
+}
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -129,6 +155,9 @@ local joinRoomRequestInFlight = false
 local joinRoomRequestToken = 0
 local suppressSettingsTextChanged = false
 local statusShakeTween = nil
+local roomPlannerOpen = false
+local selectedPlannerLayoutId = "StarterStudio"
+local roomPlannerStatus = "More room slots are coming soon."
 
 local function refreshOptionalRemote(name, currentRemote)
 	if currentRemote and currentRemote.Parent == remoteEvents and currentRemote:IsA("RemoteEvent") then
@@ -2696,6 +2725,8 @@ local function createPublicCategoryPlaceholderRow(categoryName, order)
 	createCorner(soonBadge, 6)
 end
 
+local filterOwnRooms = nil
+
 local function createRoomRow(roomData, order)
 	applyCachedFavouriteState(roomData)
 
@@ -2818,6 +2849,370 @@ local function createRoomRow(roomData, order)
 	return row
 end
 
+local function getPlannerLayoutById(layoutId)
+	for _, layoutInfo in ipairs(ROOM_PLANNER_LAYOUTS) do
+		if layoutInfo.Id == layoutId then
+			return layoutInfo
+		end
+	end
+
+	return ROOM_PLANNER_LAYOUTS[1]
+end
+
+local function createPlannerText(parent, name, text, position, size, options)
+	local label = Instance.new("TextLabel")
+	label.Name = name
+	label.Position = position
+	label.Size = size
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = options and options.TextColor3 or Color3.fromRGB(58, 64, 58)
+	label.TextSize = options and options.TextSize or 13
+	label.TextXAlignment = options and options.TextXAlignment or Enum.TextXAlignment.Left
+	label.TextYAlignment = options and options.TextYAlignment or Enum.TextYAlignment.Center
+	label.TextWrapped = (options and options.TextWrapped == true) or false
+	label.TextTruncate = options and options.TextTruncate or Enum.TextTruncate.None
+	label.Font = options and options.Font or Enum.Font.Gotham
+	label.Parent = parent
+	return label
+end
+
+local function createRoomPlannerCard(order)
+	local paper = isPaperLayout()
+	local row = Instance.new("TextButton")
+	row.Name = "CreateYourOwnRoomCard"
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, -4, 0, 82)
+	row.BackgroundColor3 = paper and Color3.fromRGB(250, 240, 210) or Color3.fromRGB(246, 250, 246)
+	row.BorderSizePixel = 0
+	row.Text = ""
+	row.AutoButtonColor = true
+	row.Parent = ui.listFrame
+
+	createCorner(row, 8)
+	createStroke(row, paper and Color3.fromRGB(184, 144, 83) or Color3.fromRGB(188, 206, 190), 2, 0)
+
+	local icon = Instance.new("TextLabel")
+	icon.Name = "CreateRoomIcon"
+	icon.Position = UDim2.fromOffset(14, 14)
+	icon.Size = UDim2.fromOffset(48, 48)
+	icon.BackgroundColor3 = paper and Color3.fromRGB(226, 207, 164) or Color3.fromRGB(221, 235, 224)
+	icon.BorderSizePixel = 0
+	icon.Text = "+"
+	icon.TextColor3 = paper and Color3.fromRGB(90, 68, 38) or Color3.fromRGB(70, 102, 76)
+	icon.TextSize = 28
+	icon.Font = Enum.Font.GothamBold
+	icon.Parent = row
+
+	createCorner(icon, 8)
+
+	createPlannerText(
+		row,
+		"Title",
+		"Create your own Room",
+		UDim2.fromOffset(76, 12),
+		UDim2.new(1, -210, 0, 24),
+		{
+			TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(38, 44, 38),
+			TextSize = 16,
+			Font = Enum.Font.GothamBold,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}
+	)
+
+	createPlannerText(
+		row,
+		"Body",
+		"Plan a new layout. More room slots are coming soon.",
+		UDim2.fromOffset(76, 38),
+		UDim2.new(1, -210, 0, 20),
+		{
+			TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(82, 88, 82),
+			TextSize = 12,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}
+	)
+
+	local openButton = createTextButton("OpenRoomPlannerButton", "Plan", UDim2.fromOffset(82, 30), row)
+	openButton.AnchorPoint = Vector2.new(1, 0.5)
+	openButton.Position = UDim2.new(1, -14, 0.5, 0)
+	openButton.BackgroundColor3 = paper and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(68, 143, 82)
+	openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	openButton.TextSize = 13
+
+	local function openPlanner()
+		roomPlannerOpen = true
+		selectedRoomData = nil
+		selectedRow = nil
+		roomPlannerStatus = "More room slots are coming soon."
+
+		if renderNavigator then
+			renderNavigator()
+		end
+	end
+
+	row.MouseButton1Click:Connect(openPlanner)
+	openButton.MouseButton1Click:Connect(openPlanner)
+end
+
+local function drawRoomPlannerPreviewGrid(parent, layoutInfo)
+	local columns = layoutInfo.GridColumns or 5
+	local rows = layoutInfo.GridRows or 5
+	local cellSize = math.floor(math.min(116 / columns, 86 / rows))
+	local gridWidth = cellSize * columns
+	local gridHeight = cellSize * rows
+	local grid = Instance.new("Frame")
+	grid.Name = "LayoutGridPreview"
+	grid.Position = UDim2.new(0.5, -math.floor(gridWidth / 2), 0, 76)
+	grid.Size = UDim2.fromOffset(gridWidth, gridHeight)
+	grid.BackgroundColor3 = Color3.fromRGB(222, 218, 202)
+	grid.BorderSizePixel = 0
+	grid.Parent = parent
+
+	createCorner(grid, 4)
+	createStroke(grid, Color3.fromRGB(174, 161, 130), 1, 0)
+
+	for rowIndex = 1, rows do
+		for columnIndex = 1, columns do
+			local cell = Instance.new("Frame")
+			cell.Name = "Cell"
+			cell.Position = UDim2.fromOffset((columnIndex - 1) * cellSize + 1, (rowIndex - 1) * cellSize + 1)
+			cell.Size = UDim2.fromOffset(math.max(2, cellSize - 2), math.max(2, cellSize - 2))
+			cell.BackgroundColor3 = Color3.fromRGB(245, 239, 220)
+			cell.BorderSizePixel = 0
+			cell.Parent = grid
+		end
+	end
+end
+
+local function renderRoomPlanner()
+	local paper = isPaperLayout()
+	local selectedLayout = getPlannerLayoutById(selectedPlannerLayoutId)
+	local planner = Instance.new("Frame")
+	planner.Name = "RoomPlanner"
+	planner.Size = UDim2.new(1, -4, 0, 316)
+	planner.BackgroundColor3 = paper and Color3.fromRGB(255, 250, 236) or Color3.fromRGB(255, 255, 255)
+	planner.BorderSizePixel = 0
+	planner.Parent = ui.listFrame
+
+	createCorner(planner, 8)
+	createStroke(planner, paper and Color3.fromRGB(201, 179, 139) or Color3.fromRGB(220, 226, 218), 1, 0)
+
+	local backButton = createTextButton("RoomPlannerBackButton", "Back", UDim2.fromOffset(74, 28), planner)
+	backButton.Position = UDim2.fromOffset(14, 12)
+	backButton.BackgroundColor3 = paper and Color3.fromRGB(222, 207, 173) or Color3.fromRGB(220, 226, 218)
+	backButton.TextColor3 = paper and Color3.fromRGB(64, 52, 39) or Color3.fromRGB(45, 48, 45)
+	backButton.TextSize = 12
+	backButton.MouseButton1Click:Connect(function()
+		roomPlannerOpen = false
+		roomPlannerStatus = "More room slots are coming soon."
+
+		if renderNavigator then
+			renderNavigator()
+		end
+	end)
+
+	createPlannerText(
+		planner,
+		"PlannerTitle",
+		"Room Planner",
+		UDim2.fromOffset(102, 11),
+		UDim2.new(1, -116, 0, 24),
+		{
+			TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(42, 48, 42),
+			TextSize = 18,
+			Font = Enum.Font.GothamBold,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}
+	)
+
+	createPlannerText(
+		planner,
+		"PlannerNote",
+		"Choose a blueprint preview. More room slots are coming soon.",
+		UDim2.fromOffset(14, 44),
+		UDim2.new(1, -28, 0, 20),
+		{
+			TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(82, 88, 82),
+			TextSize = 12,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}
+	)
+
+	local cardsFrame = Instance.new("Frame")
+	cardsFrame.Name = "LayoutCards"
+	cardsFrame.Position = UDim2.fromOffset(14, 76)
+	cardsFrame.Size = UDim2.new(0.57, -20, 1, -90)
+	cardsFrame.BackgroundTransparency = 1
+	cardsFrame.Parent = planner
+
+	local cardLayout = Instance.new("UIListLayout")
+	cardLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	cardLayout.Padding = UDim.new(0, 8)
+	cardLayout.Parent = cardsFrame
+
+	local previewPanel = Instance.new("Frame")
+	previewPanel.Name = "PreviewPanel"
+	previewPanel.Position = UDim2.new(0.57, 0, 0, 76)
+	previewPanel.Size = UDim2.new(0.43, -14, 1, -90)
+	previewPanel.BackgroundColor3 = paper and Color3.fromRGB(247, 237, 211) or Color3.fromRGB(240, 246, 240)
+	previewPanel.BorderSizePixel = 0
+	previewPanel.Parent = planner
+
+	createCorner(previewPanel, 8)
+	createStroke(previewPanel, paper and Color3.fromRGB(201, 179, 139) or Color3.fromRGB(204, 216, 202), 1, 0)
+
+	for index, layoutInfo in ipairs(ROOM_PLANNER_LAYOUTS) do
+		local isSelected = layoutInfo.Id == selectedPlannerLayoutId
+		local card = Instance.new("Frame")
+		card.Name = layoutInfo.Id .. "Card"
+		card.LayoutOrder = index
+		card.Size = UDim2.new(1, 0, 0, 64)
+		card.BackgroundColor3 = isSelected
+			and (paper and Color3.fromRGB(248, 235, 200) or Color3.fromRGB(231, 243, 249))
+			or (paper and Color3.fromRGB(253, 246, 226) or Color3.fromRGB(250, 252, 250))
+		card.BorderSizePixel = 0
+		card.Parent = cardsFrame
+
+		createCorner(card, 7)
+		createStroke(
+			card,
+			isSelected and (paper and Color3.fromRGB(138, 102, 58) or Color3.fromRGB(68, 128, 166))
+				or (paper and Color3.fromRGB(201, 179, 139) or Color3.fromRGB(213, 220, 210)),
+			isSelected and 2 or 1,
+			0
+		)
+
+		createPlannerText(
+			card,
+			"Name",
+			layoutInfo.DisplayName,
+			UDim2.fromOffset(12, 7),
+			UDim2.new(1, -112, 0, 18),
+			{
+				TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(38, 44, 38),
+				TextSize = 13,
+				Font = Enum.Font.GothamBold,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+			}
+		)
+
+		createPlannerText(
+			card,
+			"Meta",
+			"Size: " .. layoutInfo.SizeText,
+			UDim2.fromOffset(12, 27),
+			UDim2.new(1, -112, 0, 16),
+			{
+				TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(82, 88, 82),
+				TextSize = 11,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+			}
+		)
+
+		createPlannerText(
+			card,
+			"Description",
+			layoutInfo.Description,
+			UDim2.fromOffset(12, 44),
+			UDim2.new(1, -112, 0, 15),
+			{
+				TextColor3 = paper and Color3.fromRGB(105, 88, 64) or Color3.fromRGB(100, 106, 100),
+				TextSize = 10,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+			}
+		)
+
+		local previewButton = createTextButton("PreviewButton", "Preview", UDim2.fromOffset(78, 28), card)
+		previewButton.AnchorPoint = Vector2.new(1, 0.5)
+		previewButton.Position = UDim2.new(1, -10, 0.5, 0)
+		previewButton.BackgroundColor3 = paper and Color3.fromRGB(126, 100, 62) or Color3.fromRGB(86, 126, 151)
+		previewButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		previewButton.TextSize = 11
+		previewButton.MouseButton1Click:Connect(function()
+			selectedPlannerLayoutId = layoutInfo.Id
+			roomPlannerStatus = "Previewing " .. layoutInfo.DisplayName .. ". More room slots are coming soon."
+
+			if renderNavigator then
+				renderNavigator()
+			end
+		end)
+	end
+
+	createPlannerText(
+		previewPanel,
+		"PreviewTitle",
+		selectedLayout.DisplayName,
+		UDim2.fromOffset(12, 10),
+		UDim2.new(1, -24, 0, 22),
+		{
+			TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(42, 48, 42),
+			TextSize = 15,
+			Font = Enum.Font.GothamBold,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}
+	)
+
+	createPlannerText(
+		previewPanel,
+		"PreviewMeta",
+		"Tile size: " .. selectedLayout.SizeText,
+		UDim2.fromOffset(12, 36),
+		UDim2.new(1, -24, 0, 18),
+		{
+			TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(82, 88, 82),
+			TextSize = 12,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}
+	)
+
+	drawRoomPlannerPreviewGrid(previewPanel, selectedLayout)
+
+	local statusLabel = createPlannerText(
+		previewPanel,
+		"PlannerStatus",
+		roomPlannerStatus,
+		UDim2.fromOffset(12, 174),
+		UDim2.new(1, -24, 0, 34),
+		{
+			TextColor3 = Color3.fromRGB(130, 84, 45),
+			TextSize = 11,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+		}
+	)
+	statusLabel.Font = Enum.Font.GothamMedium
+
+	local createButton = createTextButton("CreateRoomPlaceholderButton", "Create Room", UDim2.new(1, -24, 0, 30), previewPanel)
+	createButton.AnchorPoint = Vector2.new(0, 1)
+	createButton.Position = UDim2.new(0, 12, 1, -12)
+	createButton.BackgroundColor3 = paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(150, 158, 148)
+	createButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	createButton.TextSize = 12
+	createButton.MouseButton1Click:Connect(function()
+		roomPlannerStatus = "Multiple room creation is coming soon."
+
+		if renderNavigator then
+			renderNavigator()
+		end
+	end)
+end
+
+local function renderOwnRooms()
+	local ownRooms = filterOwnRooms()
+	clearSelectionIfMissing(ownRooms)
+
+	if #ownRooms == 0 then
+		createEmptyState("You do not have an active room yet.")
+	else
+		for index, roomData in ipairs(ownRooms) do
+			createRoomRow(roomData, index)
+		end
+	end
+
+	createRoomPlannerCard(#ownRooms + 1)
+end
+
 local function filterRoomsByCategory(categoryName)
 	local rooms = {}
 
@@ -2832,7 +3227,7 @@ local function filterRoomsByCategory(categoryName)
 	return sortRoomsForBrowsing(rooms)
 end
 
-local function filterOwnRooms()
+filterOwnRooms = function()
 	local rooms = {}
 
 	for _, roomData in ipairs(latestRoomList) do
@@ -2941,10 +3336,17 @@ local function renderRooms()
 		ui.listFrame.Position = UDim2.fromOffset(14, 84)
 		renderRoomRows(filterSearchRooms(), "No rooms found.")
 	elseif selectedRoomSubtab == ROOM_SUBTAB_OWN then
-		ui.sectionTitle.Text = "Own Room(s)"
+		ui.sectionTitle.Text = roomPlannerOpen and "Room Planner" or "Own Room(s)"
 		ui.listFrame.Position = UDim2.fromOffset(14, 44)
 		ui.listFrame.Size = UDim2.new(1, -28, 1, -58)
-		renderRoomRows(filterOwnRooms(), "You do not have an active room yet.")
+
+		if roomPlannerOpen then
+			selectedRoomData = nil
+			selectedRow = nil
+			renderRoomPlanner()
+		else
+			renderOwnRooms()
+		end
 	elseif selectedRoomSubtab == ROOM_SUBTAB_FAVOURITES then
 		ui.sectionTitle.Text = "Favourites"
 		ui.listFrame.Position = UDim2.fromOffset(14, 44)
@@ -3037,6 +3439,7 @@ ui.publicSpacesTab.MouseButton1Click:Connect(function()
 	selectedTopTab = TOP_TAB_PUBLIC
 	selectedRoomData = nil
 	selectedRow = nil
+	roomPlannerOpen = false
 	renderNavigator()
 end)
 
@@ -3044,6 +3447,7 @@ ui.roomsTab.MouseButton1Click:Connect(function()
 	selectedTopTab = TOP_TAB_ROOMS
 	selectedRoomData = nil
 	selectedRow = nil
+	roomPlannerOpen = false
 	renderNavigator()
 end)
 
@@ -3051,6 +3455,7 @@ ui.searchSubtabButton.MouseButton1Click:Connect(function()
 	selectedRoomSubtab = ROOM_SUBTAB_SEARCH
 	selectedRoomData = nil
 	selectedRow = nil
+	roomPlannerOpen = false
 	renderNavigator()
 end)
 
@@ -3058,6 +3463,7 @@ ui.ownSubtabButton.MouseButton1Click:Connect(function()
 	selectedRoomSubtab = ROOM_SUBTAB_OWN
 	selectedRoomData = nil
 	selectedRow = nil
+	roomPlannerOpen = false
 	renderNavigator()
 end)
 
@@ -3065,6 +3471,7 @@ ui.favouritesSubtabButton.MouseButton1Click:Connect(function()
 	selectedRoomSubtab = ROOM_SUBTAB_FAVOURITES
 	selectedRoomData = nil
 	selectedRow = nil
+	roomPlannerOpen = false
 	renderNavigator()
 end)
 
@@ -3072,6 +3479,7 @@ ui.guestSubtabButton.MouseButton1Click:Connect(function()
 	selectedRoomSubtab = ROOM_SUBTAB_GUEST
 	selectedRoomData = nil
 	selectedRow = nil
+	roomPlannerOpen = false
 	renderNavigator()
 end)
 
