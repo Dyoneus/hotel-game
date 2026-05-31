@@ -1212,14 +1212,7 @@ local function updateCloseButtonForMode()
 end
 
 local function updateOpenButton()
-	if isMainMenuActive() then
-		ui.openButton.Visible = false
-		return
-	end
-
-	ui.openButton.Visible = (not ui.panel.Visible)
-		and not anyMajorMenuOpen
-		and shouldShowRoomsButton()
+	ui.openButton.Visible = false
 end
 
 local function setLocalMajorMenuState(isOpen, menuName)

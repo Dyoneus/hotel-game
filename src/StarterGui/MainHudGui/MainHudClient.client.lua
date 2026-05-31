@@ -1,13 +1,9 @@
 -- StarterGui/MainHudGui/MainHudClient.lua
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
-local currencyRequest = remoteEvents:WaitForChild("CurrencyRequest")
-local currencyResult = remoteEvents:WaitForChild("CurrencyResult")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
 
 local gui = script.Parent
@@ -20,19 +16,6 @@ for _, child in ipairs(gui:GetChildren()) do
 		child:Destroy()
 	end
 end
-
-local REQUEST_TIMEOUT_SECONDS = 6
-local LOCAL_REQUEST_COOLDOWN_SECONDS = 0.6
-
-local balances = {
-	Coins = 0,
-	Dollars = 0,
-}
-
-local currencyRequestInFlight = false
-local currencyRequestSerial = 0
-local lastCurrencyRequestAt = -math.huge
-local refreshQueued = false
 
 local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -79,19 +62,25 @@ local function getOrCreateClientEvent(name)
 	return bindableEvent
 end
 
-local currencyRefreshRequested = getOrCreateClientEvent("CurrencyRefreshRequested")
-local currencyLocalDelta = getOrCreateClientEvent("CurrencyLocalDelta")
 local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
+local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
 local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
 local openInventory = getOrCreateClientEvent("OpenInventory")
+local openCatalog = getOrCreateClientEvent("OpenCatalog")
+local toggleRoomMode = getOrCreateClientEvent("ToggleRoomMode")
 
 local hud = {}
+local menuExpanded = false
+local ACTION_BUTTON_WIDTH = 82
+local ACTION_BUTTON_HEIGHT = 42
+local ACTION_BUTTON_GAP = 8
+local ACTION_BUTTON_RIGHT_MARGIN = 12
 
 hud.RoomDetails = Instance.new("Frame")
 hud.RoomDetails.Name = "RoomDetails"
-hud.RoomDetails.AnchorPoint = Vector2.new(0.5, 1)
-hud.RoomDetails.Position = UDim2.new(0.5, -72, 1, -82)
-hud.RoomDetails.Size = UDim2.fromOffset(520, 48)
+hud.RoomDetails.AnchorPoint = Vector2.new(0, 1)
+hud.RoomDetails.Position = UDim2.new(0, 0, 0, -8)
+hud.RoomDetails.Size = UDim2.fromOffset(312, 48)
 hud.RoomDetails.BackgroundColor3 = Color3.fromRGB(31, 37, 44)
 hud.RoomDetails.BackgroundTransparency = 0.08
 hud.RoomDetails.BorderSizePixel = 0
@@ -137,6 +126,7 @@ hud.Bar.BackgroundTransparency = 0.04
 hud.Bar.BorderSizePixel = 0
 hud.Bar.Visible = false
 hud.Bar.Parent = gui
+hud.RoomDetails.Parent = hud.Bar
 
 createCorner(hud.Bar, 10)
 createStroke(hud.Bar, Color3.fromRGB(255, 255, 255), 1, 0.76)
@@ -168,10 +158,65 @@ end
 
 hud.MenuButton = createHudButton("MenuButton", "Menu", 12, 82)
 
+hud.MenuList = Instance.new("Frame")
+hud.MenuList.Name = "MenuList"
+hud.MenuList.AnchorPoint = Vector2.new(0, 1)
+hud.MenuList.Position = UDim2.new(0, 12, 0, -8)
+hud.MenuList.Size = UDim2.fromOffset(156, 116)
+hud.MenuList.BackgroundColor3 = Color3.fromRGB(34, 42, 50)
+hud.MenuList.BackgroundTransparency = 0.02
+hud.MenuList.BorderSizePixel = 0
+hud.MenuList.Visible = false
+hud.MenuList.ZIndex = 20
+hud.MenuList.Parent = hud.Bar
+
+createCorner(hud.MenuList, 9)
+createStroke(hud.MenuList, Color3.fromRGB(255, 255, 255), 1, 0.7)
+
+hud.MenuListLayout = Instance.new("UIListLayout")
+hud.MenuListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+hud.MenuListLayout.Padding = UDim.new(0, 6)
+hud.MenuListLayout.Parent = hud.MenuList
+
+hud.MenuListPadding = Instance.new("UIPadding")
+hud.MenuListPadding.PaddingTop = UDim.new(0, 8)
+hud.MenuListPadding.PaddingBottom = UDim.new(0, 8)
+hud.MenuListPadding.PaddingLeft = UDim.new(0, 8)
+hud.MenuListPadding.PaddingRight = UDim.new(0, 8)
+hud.MenuListPadding.Parent = hud.MenuList
+
+local function createMenuEntry(name, text, layoutOrder)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.LayoutOrder = layoutOrder
+	button.Size = UDim2.new(1, 0, 0, 28)
+	button.BackgroundColor3 = Color3.fromRGB(58, 70, 82)
+	button.BorderSizePixel = 0
+	button.Text = text
+	button.TextColor3 = Color3.fromRGB(245, 248, 250)
+	button.TextSize = 13
+	button.TextXAlignment = Enum.TextXAlignment.Left
+	button.Font = Enum.Font.GothamBold
+	button.ZIndex = 21
+	button.Parent = hud.MenuList
+
+	createCorner(button, 7)
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.Parent = button
+
+	return button
+end
+
+hud.MenuRoomsButton = createMenuEntry("MenuRoomsButton", "Rooms", 1)
+hud.MenuInventoryButton = createMenuEntry("MenuInventoryButton", "Inventory", 2)
+hud.MenuCatalogButton = createMenuEntry("MenuCatalogButton", "Catalog", 3)
+
 hud.ChatFrame = Instance.new("Frame")
 hud.ChatFrame.Name = "ChatPlaceholder"
 hud.ChatFrame.Position = UDim2.new(0, 106, 0.5, -21)
-hud.ChatFrame.Size = UDim2.new(1, -438, 0, 42)
+hud.ChatFrame.Size = UDim2.new(1, -392, 0, 42)
 hud.ChatFrame.BackgroundColor3 = Color3.fromRGB(245, 248, 250)
 hud.ChatFrame.BorderSizePixel = 0
 hud.ChatFrame.Parent = hud.Bar
@@ -194,11 +239,16 @@ hud.ChatLabel.Parent = hud.ChatFrame
 hud.InventoryButton = Instance.new("TextButton")
 hud.InventoryButton.Name = "InventoryButton"
 hud.InventoryButton.AnchorPoint = Vector2.new(1, 0.5)
-hud.InventoryButton.Position = UDim2.new(1, -250, 0.5, 0)
-hud.InventoryButton.Size = UDim2.fromOffset(104, 42)
+hud.InventoryButton.Position = UDim2.new(
+	1,
+	-(ACTION_BUTTON_RIGHT_MARGIN + (ACTION_BUTTON_WIDTH + ACTION_BUTTON_GAP) * 2),
+	0.5,
+	0
+)
+hud.InventoryButton.Size = UDim2.fromOffset(ACTION_BUTTON_WIDTH, ACTION_BUTTON_HEIGHT)
 hud.InventoryButton.BackgroundColor3 = Color3.fromRGB(63, 98, 78)
 hud.InventoryButton.BorderSizePixel = 0
-hud.InventoryButton.Text = "Inventory"
+hud.InventoryButton.Text = "Bag"
 hud.InventoryButton.TextColor3 = Color3.fromRGB(245, 248, 250)
 hud.InventoryButton.TextSize = 14
 hud.InventoryButton.Font = Enum.Font.GothamBold
@@ -207,141 +257,47 @@ hud.InventoryButton.Parent = hud.Bar
 createCorner(hud.InventoryButton, 8)
 createStroke(hud.InventoryButton, Color3.fromRGB(255, 255, 255), 1, 0.78)
 
-hud.CurrencyPanel = Instance.new("TextButton")
-hud.CurrencyPanel.Name = "CurrencyDisplay"
-hud.CurrencyPanel.AnchorPoint = Vector2.new(1, 0.5)
-hud.CurrencyPanel.Position = UDim2.new(1, -12, 0.5, 0)
-hud.CurrencyPanel.Size = UDim2.fromOffset(224, 42)
-hud.CurrencyPanel.BackgroundColor3 = Color3.fromRGB(55, 48, 40)
-hud.CurrencyPanel.BorderSizePixel = 0
-hud.CurrencyPanel.Text = ""
-hud.CurrencyPanel.AutoButtonColor = true
-hud.CurrencyPanel.Parent = hud.Bar
+hud.CatalogButton = Instance.new("TextButton")
+hud.CatalogButton.Name = "CatalogButton"
+hud.CatalogButton.AnchorPoint = Vector2.new(1, 0.5)
+hud.CatalogButton.Position = UDim2.new(
+	1,
+	-(ACTION_BUTTON_RIGHT_MARGIN + ACTION_BUTTON_WIDTH + ACTION_BUTTON_GAP),
+	0.5,
+	0
+)
+hud.CatalogButton.Size = UDim2.fromOffset(ACTION_BUTTON_WIDTH, ACTION_BUTTON_HEIGHT)
+hud.CatalogButton.BackgroundColor3 = Color3.fromRGB(92, 72, 48)
+hud.CatalogButton.BorderSizePixel = 0
+hud.CatalogButton.Text = "Catalog"
+hud.CatalogButton.TextColor3 = Color3.fromRGB(245, 248, 250)
+hud.CatalogButton.TextSize = 13
+hud.CatalogButton.Font = Enum.Font.GothamBold
+hud.CatalogButton.Parent = hud.Bar
 
-createCorner(hud.CurrencyPanel, 8)
-createStroke(hud.CurrencyPanel, Color3.fromRGB(255, 255, 255), 1, 0.78)
+createCorner(hud.CatalogButton, 8)
+createStroke(hud.CatalogButton, Color3.fromRGB(255, 255, 255), 1, 0.78)
 
-hud.CoinsLabel = Instance.new("TextLabel")
-hud.CoinsLabel.Name = "Coins"
-hud.CoinsLabel.Position = UDim2.fromOffset(12, 0)
-hud.CoinsLabel.Size = UDim2.fromOffset(96, 42)
-hud.CoinsLabel.BackgroundTransparency = 1
-hud.CoinsLabel.Text = "Coins: 0"
-hud.CoinsLabel.TextColor3 = Color3.fromRGB(255, 224, 104)
-hud.CoinsLabel.TextSize = 13
-hud.CoinsLabel.TextXAlignment = Enum.TextXAlignment.Left
-hud.CoinsLabel.Font = Enum.Font.GothamBold
-hud.CoinsLabel.Parent = hud.CurrencyPanel
+hud.EditButton = Instance.new("TextButton")
+hud.EditButton.Name = "EditButton"
+hud.EditButton.AnchorPoint = Vector2.new(1, 0.5)
+hud.EditButton.Position = UDim2.new(1, -ACTION_BUTTON_RIGHT_MARGIN, 0.5, 0)
+hud.EditButton.Size = UDim2.fromOffset(ACTION_BUTTON_WIDTH, ACTION_BUTTON_HEIGHT)
+hud.EditButton.BackgroundColor3 = Color3.fromRGB(49, 63, 78)
+hud.EditButton.BorderSizePixel = 0
+hud.EditButton.Text = "Edit"
+hud.EditButton.TextColor3 = Color3.fromRGB(245, 248, 250)
+hud.EditButton.TextSize = 13
+hud.EditButton.Font = Enum.Font.GothamBold
+hud.EditButton.Parent = hud.Bar
 
-hud.DollarsLabel = Instance.new("TextLabel")
-hud.DollarsLabel.Name = "Dollars"
-hud.DollarsLabel.Position = UDim2.fromOffset(112, 0)
-hud.DollarsLabel.Size = UDim2.new(1, -122, 1, 0)
-hud.DollarsLabel.BackgroundTransparency = 1
-hud.DollarsLabel.Text = "Dollars: 0"
-hud.DollarsLabel.TextColor3 = Color3.fromRGB(158, 226, 172)
-hud.DollarsLabel.TextSize = 13
-hud.DollarsLabel.TextXAlignment = Enum.TextXAlignment.Left
-hud.DollarsLabel.TextTruncate = Enum.TextTruncate.AtEnd
-hud.DollarsLabel.Font = Enum.Font.GothamBold
-hud.DollarsLabel.Parent = hud.CurrencyPanel
+createCorner(hud.EditButton, 8)
+createStroke(hud.EditButton, Color3.fromRGB(255, 255, 255), 1, 0.78)
 
-local function normalizeBalance(value)
-	if typeof(value) ~= "number"
-		or value ~= value
-		or value < 0
-		or value == math.huge then
-
-		return 0
-	end
-
-	return math.floor(value)
-end
-
-local function renderCurrency()
-	hud.CoinsLabel.Text = "Coins: " .. tostring(normalizeBalance(balances.Coins))
-	hud.DollarsLabel.Text = "Dollars: " .. tostring(normalizeBalance(balances.Dollars))
-end
-
-local function applyCurrenciesSnapshot(currencies)
-	if typeof(currencies) ~= "table" then
-		return
-	end
-
-	balances.Coins = normalizeBalance(currencies.Coins)
-	balances.Dollars = normalizeBalance(currencies.Dollars)
-	renderCurrency()
-end
-
-local function applyCurrencyDelta(payload)
-	if typeof(payload) ~= "table" then
-		return
-	end
-
-	local currencyKey = payload.CurrencyKey
-
-	if currencyKey ~= "Coins" and currencyKey ~= "Dollars" then
-		return
-	end
-
-	local newBalance = nil
-
-	if typeof(payload.Balance) == "number" then
-		newBalance = normalizeBalance(payload.Balance)
-	elseif typeof(payload.Delta) == "number" or typeof(payload.Amount) == "number" then
-		local delta = typeof(payload.Delta) == "number" and payload.Delta or payload.Amount
-		newBalance = math.max(normalizeBalance(balances[currencyKey]) + math.floor(delta), 0)
-	end
-
-	if not newBalance then
-		return
-	end
-
-	balances[currencyKey] = newBalance
-	renderCurrency()
-end
-
-local function queueCurrencyRefresh(delaySeconds)
-	if refreshQueued then
-		return
-	end
-
-	refreshQueued = true
-
-	task.delay(delaySeconds, function()
-		refreshQueued = false
-		if hud.Bar.Visible then
-			currencyRequest:FireServer("GetCurrencies")
-		end
-	end)
-end
-
-local function requestCurrencyRefresh(force)
-	if currencyRequestInFlight then
-		queueCurrencyRefresh(LOCAL_REQUEST_COOLDOWN_SECONDS)
-		return
-	end
-
-	local now = os.clock()
-	local elapsed = now - lastCurrencyRequestAt
-
-	if force ~= true and elapsed < LOCAL_REQUEST_COOLDOWN_SECONDS then
-		queueCurrencyRefresh(LOCAL_REQUEST_COOLDOWN_SECONDS - elapsed + 0.05)
-		return
-	end
-
-	currencyRequestInFlight = true
-	lastCurrencyRequestAt = now
-	currencyRequestSerial += 1
-
-	local requestSerial = currencyRequestSerial
-	currencyRequest:FireServer("GetCurrencies")
-
-	task.delay(REQUEST_TIMEOUT_SECONDS, function()
-		if currencyRequestInFlight and currencyRequestSerial == requestSerial then
-			currencyRequestInFlight = false
-		end
-	end)
+local function setMenuExpanded(isExpanded)
+	menuExpanded = isExpanded == true
+	hud.MenuList.Visible = menuExpanded and hud.Bar.Visible
+	hud.RoomDetails.Visible = hud.Bar.Visible and not menuExpanded
 end
 
 local function getCurrentRoom()
@@ -397,6 +353,37 @@ local function updateRoomDetails()
 	hud.RoomOwner.Text = getOwnerText(roomModel)
 end
 
+local function canEditCurrentRoom()
+	local roomModel = getCurrentRoom()
+
+	if not roomModel then
+		return false
+	end
+
+	if roomModel:GetAttribute("RoomType") == "PublicSpace" then
+		return false
+	end
+
+	return roomModel:GetAttribute("OwnerUserId") == player.UserId
+end
+
+local function updateEditButton()
+	local canEdit = canEditCurrentRoom()
+	local roomMode = player:GetAttribute("RoomMode") or "Play"
+
+	hud.EditButton.Active = canEdit
+	hud.EditButton.AutoButtonColor = canEdit
+	hud.EditButton.Text = canEdit and (roomMode == "Edit" and "Done" or "Edit") or "Edit"
+	hud.EditButton.TextColor3 = canEdit
+		and Color3.fromRGB(245, 248, 250)
+		or Color3.fromRGB(165, 174, 182)
+	hud.EditButton.BackgroundColor3 = not canEdit
+		and Color3.fromRGB(42, 49, 56)
+		or roomMode == "Edit"
+			and Color3.fromRGB(160, 72, 54)
+			or Color3.fromRGB(49, 63, 78)
+end
+
 local function shouldShowHud()
 	local currentRoomName = player:GetAttribute("CurrentRoomName")
 
@@ -409,79 +396,65 @@ end
 
 local function updateVisibility()
 	local shouldShow = shouldShowHud()
-	local wasVisible = hud.Bar.Visible
 
 	hud.Bar.Visible = shouldShow
-	hud.RoomDetails.Visible = shouldShow
+	hud.RoomDetails.Visible = shouldShow and not menuExpanded
+	hud.MenuList.Visible = shouldShow and menuExpanded
 
 	if shouldShow then
 		updateRoomDetails()
-
-		if not wasVisible then
-			requestCurrencyRefresh(true)
-		end
+		updateEditButton()
+	else
+		setMenuExpanded(false)
 	end
 end
 
 hud.MenuButton.MouseButton1Click:Connect(function()
+	setMenuExpanded(not menuExpanded)
+end)
+
+hud.MenuRoomsButton.MouseButton1Click:Connect(function()
+	setMenuExpanded(false)
 	openRoomNavigator:Fire()
 end)
 
-hud.InventoryButton.MouseButton1Click:Connect(function()
+local function openInventoryMenu()
+	setMenuExpanded(false)
 	openInventory:Fire()
+end
+
+hud.MenuInventoryButton.MouseButton1Click:Connect(openInventoryMenu)
+hud.InventoryButton.MouseButton1Click:Connect(openInventoryMenu)
+
+local function openCatalogMenu()
+	setMenuExpanded(false)
+	openCatalog:Fire()
+end
+
+hud.MenuCatalogButton.MouseButton1Click:Connect(openCatalogMenu)
+hud.CatalogButton.MouseButton1Click:Connect(openCatalogMenu)
+
+hud.EditButton.MouseButton1Click:Connect(function()
+	setMenuExpanded(false)
+	toggleRoomMode:Fire()
 end)
 
-hud.CurrencyPanel.MouseButton1Click:Connect(function()
-	requestCurrencyRefresh(true)
+majorMenuOpened.Event:Connect(function(menuName)
+	if menuName ~= "MainHudMenu" then
+		setMenuExpanded(false)
+	end
 end)
 
-currencyRefreshRequested.Event:Connect(function(options)
-	local force = false
-
-	if typeof(options) == "table" then
-		force = options.Force == true or options.Priority == true
-	end
-
-	requestCurrencyRefresh(force)
-end)
-
-currencyLocalDelta.Event:Connect(applyCurrencyDelta)
-
-currencyResult.OnClientEvent:Connect(function(response)
-	if typeof(response) ~= "table" then
-		return
-	end
-
-	local success = response.Success == true
-	local kind = response.Kind
-
-	if kind == "Currencies" or kind == "Currency" or kind == "Coins" then
-		currencyRequestInFlight = false
-	end
-
-	if not success then
-		return
-	end
-
-	if kind == "Currencies" then
-		applyCurrenciesSnapshot(response.Currencies)
-	elseif kind == "Currency" then
-		applyCurrencyDelta({
-			CurrencyKey = response.CurrencyKey,
-			Balance = response.Balance,
-		})
-	elseif kind == "Coins" then
-		applyCurrencyDelta({
-			CurrencyKey = "Coins",
-			Balance = response.Coins,
-		})
-	end
+closeMajorMenus.Event:Connect(function()
+	setMenuExpanded(false)
 end)
 
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(updateVisibility)
 player:GetAttributeChangedSignal("OnboardingStep"):Connect(updateVisibility)
 player:GetAttributeChangedSignal("ControlMode"):Connect(updateVisibility)
 player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(updateVisibility)
+player:GetAttributeChangedSignal("RoomMode"):Connect(updateVisibility)
+player:GetAttributeChangedSignal("CanEditCurrentRoom"):Connect(updateVisibility)
 
 activeRooms.ChildAdded:Connect(function(child)
 	if child.Name == player:GetAttribute("CurrentRoomName") then
@@ -498,5 +471,4 @@ end)
 Players.PlayerAdded:Connect(updateRoomDetails)
 Players.PlayerRemoving:Connect(updateRoomDetails)
 
-renderCurrency()
 task.defer(updateVisibility)

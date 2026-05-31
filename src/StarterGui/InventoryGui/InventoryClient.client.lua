@@ -952,11 +952,7 @@ local function shouldShowInventoryButton()
 end
 
 local function updateOpenButton()
-	ui.openButton.Visible = (not ui.panel.Visible)
-		and not inventoryHiddenForPlacement
-		and player:GetAttribute("CatalogPlacementActive") ~= true
-		and not anyMajorMenuOpen
-		and shouldShowInventoryButton()
+	ui.openButton.Visible = false
 end
 
 local function setLocalMajorMenuState(isOpen, menuName)

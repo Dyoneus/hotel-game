@@ -86,6 +86,7 @@ local MARKETPLACE_VIEW = {
 local CATALOG_PAGE = {
 	FRONT = "FrontPage",
 	COINS = "Coins",
+	DOLLARS_INFO = "DollarsInfo",
 	BEST_SELLERS = "BestSellers",
 	VIP = "VIP",
 	FURNITURE_SHOP = "FurnitureShop",
@@ -108,11 +109,12 @@ local CATALOG_PAGE = {
 local MARKETPLACE_REQUEST_COOLDOWN_SECONDS = 0.7
 local REQUEST_TIMEOUT_SECONDS = 6
 local selectedCatalogPage = CATALOG_PAGE.FRONT
-local placeholderCatalogPage = CATALOG_PAGE.COINS
+local placeholderCatalogPage = CATALOG_PAGE.BEST_SELLERS
 
 local CATALOG_NAV_ITEMS = {
 	{ Page = CATALOG_PAGE.FRONT, Label = "Front Page", Icon = "FP" },
-	{ Page = CATALOG_PAGE.COINS, Label = "Coins", Icon = "$" },
+	{ Page = CATALOG_PAGE.COINS, Label = "Coin Shop", Icon = "$" },
+	{ Page = CATALOG_PAGE.DOLLARS_INFO, Label = "How to get Dollars", Icon = "D" },
 	{ Page = CATALOG_PAGE.BEST_SELLERS, Label = "Best Sellers", Icon = "*" },
 	{ Page = CATALOG_PAGE.VIP, Label = "VIP", Icon = "V" },
 	{ Group = "Furniture", Label = "Furniture Shop", Icon = "F" },
@@ -141,11 +143,6 @@ local CATALOG_MARKETPLACE_PAGES = {
 }
 
 local PLACEHOLDER_PAGE_CONTENT = {
-	[CATALOG_PAGE.COINS] = {
-		Title = "Coins",
-		Body = "Coins are used for premium furniture and Marketplace purchases.",
-		Button = "Coming Soon",
-	},
 	[CATALOG_PAGE.BEST_SELLERS] = {
 		Title = "Best Sellers",
 		Body = "Popular furniture picks will be featured here soon.",
@@ -247,6 +244,7 @@ local currencyLocalDelta = getOrCreateClientEvent("CurrencyLocalDelta")
 local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
 local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
 local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
+local openCatalog = getOrCreateClientEvent("OpenCatalog")
 
 local MENU_NAME = "Shop"
 local anyMajorMenuOpen = false
@@ -874,35 +872,93 @@ ui.CatalogCurrencyPanel.Parent = ui.Panel
 createCorner(ui.CatalogCurrencyPanel, 9)
 createStroke(ui.CatalogCurrencyPanel, Color3.fromRGB(101, 80, 55), 1, 0.18)
 
+ui.CatalogCurrencyLayout = Instance.new("UIListLayout")
+ui.CatalogCurrencyLayout.FillDirection = Enum.FillDirection.Horizontal
+ui.CatalogCurrencyLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.CatalogCurrencyLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+ui.CatalogCurrencyLayout.Padding = UDim.new(0, 8)
+ui.CatalogCurrencyLayout.Parent = ui.CatalogCurrencyPanel
+
+ui.CatalogCurrencyPadding = Instance.new("UIPadding")
+ui.CatalogCurrencyPadding.PaddingLeft = UDim.new(0, 10)
+ui.CatalogCurrencyPadding.PaddingRight = UDim.new(0, 10)
+ui.CatalogCurrencyPadding.Parent = ui.CatalogCurrencyPanel
+
+ui.CatalogCoinsBox = Instance.new("Frame")
+ui.CatalogCoinsBox.Name = "CatalogCoinsBox"
+ui.CatalogCoinsBox.LayoutOrder = 1
+ui.CatalogCoinsBox.Size = UDim2.fromOffset(222, 26)
+ui.CatalogCoinsBox.BackgroundColor3 = Color3.fromRGB(246, 239, 209)
+ui.CatalogCoinsBox.BorderSizePixel = 0
+ui.CatalogCoinsBox.Parent = ui.CatalogCurrencyPanel
+
+createCorner(ui.CatalogCoinsBox, 7)
+createStroke(ui.CatalogCoinsBox, Color3.fromRGB(154, 129, 88), 1, 0.38)
+
 ui.CatalogCoinsLabel = Instance.new("TextLabel")
 ui.CatalogCoinsLabel.Name = "CatalogCoinsLabel"
-ui.CatalogCoinsLabel.Position = UDim2.fromOffset(12, 8)
-ui.CatalogCoinsLabel.Size = UDim2.fromOffset(148, 26)
-ui.CatalogCoinsLabel.BackgroundColor3 = Color3.fromRGB(244, 207, 95)
+ui.CatalogCoinsLabel.Position = UDim2.fromOffset(10, 0)
+ui.CatalogCoinsLabel.Size = UDim2.fromOffset(82, 26)
+ui.CatalogCoinsLabel.BackgroundTransparency = 1
 ui.CatalogCoinsLabel.BorderSizePixel = 0
-ui.CatalogCoinsLabel.Text = "  Coins: 0"
+ui.CatalogCoinsLabel.Text = "Coins: 0"
 ui.CatalogCoinsLabel.TextColor3 = Color3.fromRGB(62, 48, 34)
 ui.CatalogCoinsLabel.TextSize = 13
 ui.CatalogCoinsLabel.TextXAlignment = Enum.TextXAlignment.Left
 ui.CatalogCoinsLabel.Font = Enum.Font.GothamBold
-ui.CatalogCoinsLabel.Parent = ui.CatalogCurrencyPanel
+ui.CatalogCoinsLabel.Parent = ui.CatalogCoinsBox
 
-createCorner(ui.CatalogCoinsLabel, 7)
+ui.CatalogGetCoinsButton = Instance.new("TextButton")
+ui.CatalogGetCoinsButton.Name = "CatalogGetCoinsButton"
+ui.CatalogGetCoinsButton.AnchorPoint = Vector2.new(1, 0)
+ui.CatalogGetCoinsButton.Position = UDim2.new(1, -10, 0, 0)
+ui.CatalogGetCoinsButton.Size = UDim2.fromOffset(102, 26)
+ui.CatalogGetCoinsButton.BackgroundTransparency = 1
+ui.CatalogGetCoinsButton.BorderSizePixel = 0
+ui.CatalogGetCoinsButton.Text = "Get Coins >>"
+ui.CatalogGetCoinsButton.TextColor3 = Color3.fromRGB(94, 73, 48)
+ui.CatalogGetCoinsButton.TextSize = 12
+ui.CatalogGetCoinsButton.TextXAlignment = Enum.TextXAlignment.Right
+ui.CatalogGetCoinsButton.Font = Enum.Font.GothamBold
+ui.CatalogGetCoinsButton.Parent = ui.CatalogCoinsBox
+
+ui.CatalogDollarsBox = Instance.new("Frame")
+ui.CatalogDollarsBox.Name = "CatalogDollarsBox"
+ui.CatalogDollarsBox.LayoutOrder = 2
+ui.CatalogDollarsBox.Size = UDim2.fromOffset(250, 26)
+ui.CatalogDollarsBox.BackgroundColor3 = Color3.fromRGB(246, 239, 209)
+ui.CatalogDollarsBox.BorderSizePixel = 0
+ui.CatalogDollarsBox.Parent = ui.CatalogCurrencyPanel
+
+createCorner(ui.CatalogDollarsBox, 7)
+createStroke(ui.CatalogDollarsBox, Color3.fromRGB(154, 129, 88), 1, 0.38)
 
 ui.CatalogDollarsLabel = Instance.new("TextLabel")
 ui.CatalogDollarsLabel.Name = "CatalogDollarsLabel"
-ui.CatalogDollarsLabel.Position = UDim2.fromOffset(172, 8)
-ui.CatalogDollarsLabel.Size = UDim2.fromOffset(166, 26)
-ui.CatalogDollarsLabel.BackgroundColor3 = Color3.fromRGB(112, 150, 101)
+ui.CatalogDollarsLabel.Position = UDim2.fromOffset(10, 0)
+ui.CatalogDollarsLabel.Size = UDim2.fromOffset(106, 26)
+ui.CatalogDollarsLabel.BackgroundTransparency = 1
 ui.CatalogDollarsLabel.BorderSizePixel = 0
-ui.CatalogDollarsLabel.Text = "  Dollars: 0"
-ui.CatalogDollarsLabel.TextColor3 = Color3.fromRGB(255, 247, 219)
+ui.CatalogDollarsLabel.Text = "Dollars: 0"
+ui.CatalogDollarsLabel.TextColor3 = Color3.fromRGB(62, 48, 34)
 ui.CatalogDollarsLabel.TextSize = 13
 ui.CatalogDollarsLabel.TextXAlignment = Enum.TextXAlignment.Left
 ui.CatalogDollarsLabel.Font = Enum.Font.GothamBold
-ui.CatalogDollarsLabel.Parent = ui.CatalogCurrencyPanel
+ui.CatalogDollarsLabel.Parent = ui.CatalogDollarsBox
 
-createCorner(ui.CatalogDollarsLabel, 7)
+ui.CatalogHowToGetButton = Instance.new("TextButton")
+ui.CatalogHowToGetButton.Name = "CatalogHowToGetButton"
+ui.CatalogHowToGetButton.AnchorPoint = Vector2.new(1, 0)
+ui.CatalogHowToGetButton.Position = UDim2.new(1, -10, 0, 0)
+ui.CatalogHowToGetButton.Size = UDim2.fromOffset(112, 26)
+ui.CatalogHowToGetButton.BackgroundTransparency = 1
+ui.CatalogHowToGetButton.BorderSizePixel = 0
+ui.CatalogHowToGetButton.Text = "How to get >>"
+ui.CatalogHowToGetButton.TextColor3 = Color3.fromRGB(94, 73, 48)
+ui.CatalogHowToGetButton.TextSize = 12
+ui.CatalogHowToGetButton.TextXAlignment = Enum.TextXAlignment.Right
+ui.CatalogHowToGetButton.Font = Enum.Font.GothamBold
+ui.CatalogHowToGetButton.Parent = ui.CatalogDollarsBox
 
 ui.PlacementHintLabel = Instance.new("TextLabel")
 ui.PlacementHintLabel.Name = "PlacementHintLabel"
@@ -926,7 +982,7 @@ createStroke(ui.PlacementHintLabel, Color3.fromRGB(255, 255, 255), 1, 0.35)
 ui.ItemList = Instance.new("ScrollingFrame")
 ui.ItemList.Name = "ItemList"
 ui.ItemList.Position = UDim2.fromOffset(22, 112)
-ui.ItemList.Size = UDim2.new(1, -226, 1, -172)
+ui.ItemList.Size = UDim2.new(1, -226, 1, -184)
 ui.ItemList.BackgroundColor3 = Color3.fromRGB(251, 247, 229)
 ui.ItemList.BorderSizePixel = 0
 ui.ItemList.ScrollBarThickness = 6
@@ -943,7 +999,7 @@ ui.ListLayout.Parent = ui.ItemList
 
 ui.ListPadding = Instance.new("UIPadding")
 ui.ListPadding.PaddingTop = UDim.new(0, 10)
-ui.ListPadding.PaddingBottom = UDim.new(0, 10)
+ui.ListPadding.PaddingBottom = UDim.new(0, 28)
 ui.ListPadding.PaddingLeft = UDim.new(0, 10)
 ui.ListPadding.PaddingRight = UDim.new(0, 10)
 ui.ListPadding.Parent = ui.ItemList
@@ -1056,9 +1112,7 @@ local function setPanelVisible(isVisible)
 	if updateOpenButton then
 		updateOpenButton()
 	else
-		ui.OpenButton.Visible = (not isVisible)
-			and not anyMajorMenuOpen
-			and shouldShowCatalogButton()
+		ui.OpenButton.Visible = false
 	end
 
 	if not isVisible and (wasVisible or openMajorMenuName == MENU_NAME) then
@@ -1083,8 +1137,8 @@ local function normalizeCatalogCurrencyBalance(value)
 end
 
 local function updateCatalogCurrencyDisplay()
-	ui.CatalogCoinsLabel.Text = "  Coins: " .. tostring(normalizeCatalogCurrencyBalance(catalogCurrency.Coins))
-	ui.CatalogDollarsLabel.Text = "  Dollars: " .. tostring(normalizeCatalogCurrencyBalance(catalogCurrency.Dollars))
+	ui.CatalogCoinsLabel.Text = "Coins: " .. tostring(normalizeCatalogCurrencyBalance(catalogCurrency.Coins))
+	ui.CatalogDollarsLabel.Text = "Dollars: " .. tostring(normalizeCatalogCurrencyBalance(catalogCurrency.Dollars))
 end
 
 local function applyCatalogCurrencySnapshot(currencies)
@@ -1206,10 +1260,10 @@ local function updateCatalogChrome()
 
 	if showingShop or (showingMarketplace and showingOffers) then
 		ui.ItemList.Position = UDim2.fromOffset(22, 154)
-		ui.ItemList.Size = UDim2.new(1, -226, 1, -214)
+		ui.ItemList.Size = UDim2.new(1, -226, 1, -226)
 	else
 		ui.ItemList.Position = UDim2.fromOffset(22, 112)
-		ui.ItemList.Size = UDim2.new(1, -226, 1, -172)
+		ui.ItemList.Size = UDim2.new(1, -226, 1, -184)
 	end
 
 	styleToggleButton(ui.ShopSectionButton, not showingMarketplace)
@@ -2313,12 +2367,194 @@ local function renderFrontPage()
 	end)
 
 	task.defer(function()
-		ui.ItemList.CanvasSize = UDim2.fromOffset(0, ui.ListLayout.AbsoluteContentSize.Y + 20)
+		ui.ItemList.CanvasSize = UDim2.fromOffset(0, ui.ListLayout.AbsoluteContentSize.Y + 48)
+	end)
+end
+
+local function createCoinPackageCard(parent, amount, priceText, layoutOrder)
+	local card = Instance.new("Frame")
+	card.Name = tostring(amount) .. "CoinPackage"
+	card.LayoutOrder = layoutOrder
+	card.Size = UDim2.fromOffset(138, 164)
+	card.BackgroundColor3 = Color3.fromRGB(247, 239, 209)
+	card.BorderSizePixel = 0
+	card.Parent = parent
+
+	createCorner(card, 10)
+	createStroke(card, Color3.fromRGB(176, 153, 110), 1, 0.24)
+
+	local coinGraphic = Instance.new("Frame")
+	coinGraphic.Name = "CoinGraphic"
+	coinGraphic.AnchorPoint = Vector2.new(0.5, 0)
+	coinGraphic.Position = UDim2.new(0.5, 0, 0, 12)
+	coinGraphic.Size = UDim2.fromOffset(54, 54)
+	coinGraphic.BackgroundColor3 = Color3.fromRGB(244, 207, 95)
+	coinGraphic.BorderSizePixel = 0
+	coinGraphic.Parent = card
+
+	createCorner(coinGraphic, 27)
+	createStroke(coinGraphic, Color3.fromRGB(124, 92, 38), 1, 0.18)
+
+	local amountLabel = Instance.new("TextLabel")
+	amountLabel.Name = "Amount"
+	amountLabel.Position = UDim2.fromOffset(10, 70)
+	amountLabel.Size = UDim2.new(1, -20, 0, 22)
+	amountLabel.BackgroundTransparency = 1
+	amountLabel.Text = tostring(amount) .. " Coins"
+	amountLabel.TextColor3 = Color3.fromRGB(62, 48, 34)
+	amountLabel.TextSize = 15
+	amountLabel.Font = Enum.Font.GothamBold
+	amountLabel.Parent = card
+
+	local priceLabel = Instance.new("TextLabel")
+	priceLabel.Name = "Price"
+	priceLabel.Position = UDim2.fromOffset(10, 92)
+	priceLabel.Size = UDim2.new(1, -20, 0, 18)
+	priceLabel.BackgroundTransparency = 1
+	priceLabel.Text = priceText
+	priceLabel.TextColor3 = Color3.fromRGB(88, 76, 60)
+	priceLabel.TextSize = 12
+	priceLabel.Font = Enum.Font.Gotham
+	priceLabel.Parent = card
+
+	local noteLabel = Instance.new("TextLabel")
+	noteLabel.Name = "Note"
+	noteLabel.Position = UDim2.fromOffset(10, 110)
+	noteLabel.Size = UDim2.new(1, -20, 0, 16)
+	noteLabel.BackgroundTransparency = 1
+	noteLabel.Text = "Robux purchase coming soon."
+	noteLabel.TextColor3 = Color3.fromRGB(116, 98, 72)
+	noteLabel.TextSize = 10
+	noteLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	noteLabel.Font = Enum.Font.Gotham
+	noteLabel.Parent = card
+
+	local buyButton = Instance.new("TextButton")
+	buyButton.Name = "BuyButton"
+	buyButton.AnchorPoint = Vector2.new(0.5, 1)
+	buyButton.Position = UDim2.new(0.5, 0, 1, -12)
+	buyButton.Size = UDim2.fromOffset(84, 26)
+	buyButton.BackgroundColor3 = Color3.fromRGB(94, 73, 48)
+	buyButton.BorderSizePixel = 0
+	buyButton.Text = "Buy"
+	buyButton.TextColor3 = Color3.fromRGB(255, 247, 219)
+	buyButton.TextSize = 12
+	buyButton.Font = Enum.Font.GothamBold
+	buyButton.Parent = card
+
+	createCorner(buyButton, 7)
+
+	buyButton.MouseButton1Click:Connect(function()
+		setStatus("Coin purchases are coming soon.")
+	end)
+end
+
+local function renderCoinShopPage()
+	updateCatalogChrome()
+	clearItemRows()
+	setStatus("Coin purchases are coming soon.")
+
+	createPageLabel(
+		"CoinShopTitle",
+		"Coin Shop",
+		UDim2.new(1, -4, 0, 32),
+		22,
+		Enum.Font.GothamBold,
+		Color3.fromRGB(62, 48, 34)
+	).LayoutOrder = 1
+	createPageLabel(
+		"CoinShopSubtitle",
+		"Buy Coins to use for premium furniture and Marketplace purchases.",
+		UDim2.new(1, -4, 0, 42),
+		14,
+		Enum.Font.Gotham,
+		Color3.fromRGB(88, 76, 60)
+	).LayoutOrder = 2
+
+	local packageRow = Instance.new("ScrollingFrame")
+	packageRow.Name = "CoinPackageRow"
+	packageRow.LayoutOrder = 3
+	packageRow.Size = UDim2.new(1, -4, 0, 184)
+	packageRow.BackgroundColor3 = Color3.fromRGB(246, 239, 209)
+	packageRow.BorderSizePixel = 0
+	packageRow.ScrollBarThickness = 5
+	packageRow.ScrollingDirection = Enum.ScrollingDirection.X
+	packageRow.CanvasSize = UDim2.fromOffset(612, 0)
+	packageRow.Parent = ui.ItemList
+
+	createCorner(packageRow, 10)
+	createStroke(packageRow, Color3.fromRGB(176, 153, 110), 1, 0.28)
+
+	local packageLayout = Instance.new("UIListLayout")
+	packageLayout.FillDirection = Enum.FillDirection.Horizontal
+	packageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	packageLayout.Padding = UDim.new(0, 10)
+	packageLayout.Parent = packageRow
+
+	local packagePadding = Instance.new("UIPadding")
+	packagePadding.PaddingTop = UDim.new(0, 9)
+	packagePadding.PaddingBottom = UDim.new(0, 9)
+	packagePadding.PaddingLeft = UDim.new(0, 10)
+	packagePadding.PaddingRight = UDim.new(0, 10)
+	packagePadding.Parent = packageRow
+
+	createCoinPackageCard(packageRow, 50, "49 Robux", 1)
+	createCoinPackageCard(packageRow, 100, "89 Robux", 2)
+	createCoinPackageCard(packageRow, 250, "199 Robux", 3)
+	createCoinPackageCard(packageRow, 500, "349 Robux", 4)
+
+	createFrontPageOfferCard(
+		"About Coins",
+		"Coins are used for premium furniture and Marketplace purchases. Real purchases will be enabled in a later patch.",
+		4,
+		Color3.fromRGB(244, 207, 95)
+	)
+
+	task.defer(function()
+		packageRow.CanvasSize = UDim2.fromOffset(packageLayout.AbsoluteContentSize.X + 28, 0)
+		ui.ItemList.CanvasSize = UDim2.fromOffset(0, ui.ListLayout.AbsoluteContentSize.Y + 48)
+	end)
+end
+
+local function renderDollarsInfoPage()
+	updateCatalogChrome()
+	clearItemRows()
+	setStatus("Dollars are earned through hotel activities.")
+
+	createPageLabel(
+		"DollarsInfoTitle",
+		"How to get Dollars",
+		UDim2.new(1, -4, 0, 32),
+		22,
+		Enum.Font.GothamBold,
+		Color3.fromRGB(62, 48, 34)
+	).LayoutOrder = 1
+	createPageLabel(
+		"DollarsInfoSubtitle",
+		"Dollars are the regular furniture currency.",
+		UDim2.new(1, -4, 0, 34),
+		14,
+		Enum.Font.Gotham,
+		Color3.fromRGB(88, 76, 60)
+	).LayoutOrder = 2
+
+	createFrontPageOfferCard("Work Mode", "Earn Dollars through Work Mode.", 3, Color3.fromRGB(112, 150, 101))
+	createFrontPageOfferCard("Daily Rewards", "Claim Daily rewards when they are available.", 4, Color3.fromRGB(84, 132, 98))
+	createFrontPageOfferCard("Furniture", "Use Dollars for regular furniture. Dollar furniture is usually untradable.", 5, Color3.fromRGB(132, 82, 70))
+
+	local infoButton = createPageButton("DollarsInfoActionButton", "Go to Main Menu to Work", UDim2.fromOffset(206, 34))
+	infoButton.LayoutOrder = 6
+	infoButton.MouseButton1Click:Connect(function()
+		setStatus("Go to the Main Menu to open Work.")
+	end)
+
+	task.defer(function()
+		ui.ItemList.CanvasSize = UDim2.fromOffset(0, ui.ListLayout.AbsoluteContentSize.Y + 48)
 	end)
 end
 
 local function renderPlaceholderPage(page)
-	local placeholder = PLACEHOLDER_PAGE_CONTENT[page] or PLACEHOLDER_PAGE_CONTENT[CATALOG_PAGE.COINS]
+	local placeholder = PLACEHOLDER_PAGE_CONTENT[page] or PLACEHOLDER_PAGE_CONTENT[CATALOG_PAGE.BEST_SELLERS]
 
 	updateCatalogChrome()
 	clearItemRows()
@@ -3393,6 +3629,20 @@ selectCatalogPage = function(page)
 		return
 	end
 
+	if selectedCatalogPage == CATALOG_PAGE.COINS then
+		catalogViewMode = CATALOG_VIEW.PLACEHOLDER
+		placeholderCatalogPage = selectedCatalogPage
+		renderCoinShopPage()
+		return
+	end
+
+	if selectedCatalogPage == CATALOG_PAGE.DOLLARS_INFO then
+		catalogViewMode = CATALOG_VIEW.PLACEHOLDER
+		placeholderCatalogPage = selectedCatalogPage
+		renderDollarsInfoPage()
+		return
+	end
+
 	if selectedCatalogPage == CATALOG_PAGE.FURNITURE_SHOP then
 		selectedCatalogPage = CATALOG_PAGE.FURNITURE_ALL
 	end
@@ -3453,16 +3703,7 @@ selectCatalogPage = function(page)
 end
 
 updateOpenButton = function()
-	if placingItemData then
-		ui.OpenButton.Visible = false
-		return
-	end
-
-	if ui.Panel.Visible or anyMajorMenuOpen then
-		ui.OpenButton.Visible = false
-	else
-		ui.OpenButton.Visible = shouldShowCatalogButton()
-	end
+	ui.OpenButton.Visible = false
 end
 
 ui.ShopSectionButton.MouseButton1Click:Connect(function()
@@ -3524,12 +3765,31 @@ ui.MarketplacePurchaseConfirmButton.MouseButton1Click:Connect(function()
 	end
 end)
 
-ui.OpenButton.MouseButton1Click:Connect(function()
+ui.CatalogGetCoinsButton.MouseButton1Click:Connect(function()
+	if selectCatalogPage then
+		selectCatalogPage(CATALOG_PAGE.COINS)
+	end
+end)
+
+ui.CatalogHowToGetButton.MouseButton1Click:Connect(function()
+	if selectCatalogPage then
+		selectCatalogPage(CATALOG_PAGE.DOLLARS_INFO)
+	end
+end)
+
+local function openCatalogPanel()
+	if not shouldShowCatalogButton() then
+		return
+	end
+
 	setPanelVisible(true)
 	selectCatalogPage(CATALOG_PAGE.FRONT)
 	requestCatalogCurrencySnapshot(true)
 	furnitureCatalogRequest:FireServer("GetCatalog", {})
-end)
+end
+
+ui.OpenButton.MouseButton1Click:Connect(openCatalogPanel)
+openCatalog.Event:Connect(openCatalogPanel)
 
 ui.CloseButton.MouseButton1Click:Connect(function()
 	setPanelVisible(false)

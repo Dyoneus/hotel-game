@@ -3,6 +3,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local setRoomModeRequest = remoteEvents:WaitForChild("SetRoomModeRequest")
@@ -11,6 +12,38 @@ local roomModeResult = remoteEvents:WaitForChild("RoomModeResult")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
 
 local requestInFlight = false
+
+local function getOrCreateClientEvent(name)
+	local clientEvents = playerGui:FindFirstChild("ClientEvents")
+
+	if clientEvents then
+		if not clientEvents:IsA("Folder") then
+			error("PlayerGui.ClientEvents exists but is not a Folder.")
+		end
+	else
+		clientEvents = Instance.new("Folder")
+		clientEvents.Name = "ClientEvents"
+		clientEvents.Parent = playerGui
+	end
+
+	local existing = clientEvents:FindFirstChild(name)
+
+	if existing then
+		if not existing:IsA("BindableEvent") then
+			error(name .. " exists but is not a BindableEvent.")
+		end
+
+		return existing
+	end
+
+	local bindableEvent = Instance.new("BindableEvent")
+	bindableEvent.Name = name
+	bindableEvent.Parent = clientEvents
+
+	return bindableEvent
+end
+
+local toggleRoomMode = getOrCreateClientEvent("ToggleRoomMode")
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -75,7 +108,7 @@ local function updateButton()
 		and onboardingStep == "Complete"
 		and controlMode == "Hotel"
 
-	modeButton.Visible = shouldShow
+	modeButton.Visible = false
 
 	if not shouldShow then
 		return
@@ -101,12 +134,16 @@ local function updateButton()
 	end
 end
 
-modeButton.MouseButton1Click:Connect(function()
+local function requestRoomModeToggle()
 	if requestInFlight then
 		return
 	end
 
-	if not modeButton.Visible then
+	if not isCurrentRoomOwner()
+		or player:GetAttribute("CurrentRoomName") == nil
+		or player:GetAttribute("OnboardingStep") ~= "Complete"
+		or (player:GetAttribute("ControlMode") or "Hotel") ~= "Hotel" then
+
 		return
 	end
 
@@ -130,7 +167,10 @@ modeButton.MouseButton1Click:Connect(function()
 			updateButton()
 		end
 	end)
-end)
+end
+
+modeButton.MouseButton1Click:Connect(requestRoomModeToggle)
+toggleRoomMode.Event:Connect(requestRoomModeToggle)
 
 roomModeResult.OnClientEvent:Connect(function(success, result)
 	requestInFlight = false
