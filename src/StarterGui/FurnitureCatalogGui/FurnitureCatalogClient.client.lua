@@ -3358,7 +3358,7 @@ local function createMarketplaceOfferGroupRow(offerGroup, layoutOrder)
 	local nameLabel = Instance.new("TextLabel")
 	nameLabel.Name = "OfferName"
 	nameLabel.Position = UDim2.fromOffset(12, 8)
-	nameLabel.Size = UDim2.new(1, -200, 0, 22)
+	nameLabel.Size = UDim2.new(1, -128, 0, 22)
 	nameLabel.BackgroundTransparency = 1
 	nameLabel.Text = displayName
 	nameLabel.TextColor3 = Color3.fromRGB(40, 40, 40)
@@ -3371,7 +3371,7 @@ local function createMarketplaceOfferGroupRow(offerGroup, layoutOrder)
 	local descriptionLabel = Instance.new("TextLabel")
 	descriptionLabel.Name = "OfferDescription"
 	descriptionLabel.Position = UDim2.fromOffset(12, 32)
-	descriptionLabel.Size = UDim2.new(1, -200, 0, 18)
+	descriptionLabel.Size = UDim2.new(1, -128, 0, 18)
 	descriptionLabel.BackgroundTransparency = 1
 	descriptionLabel.Text = description ~= "" and description or "Marketplace furniture offer."
 	descriptionLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
@@ -3392,7 +3392,7 @@ local function createMarketplaceOfferGroupRow(offerGroup, layoutOrder)
 	local metaLabel = Instance.new("TextLabel")
 	metaLabel.Name = "OfferMeta"
 	metaLabel.Position = UDim2.fromOffset(12, 56)
-	metaLabel.Size = UDim2.new(1, -200, 0, 18)
+	metaLabel.Size = UDim2.new(1, -128, 0, 18)
 	metaLabel.BackgroundTransparency = 1
 	metaLabel.Text = priceText .. "  |  " .. averageText .. "  |  " .. offersText
 	metaLabel.TextColor3 = Color3.fromRGB(70, 70, 70)
@@ -3405,7 +3405,7 @@ local function createMarketplaceOfferGroupRow(offerGroup, layoutOrder)
 	local ownershipLabel = Instance.new("TextLabel")
 	ownershipLabel.Name = "Ownership"
 	ownershipLabel.Position = UDim2.fromOffset(12, 78)
-	ownershipLabel.Size = UDim2.new(1, -200, 0, 18)
+	ownershipLabel.Size = UDim2.new(1, -128, 0, 18)
 	ownershipLabel.BackgroundTransparency = 1
 	ownershipLabel.Text = offerGroup.HasOwnListing == true and "Includes your listing." or tostring(offerGroup.Category or "")
 	ownershipLabel.TextColor3 = offerGroup.HasOwnListing == true
@@ -3417,30 +3417,11 @@ local function createMarketplaceOfferGroupRow(offerGroup, layoutOrder)
 	ownershipLabel.Font = Enum.Font.Gotham
 	ownershipLabel.Parent = row
 
-	local infoButton = Instance.new("TextButton")
-	infoButton.Name = "MarketplaceItemInfoButton"
-	infoButton.AnchorPoint = Vector2.new(1, 0)
-	infoButton.Position = UDim2.new(1, -112, 0, 22)
-	infoButton.Size = UDim2.fromOffset(94, 28)
-	infoButton.BackgroundColor3 = Color3.fromRGB(225, 228, 224)
-	infoButton.BorderSizePixel = 0
-	infoButton.Text = "Item Info"
-	infoButton.TextColor3 = Color3.fromRGB(55, 58, 55)
-	infoButton.TextSize = 11
-	infoButton.Font = Enum.Font.GothamBold
-	infoButton.Parent = row
-
-	createCorner(infoButton, 7)
-
-	infoButton.MouseButton1Click:Connect(function()
-		setStatus("Item info is coming soon.")
-	end)
-
 	local buyButton = Instance.new("TextButton")
 	buyButton.Name = isOwnOnly and "OwnMarketplaceOfferButton" or "BuyMarketplaceOfferButton"
-	buyButton.AnchorPoint = Vector2.new(1, 0)
-	buyButton.Position = UDim2.new(1, -12, 0, 22)
-	buyButton.Size = UDim2.fromOffset(92, 28)
+	buyButton.AnchorPoint = Vector2.new(1, 0.5)
+	buyButton.Position = UDim2.new(1, -14, 0.5, 0)
+	buyButton.Size = UDim2.fromOffset(104, 34)
 	buyButton.BorderSizePixel = 0
 	buyButton.TextSize = 12
 	buyButton.Font = Enum.Font.GothamBold
