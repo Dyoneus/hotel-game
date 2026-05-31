@@ -946,6 +946,87 @@ ui.listingConfirmButton.Parent = ui.marketplaceModalWindow
 
 createCorner(ui.listingConfirmButton, 8)
 
+ui.listingSuccessOverlay = Instance.new("Frame")
+ui.listingSuccessOverlay.Name = "MarketplaceListingSuccessOverlay"
+ui.listingSuccessOverlay.Position = UDim2.fromScale(0, 0)
+ui.listingSuccessOverlay.Size = UDim2.fromScale(1, 1)
+ui.listingSuccessOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ui.listingSuccessOverlay.BackgroundTransparency = 0.55
+ui.listingSuccessOverlay.BorderSizePixel = 0
+ui.listingSuccessOverlay.Visible = false
+ui.listingSuccessOverlay.Active = true
+ui.listingSuccessOverlay.ZIndex = 120
+ui.listingSuccessOverlay.Parent = ui.panel
+
+ui.listingSuccessShadow = Instance.new("Frame")
+ui.listingSuccessShadow.Name = "MarketplaceListingSuccessShadow"
+ui.listingSuccessShadow.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.listingSuccessShadow.Position = UDim2.new(0.5, 4, 0.5, 5)
+ui.listingSuccessShadow.Size = UDim2.fromOffset(392, 172)
+ui.listingSuccessShadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ui.listingSuccessShadow.BackgroundTransparency = 0.78
+ui.listingSuccessShadow.BorderSizePixel = 0
+ui.listingSuccessShadow.ZIndex = 121
+ui.listingSuccessShadow.Parent = ui.listingSuccessOverlay
+
+createCorner(ui.listingSuccessShadow, 14)
+
+ui.listingSuccessCard = Instance.new("Frame")
+ui.listingSuccessCard.Name = "MarketplaceListingSuccessCard"
+ui.listingSuccessCard.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.listingSuccessCard.Position = UDim2.fromScale(0.5, 0.5)
+ui.listingSuccessCard.Size = UDim2.fromOffset(392, 172)
+ui.listingSuccessCard.BackgroundColor3 = Color3.fromRGB(255, 252, 242)
+ui.listingSuccessCard.BorderSizePixel = 0
+ui.listingSuccessCard.ZIndex = 122
+ui.listingSuccessCard.Parent = ui.listingSuccessOverlay
+
+createCorner(ui.listingSuccessCard, 14)
+createStroke(ui.listingSuccessCard, Color3.fromRGB(204, 190, 162), 1, 0)
+
+ui.listingSuccessTitleLabel = Instance.new("TextLabel")
+ui.listingSuccessTitleLabel.Name = "MarketplaceListingSuccessTitle"
+ui.listingSuccessTitleLabel.Position = UDim2.fromOffset(22, 18)
+ui.listingSuccessTitleLabel.Size = UDim2.new(1, -44, 0, 24)
+ui.listingSuccessTitleLabel.BackgroundTransparency = 1
+ui.listingSuccessTitleLabel.Text = "Marketplace"
+ui.listingSuccessTitleLabel.TextColor3 = Color3.fromRGB(76, 58, 35)
+ui.listingSuccessTitleLabel.TextSize = 18
+ui.listingSuccessTitleLabel.Font = Enum.Font.GothamBold
+ui.listingSuccessTitleLabel.ZIndex = 123
+ui.listingSuccessTitleLabel.Parent = ui.listingSuccessCard
+
+ui.listingSuccessMessageLabel = Instance.new("TextLabel")
+ui.listingSuccessMessageLabel.Name = "MarketplaceListingSuccessMessage"
+ui.listingSuccessMessageLabel.Position = UDim2.fromOffset(28, 52)
+ui.listingSuccessMessageLabel.Size = UDim2.new(1, -56, 0, 58)
+ui.listingSuccessMessageLabel.BackgroundTransparency = 1
+ui.listingSuccessMessageLabel.Text = ""
+ui.listingSuccessMessageLabel.TextColor3 = Color3.fromRGB(52, 45, 36)
+ui.listingSuccessMessageLabel.TextSize = 15
+ui.listingSuccessMessageLabel.TextWrapped = true
+ui.listingSuccessMessageLabel.TextXAlignment = Enum.TextXAlignment.Center
+ui.listingSuccessMessageLabel.TextYAlignment = Enum.TextYAlignment.Center
+ui.listingSuccessMessageLabel.Font = Enum.Font.GothamMedium
+ui.listingSuccessMessageLabel.ZIndex = 123
+ui.listingSuccessMessageLabel.Parent = ui.listingSuccessCard
+
+ui.listingSuccessOkButton = Instance.new("TextButton")
+ui.listingSuccessOkButton.Name = "MarketplaceListingSuccessOkButton"
+ui.listingSuccessOkButton.AnchorPoint = Vector2.new(0.5, 0)
+ui.listingSuccessOkButton.Position = UDim2.new(0.5, 0, 1, -48)
+ui.listingSuccessOkButton.Size = UDim2.fromOffset(132, 34)
+ui.listingSuccessOkButton.BackgroundColor3 = Color3.fromRGB(112, 91, 62)
+ui.listingSuccessOkButton.BorderSizePixel = 0
+ui.listingSuccessOkButton.Text = "OK"
+ui.listingSuccessOkButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.listingSuccessOkButton.TextSize = 14
+ui.listingSuccessOkButton.Font = Enum.Font.GothamBold
+ui.listingSuccessOkButton.ZIndex = 123
+ui.listingSuccessOkButton.Parent = ui.listingSuccessCard
+
+createCorner(ui.listingSuccessOkButton, 8)
+
 local function shouldShowInventoryButton()
 	return player:GetAttribute("OnboardingStep") == "Complete"
 		and (player:GetAttribute("ControlMode") or "Hotel") == "Hotel"
@@ -1006,6 +1087,15 @@ local function setPublicMarketplaceStatus(text, success)
 	else
 		ui.publicMarketplaceStatusLabel.TextColor3 = Color3.fromRGB(85, 85, 85)
 	end
+end
+
+local function hideMarketplaceListingSuccessPrompt()
+	ui.listingSuccessOverlay.Visible = false
+end
+
+local function showMarketplaceListingSuccessPrompt(message)
+	ui.listingSuccessMessageLabel.Text = tostring(message or "Item has been successfully listed in Marketplace.")
+	ui.listingSuccessOverlay.Visible = true
 end
 
 local function getCatalogItem(templateId)
@@ -1502,6 +1592,42 @@ local function getInventoryDisplayName(templateId)
 	end
 
 	return tostring(templateId)
+end
+
+local function buildMarketplaceListingSuccessMessage(templateId, quantity, unitPriceCoins)
+	local listedQuantity = tonumber(quantity)
+	local listedUnitPrice = tonumber(unitPriceCoins)
+
+	if typeof(templateId) ~= "string"
+		or templateId == ""
+		or not listedQuantity
+		or listedQuantity <= 0
+		or not listedUnitPrice
+		or listedUnitPrice <= 0 then
+
+		return "Item has been successfully listed in Marketplace."
+	end
+
+	listedQuantity = math.floor(listedQuantity)
+	listedUnitPrice = math.floor(listedUnitPrice)
+
+	local item = getCatalogItem(templateId)
+
+	if not item or typeof(item.DisplayName) ~= "string" or item.DisplayName == "" then
+		return "Item has been successfully listed in Marketplace."
+	end
+
+	local itemText = item.DisplayName
+	local totalPrice = listedQuantity * listedUnitPrice
+
+	if listedQuantity > 1 then
+		itemText ..= " x" .. tostring(listedQuantity)
+	end
+
+	return itemText
+		.. " has been successfully listed for "
+		.. tostring(totalPrice)
+		.. " Coins in Marketplace."
 end
 
 local function buildInventoryEntries()
@@ -2035,6 +2161,8 @@ local function openMarketplaceListingModal()
 		setStatus("Select an item first.", false)
 		return
 	end
+
+	hideMarketplaceListingSuccessPrompt()
 
 	local counts = getInventoryCounts(entry.TemplateId)
 	local maxQuantity = math.min(counts.Tradable, MARKETPLACE_MAX_LISTING_QUANTITY)
@@ -2900,6 +3028,8 @@ setPanelVisible = function(isVisible, options)
 			requestInventoryRefresh("open")
 		end
 	elseif wasVisible or openMajorMenuName == MENU_NAME then
+		hideMarketplaceListingSuccessPrompt()
+
 		if not marketplaceCreateInFlight then
 			ui.marketplaceModalOverlay.Visible = false
 			marketplaceListingTemplateId = nil
@@ -3034,6 +3164,8 @@ ui.unitPriceTextBox:GetPropertyChangedSignal("Text"):Connect(updateListingModal)
 ui.listingCancelButton.MouseButton1Click:Connect(closeMarketplaceListingModal)
 
 ui.listingConfirmButton.MouseButton1Click:Connect(confirmMarketplaceListing)
+
+ui.listingSuccessOkButton.MouseButton1Click:Connect(hideMarketplaceListingSuccessPrompt)
 
 inventoryRefreshRequested.Event:Connect(function(options)
 	local reason = "event"
@@ -3195,13 +3327,8 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 				upsertMarketplaceListing(listing)
 			end
 
-			local listedMessage = "Listed "
-				.. getInventoryDisplayName(templateId)
-				.. " x" .. tostring(quantity or 1)
-				.. " for " .. tostring(unitPriceCoins or 0)
-				.. " Coins."
-
-			setStatus(listedMessage, true)
+			setStatus("", nil)
+			showMarketplaceListingSuccessPrompt(buildMarketplaceListingSuccessMessage(templateId, quantity, unitPriceCoins))
 			inventoryRefreshRequested:Fire({
 				Reason = "CreateListing",
 				Force = true,

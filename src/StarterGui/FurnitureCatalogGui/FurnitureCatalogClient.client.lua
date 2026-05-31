@@ -83,6 +83,7 @@ local CATALOG_VIEW = {
 }
 local MARKETPLACE_VIEW = {
 	OFFERS = "Offers",
+	MY_LISTINGS = "MyListings",
 	MY_SALES = "MySales",
 	INSTRUCTIONS = "Instructions",
 }
@@ -106,6 +107,7 @@ local CATALOG_PAGE = {
 	PETS = "Pets",
 	SPECIAL_OFFERS = "SpecialOffers",
 	MARKETPLACE_OFFERS = "MarketplaceOffers",
+	MARKETPLACE_MY_LISTINGS = "MarketplaceMyListings",
 	MARKETPLACE_MY_SALES = "MarketplaceMySales",
 	MARKETPLACE_INSTRUCTIONS = "MarketplaceInstructions",
 }
@@ -141,6 +143,7 @@ local CATALOG_SHOP_CATEGORIES = {
 
 local CATALOG_MARKETPLACE_PAGES = {
 	{ Page = CATALOG_PAGE.MARKETPLACE_OFFERS, Label = "Offers", Icon = "M" },
+	{ Page = CATALOG_PAGE.MARKETPLACE_MY_LISTINGS, Label = "My Listings", Icon = "M" },
 	{ Page = CATALOG_PAGE.MARKETPLACE_MY_SALES, Label = "My Sales", Icon = "M" },
 	{ Page = CATALOG_PAGE.MARKETPLACE_INSTRUCTIONS, Label = "Instructions", Icon = "?" },
 }
@@ -1287,11 +1290,12 @@ local function updateCatalogChrome()
 	local showingFrontPage = catalogViewMode == CATALOG_VIEW.FRONT_PAGE
 	local showingPlaceholder = catalogViewMode == CATALOG_VIEW.PLACEHOLDER
 	local showingOffers = marketplaceViewMode == MARKETPLACE_VIEW.OFFERS
+	local showingMyListings = marketplaceViewMode == MARKETPLACE_VIEW.MY_LISTINGS
 	local showingMySales = marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES
 	local showingInstructions = marketplaceViewMode == MARKETPLACE_VIEW.INSTRUCTIONS
 	local marketplaceBusy = showingOffers
 		and marketplacePublicListingsInFlight
-		or marketplaceMySalesInFlight
+		or ((showingMyListings or showingMySales) and marketplaceMySalesInFlight)
 
 	ui.TitleLabel.Text = "Catalog"
 	ui.StatusLabel.Visible = not (showingMarketplace and showingMySales)
@@ -1313,7 +1317,7 @@ local function updateCatalogChrome()
 	styleToggleButton(ui.ShopSectionButton, not showingMarketplace)
 	styleToggleButton(ui.MarketplaceSectionButton, showingMarketplace)
 	styleToggleButton(ui.MarketplaceOffersButton, showingMarketplace and showingOffers)
-	styleToggleButton(ui.MarketplaceMySalesButton, showingMarketplace and marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES)
+	styleToggleButton(ui.MarketplaceMySalesButton, showingMarketplace and showingMySales)
 
 	ui.MarketplaceRefreshButton.Visible = showingMarketplace and not showingInstructions
 	ui.MarketplaceRefreshButton.Active = showingMarketplace and not showingInstructions and not marketplaceBusy
@@ -2762,19 +2766,13 @@ local function shouldShowMarketplaceSaleHistory(listing)
 
 	local status = tostring(listing and listing.Status or "")
 
-	if status == "Active" then
-		return true
+	if status ~= "Sold" then
+		return false
 	end
 
 	local historyTime = nil
 
-	if status == "Sold" then
-		historyTime = listing.ClaimedAt or listing.SoldAt or listing.UpdatedAt
-	elseif status == "Cancelled" then
-		historyTime = listing.UpdatedAt or listing.CreatedAt
-	else
-		historyTime = listing.UpdatedAt or listing.CreatedAt
-	end
+	historyTime = listing.ClaimedAt or listing.SoldAt or listing.UpdatedAt
 
 	if typeof(historyTime) ~= "number" or historyTime <= 0 then
 		return true
@@ -3668,12 +3666,37 @@ renderMarketplace = function()
 				createMarketplaceOfferGroupRow(offerGroup, index)
 			end
 		end
-	else
+	elseif marketplaceViewMode == MARKETPLACE_VIEW.MY_LISTINGS then
+		sortMySaleListings()
+		local activeListings = {}
+
+		for _, listing in ipairs(latestMySalesListings) do
+			if typeof(listing) == "table" and tostring(listing.Status or "") == "Active" then
+				table.insert(activeListings, listing)
+			end
+		end
+
+		if marketplaceMySalesInFlight then
+			setStatus("Loading active marketplace listings...")
+		elseif #activeListings == 0 then
+			setStatus("Manage your active marketplace listings.")
+			createEmptyCatalogState("No active listings yet.")
+		else
+			setStatus("Manage your active marketplace listings.")
+		end
+
+		for index, listing in ipairs(activeListings) do
+			createMarketplaceSaleRow(listing, index)
+		end
+	elseif marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES then
 		sortMySaleListings()
 		local visibleSales = {}
 
 		for _, listing in ipairs(latestMySalesListings) do
-			if typeof(listing) == "table" and shouldShowMarketplaceSaleHistory(listing) then
+			if typeof(listing) == "table"
+				and tostring(listing.Status or "") == "Sold"
+				and shouldShowMarketplaceSaleHistory(listing) then
+
 				table.insert(visibleSales, listing)
 			end
 		end
@@ -3865,7 +3888,9 @@ requestMarketplaceMySales = function(options)
 	task.delay(REQUEST_TIMEOUT_SECONDS, function()
 		if marketplaceMySalesInFlight and mySalesLastRequestAt == requestStartedAt then
 			marketplaceMySalesInFlight = false
-			setStatus("Marketplace sales request timed out.")
+			setStatus(marketplaceViewMode == MARKETPLACE_VIEW.MY_LISTINGS
+				and "Marketplace listings request timed out."
+				or "Marketplace sales request timed out.")
 			renderMarketplace()
 		end
 	end)
@@ -4076,6 +4101,18 @@ selectCatalogPage = function(page)
 		return
 	end
 
+	if selectedCatalogPage == CATALOG_PAGE.MARKETPLACE_MY_LISTINGS then
+		catalogNavExpanded.Marketplace = true
+		catalogViewMode = CATALOG_VIEW.MARKETPLACE
+		marketplaceViewMode = MARKETPLACE_VIEW.MY_LISTINGS
+		rebuildCatalogNavigation()
+		renderMarketplace()
+		requestMarketplaceMySales({
+			Queue = true,
+		})
+		return
+	end
+
 	if selectedCatalogPage == CATALOG_PAGE.MARKETPLACE_MY_SALES then
 		catalogNavExpanded.Marketplace = true
 		catalogViewMode = CATALOG_VIEW.MARKETPLACE
@@ -4139,7 +4176,9 @@ ui.MarketplaceRefreshButton.MouseButton1Click:Connect(function()
 		requestMarketplaceOffers({
 			Queue = true,
 		})
-	elseif marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES then
+	elseif marketplaceViewMode == MARKETPLACE_VIEW.MY_LISTINGS
+		or marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES then
+
 		requestMarketplaceMySales({
 			Queue = true,
 		})
@@ -4385,12 +4424,17 @@ marketplaceResult.OnClientEvent:Connect(function(response)
 			mySalesQueuedRefresh = false
 
 			if message == "" then
-				message = "Could not load marketplace sales."
+				message = marketplaceViewMode == MARKETPLACE_VIEW.MY_LISTINGS
+					and "Could not load marketplace listings."
+					or "Could not load marketplace sales."
 			end
 		end
 
 		if catalogViewMode == CATALOG_VIEW.MARKETPLACE
-			and marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES then
+			and (
+				marketplaceViewMode == MARKETPLACE_VIEW.MY_LISTINGS
+				or marketplaceViewMode == MARKETPLACE_VIEW.MY_SALES
+			) then
 
 			renderMarketplace()
 
