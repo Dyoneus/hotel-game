@@ -64,6 +64,7 @@ local VALID_LAYOUTS = {
 	Layout_02 = true,
 	Layout_03 = true,
 }
+local PRIMARY_ROOM_ID = "Primary"
 
 local ROOM_DISPLAY_NAME_MAX_LENGTH = 30
 local ROOM_DESCRIPTION_MAX_LENGTH = 100
@@ -614,11 +615,32 @@ local function cloneRoomForPlayer(player, layoutId)
 
 	roomClone:SetAttribute("OwnerUserId", player.UserId)
 	roomClone:SetAttribute("LayoutId", layoutId)
+	roomClone:SetAttribute("RoomType", "PlayerRoom")
+	roomClone:SetAttribute("RoomId", PRIMARY_ROOM_ID)
 	warnRoomGridValidation(roomClone, "PlayerRoom")
 
 	playerRooms[player] = roomClone
 	
 	return roomClone
+end
+
+local function setCurrentRoomContextAttributes(player, roomType, ownerUserId, roomId)
+	player:SetAttribute("CurrentRoomType", roomType)
+	player:SetAttribute("CurrentRoomOwnerUserId", ownerUserId)
+	player:SetAttribute("CurrentRoomId", roomId)
+end
+
+local function setCurrentPlayerRoomContext(player, ownerUserId, roomId)
+	setCurrentRoomContextAttributes(
+		player,
+		"PlayerRoom",
+		ownerUserId,
+		roomId or PRIMARY_ROOM_ID
+	)
+end
+
+local function setCurrentPublicRoomContext(player, publicRoomId)
+	setCurrentRoomContextAttributes(player, "PublicSpace", 0, publicRoomId)
 end
 
 local function movePlayerToRoom(player, roomModel)
@@ -838,6 +860,9 @@ local function enterMainMenuForPlayer(player, introVariant, pendingOnboardingAft
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
 	player:SetAttribute("CurrentRoomName", nil)
+	player:SetAttribute("CurrentRoomId", nil)
+	player:SetAttribute("CurrentRoomOwnerUserId", nil)
+	player:SetAttribute("CurrentRoomType", nil)
 	player:SetAttribute("MainMenuIntroVariant", introVariant or MAIN_MENU_INTRO_RETURNING)
 	player:SetAttribute("PendingOnboardingAfterIntro", pendingOnboardingAfterIntro == true)
 	player:SetAttribute("OnboardingUiAllowed", false)
@@ -1461,13 +1486,101 @@ local function sendFurniturePermissionResult(player, requestAction, success, mes
 	roomPermissionResult:FireClient(player, response)
 end
 
-local function enterSavedRoomForPlayer(player, profile)
-	local roomState = profile.RoomState
-	local layoutId = profile.CurrentLayoutId
+local function tableHasEntries(value)
+	if typeof(value) ~= "table" then
+		return false
+	end
 
-	if typeof(roomState) == "table" and typeof(roomState.LayoutId) == "string" then
+	for _ in pairs(value) do
+		return true
+	end
+
+	return false
+end
+
+local function roomStateHasFurnitureList(roomState)
+	return typeof(roomState) == "table" and typeof(roomState.Furniture) == "table"
+end
+
+local function shouldUseLegacyRoomState(primaryRoomState, legacyRoomState)
+	if typeof(primaryRoomState) ~= "table" then
+		return typeof(legacyRoomState) == "table"
+	end
+
+	if roomStateHasFurnitureList(primaryRoomState) then
+		return false
+	end
+
+	return roomStateHasFurnitureList(legacyRoomState)
+		or (not tableHasEntries(primaryRoomState) and tableHasEntries(legacyRoomState))
+end
+
+local function getPrimarySavedRoom(player, profile)
+	local primaryRoomId = RoomPersistence.GetPrimaryRoomId(player)
+
+	if typeof(primaryRoomId) ~= "string" or primaryRoomId == "" then
+		primaryRoomId = PRIMARY_ROOM_ID
+	end
+
+	local roomRecord = RoomPersistence.GetRoomRecord(player, primaryRoomId)
+
+	if not roomRecord and primaryRoomId ~= PRIMARY_ROOM_ID then
+		primaryRoomId = PRIMARY_ROOM_ID
+		roomRecord = RoomPersistence.GetRoomRecord(player, primaryRoomId)
+	end
+
+	local primaryRoomState = RoomPersistence.GetRoomStateForRoom(player, primaryRoomId)
+	local legacyRoomState = profile and profile.RoomState
+	local roomState = primaryRoomState
+
+	if shouldUseLegacyRoomState(primaryRoomState, legacyRoomState) then
+		roomState = legacyRoomState
+	end
+
+	local layoutId = roomRecord and roomRecord.LayoutId
+
+	if typeof(layoutId) ~= "string" or layoutId == "" then
+		layoutId = profile and profile.CurrentLayoutId
+	end
+
+	if (typeof(layoutId) ~= "string" or not VALID_LAYOUTS[layoutId])
+		and typeof(roomState) == "table"
+		and typeof(roomState.LayoutId) == "string" then
+
 		layoutId = roomState.LayoutId
 	end
+
+	return {
+		RoomId = primaryRoomId,
+		RoomRecord = roomRecord,
+		RoomState = roomState,
+		LayoutId = layoutId,
+	}
+end
+
+local function capturePrimaryRoomState(player, roomModel)
+	local roomState = RoomPersistence.CaptureRoomState(player, roomModel)
+
+	if typeof(roomState) == "table" then
+		local success, message = RoomPersistence.SetRoomStateForRoom(
+			player,
+			PRIMARY_ROOM_ID,
+			roomState,
+			roomState.LayoutId
+		)
+
+		if not success then
+			warn("Could not save Primary room state for", player.Name, message)
+		end
+	end
+
+	return roomState
+end
+
+local function enterSavedRoomForPlayer(player, profile)
+	local savedRoom = getPrimarySavedRoom(player, profile)
+	local roomState = savedRoom.RoomState
+	local layoutId = savedRoom.LayoutId
 
 	if typeof(layoutId) ~= "string" or not VALID_LAYOUTS[layoutId] then
 		warn("Saved room has invalid layout:", layoutId)
@@ -1494,6 +1607,7 @@ local function enterSavedRoomForPlayer(player, profile)
 
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("CurrentLayoutId", layoutId)
+	setCurrentPlayerRoomContext(player, player.UserId, savedRoom.RoomId)
 	player:SetAttribute("HasCreatedRoom", true)
 	player:SetAttribute("ProfileCreated", true)
 	player:SetAttribute("CharacterCreatedThisSession", profile.CharacterCreated == true)
@@ -1520,12 +1634,9 @@ local function enterSavedRoomForPlayer(player, profile)
 end
 
 local function prepareSavedRoomForMainMenu(player, profile)
-	local roomState = profile.RoomState
-	local layoutId = profile.CurrentLayoutId
-
-	if typeof(roomState) == "table" and typeof(roomState.LayoutId) == "string" then
-		layoutId = roomState.LayoutId
-	end
+	local savedRoom = getPrimarySavedRoom(player, profile)
+	local roomState = savedRoom.RoomState
+	local layoutId = savedRoom.LayoutId
 
 	if typeof(layoutId) ~= "string" or not VALID_LAYOUTS[layoutId] then
 		warn("Saved room has invalid layout:", layoutId)
@@ -1585,6 +1696,7 @@ end
 local function applyPublicRoomAttributes(roomModel, publicRoomId, config)
 	roomModel:SetAttribute("RoomType", "PublicSpace")
 	roomModel:SetAttribute("PublicRoomId", publicRoomId)
+	roomModel:SetAttribute("RoomId", publicRoomId)
 	roomModel:SetAttribute("DisplayName", config.DisplayName)
 	roomModel:SetAttribute("ShortLabel", config.ShortLabel)
 	roomModel:SetAttribute("MaxOccupancy", getPublicRoomMaxOccupancy(config))
@@ -1686,6 +1798,7 @@ local function joinPublicRoom(player, publicRoomId)
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	setCurrentPublicRoomContext(player, publicRoomId)
 	player:SetAttribute("MainMenuIntroVariant", nil)
 	player:SetAttribute("PendingOnboardingAfterIntro", false)
 	player:SetAttribute("OnboardingUiAllowed", false)
@@ -1737,6 +1850,7 @@ local function joinRoom(player, roomName)
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
+	setCurrentPlayerRoomContext(player, ownerUserId, roomModel:GetAttribute("RoomId") or PRIMARY_ROOM_ID)
 	player:SetAttribute("MainMenuIntroVariant", nil)
 	player:SetAttribute("PendingOnboardingAfterIntro", false)
 	player:SetAttribute("OnboardingUiAllowed", false)
@@ -1785,7 +1899,7 @@ local function leaveCurrentRoom(player)
 		and ownerUserId == player.UserId
 		and roomModel:GetAttribute("RoomType") ~= "PublicSpace" then
 
-		RoomPersistence.CaptureRoomState(player, roomModel)
+		capturePrimaryRoomState(player, roomModel)
 		RoomPersistence.QueueSave(player)
 	end
 
@@ -1907,7 +2021,7 @@ Players.PlayerRemoving:Connect(function(player)
 	local ownedRoom = playerRooms[player]
 
 	if ownedRoom and ownedRoom.Parent then
-		RoomPersistence.CaptureRoomState(player, ownedRoom)
+		capturePrimaryRoomState(player, ownedRoom)
 	end
 
 	RoomPersistence.SavePlayer(player)
@@ -1926,6 +2040,9 @@ local function showOnboardingAfterHotelIntro(player, profile)
 	player:SetAttribute("OnboardingUiAllowed", true)
 	player:SetAttribute("MainMenuIntroVariant", nil)
 	player:SetAttribute("CurrentRoomName", nil)
+	player:SetAttribute("CurrentRoomId", nil)
+	player:SetAttribute("CurrentRoomOwnerUserId", nil)
+	player:SetAttribute("CurrentRoomType", nil)
 	setPlayerInHotelMainMenu(player, false)
 
 	if profile.CharacterCreated == true
@@ -2053,6 +2170,7 @@ createRoomRequest.OnServerEvent:Connect(function(player, layoutId)
 	-- These must be set after the room is fully created and the player is moved.
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("CurrentLayoutId", layoutId)
+	setCurrentPlayerRoomContext(player, player.UserId, PRIMARY_ROOM_ID)
 	player:SetAttribute("HasCreatedRoom", true)
 	player:SetAttribute("ProfileCreated", true)
 
@@ -2072,9 +2190,10 @@ createRoomRequest.OnServerEvent:Connect(function(player, layoutId)
 		profile.CharacterCreated = true
 		profile.OnboardingStep = "Tutorial"
 		profile.CurrentLayoutId = layoutId
+		RoomPersistence.EnsureRoomsSchema(profile)
 	end
 
-	RoomPersistence.CaptureRoomState(player, roomModel)
+	capturePrimaryRoomState(player, roomModel)
 	RoomPersistence.SavePlayer(player)
 
 	print("Server: Room created successfully, telling client")
@@ -2602,7 +2721,7 @@ game:BindToClose(function()
 		local ownedRoom = playerRooms[player]
 
 		if ownedRoom and ownedRoom.Parent then
-			RoomPersistence.CaptureRoomState(player, ownedRoom)
+			capturePrimaryRoomState(player, ownedRoom)
 		end
 
 		RoomPersistence.SavePlayer(player)
