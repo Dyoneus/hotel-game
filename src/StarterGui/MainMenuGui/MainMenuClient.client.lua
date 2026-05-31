@@ -75,6 +75,8 @@ local isWorkPanelOpen = false
 local workActivities = {}
 local workActivityById = {}
 local workCooldowns = {}
+local activitySelectorButtons = {}
+local activitySelectorFrame = nil
 local selectedWorkActivityId = nil
 local workRequestPending = false
 local workCooldownCheckPending = false
@@ -380,7 +382,7 @@ workSubtitle.Parent = workPanel
 local workInfoCard = Instance.new("Frame")
 workInfoCard.Name = "InfoCard"
 workInfoCard.Position = UDim2.fromOffset(0, 122)
-workInfoCard.Size = UDim2.new(1, 0, 0, 222)
+workInfoCard.Size = UDim2.new(1, 0, 0, 264)
 workInfoCard.BackgroundColor3 = Color3.fromRGB(229, 219, 184)
 workInfoCard.BorderSizePixel = 0
 workInfoCard.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 1
@@ -411,9 +413,26 @@ workBody.Font = Enum.Font.GothamMedium
 workBody.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 2
 workBody.Parent = workInfoCard
 
+activitySelectorFrame = Instance.new("Frame")
+activitySelectorFrame.Name = "ActivitySelector"
+activitySelectorFrame.Position = UDim2.fromOffset(18, 52)
+activitySelectorFrame.Size = UDim2.new(1, -36, 0, 30)
+activitySelectorFrame.BackgroundTransparency = 1
+activitySelectorFrame.BorderSizePixel = 0
+activitySelectorFrame.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 2
+activitySelectorFrame.Parent = workInfoCard
+
+local activitySelectorLayout = Instance.new("UIListLayout")
+activitySelectorLayout.FillDirection = Enum.FillDirection.Horizontal
+activitySelectorLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+activitySelectorLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+activitySelectorLayout.SortOrder = Enum.SortOrder.LayoutOrder
+activitySelectorLayout.Padding = UDim.new(0, 8)
+activitySelectorLayout.Parent = activitySelectorFrame
+
 local placeholderCard = Instance.new("Frame")
 placeholderCard.Name = "WorkActivityCard"
-placeholderCard.Position = UDim2.fromOffset(18, 52)
+placeholderCard.Position = UDim2.fromOffset(18, 94)
 placeholderCard.Size = UDim2.new(1, -36, 0, 122)
 placeholderCard.BackgroundColor3 = Color3.fromRGB(245, 239, 215)
 placeholderCard.BorderSizePixel = 0
@@ -513,7 +532,7 @@ startWorkCorner.Parent = startWorkButton
 
 local progressTrack = Instance.new("Frame")
 progressTrack.Name = "ProgressTrack"
-progressTrack.Position = UDim2.fromOffset(18, 186)
+progressTrack.Position = UDim2.fromOffset(18, 228)
 progressTrack.Size = UDim2.new(1, -36, 0, 18)
 progressTrack.BackgroundColor3 = Color3.fromRGB(207, 196, 160)
 progressTrack.BorderSizePixel = 0
@@ -539,7 +558,7 @@ progressFillCorner.Parent = progressFill
 
 local progressText = Instance.new("TextLabel")
 progressText.Name = "ProgressText"
-progressText.Position = UDim2.fromOffset(18, 204)
+progressText.Position = UDim2.fromOffset(18, 246)
 progressText.Size = UDim2.new(1, -36, 0, 18)
 progressText.BackgroundTransparency = 1
 progressText.Text = ""
@@ -1063,6 +1082,100 @@ local function getCooldownRemaining(activityId)
 	return remaining
 end
 
+local function getActivityLabel(activity)
+	return tostring(activity.DisplayName or activity.ActivityId or "Work")
+end
+
+local function syncActivitySelectorButtons(selectedActivity)
+	local buttonCount = math.max(#workActivities, 1)
+	local buttonWidth = 1 / buttonCount
+	local buttonOffset = -math.floor((8 * (buttonCount - 1)) / buttonCount)
+	local seenActivityIds = {}
+	local selectorLocked = activeWorkAttempt ~= nil or workRequestPending or workCooldownCheckPending
+
+	for index, activity in ipairs(workActivities) do
+		local activityId = activity.ActivityId
+		seenActivityIds[activityId] = true
+
+		local button = activitySelectorButtons[activityId]
+
+		if not button then
+			button = Instance.new("TextButton")
+			button.Name = activityId .. "Button"
+			button.BackgroundColor3 = Color3.fromRGB(245, 239, 215)
+			button.BorderSizePixel = 0
+			button.TextColor3 = Color3.fromRGB(62, 64, 58)
+			button.TextSize = 12
+			button.TextTruncate = Enum.TextTruncate.AtEnd
+			button.Font = Enum.Font.GothamBold
+			button.ZIndex = MAIN_MENU_CONTROL_Z_INDEX + 3
+			button.Parent = activitySelectorFrame
+
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(0, 8)
+			corner.Parent = button
+
+			local stroke = Instance.new("UIStroke")
+			stroke.Name = "Stroke"
+			stroke.Color = Color3.fromRGB(178, 160, 107)
+			stroke.Thickness = 1
+			stroke.Transparency = 0.42
+			stroke.Parent = button
+
+			button.MouseButton1Click:Connect(function()
+				if activeWorkAttempt or workRequestPending or workCooldownCheckPending then
+					return
+				end
+
+				if not workActivityById[activityId] then
+					return
+				end
+
+				selectedWorkActivityId = activityId
+				rewardFeedbackSerial += 1
+				rewardFeedbackLabel.Visible = false
+				setWorkStatus("Choose a job to begin.", false)
+
+				if renderWorkPanel then
+					renderWorkPanel()
+				end
+			end)
+
+			activitySelectorButtons[activityId] = button
+		end
+
+		local cooldownRemaining = getCooldownRemaining(activityId)
+		local isSelected = selectedActivity and selectedActivity.ActivityId == activityId
+		local stroke = button:FindFirstChild("Stroke")
+
+		button.LayoutOrder = index
+		button.Size = UDim2.new(buttonWidth, buttonOffset, 1, 0)
+		button.Text = cooldownRemaining > 0
+			and (getActivityLabel(activity) .. " " .. formatSeconds(cooldownRemaining))
+			or getActivityLabel(activity)
+		button.Active = not selectorLocked
+		button.AutoButtonColor = not selectorLocked
+		button.BackgroundColor3 = isSelected
+			and Color3.fromRGB(42, 67, 83)
+			or Color3.fromRGB(245, 239, 215)
+		button.TextColor3 = isSelected
+			and Color3.fromRGB(255, 255, 255)
+			or Color3.fromRGB(62, 64, 58)
+
+		if stroke then
+			stroke.Color = isSelected and Color3.fromRGB(42, 67, 83) or Color3.fromRGB(178, 160, 107)
+			stroke.Transparency = isSelected and 0.1 or 0.42
+		end
+	end
+
+	for activityId, button in pairs(activitySelectorButtons) do
+		if not seenActivityIds[activityId] then
+			button:Destroy()
+			activitySelectorButtons[activityId] = nil
+		end
+	end
+end
+
 local function getSelectedWorkActivity()
 	if selectedWorkActivityId and workActivityById[selectedWorkActivityId] then
 		return workActivityById[selectedWorkActivityId]
@@ -1093,6 +1206,8 @@ renderWorkPanel = function()
 		and not workCooldownCheckPending
 		and not isWorking
 		and cooldownRemaining <= 0
+
+	syncActivitySelectorButtons(activity)
 
 	if not activity then
 		placeholderTitle.Text = "Loading work"

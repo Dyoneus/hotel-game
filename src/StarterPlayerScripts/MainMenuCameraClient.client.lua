@@ -194,6 +194,21 @@ local function clearMainMenuView()
 	end
 end
 
+local function isPaperViewActive()
+	local viewName = player:GetAttribute("MainMenuView")
+
+	return viewName == VIEW_NAVIGATOR or viewName == VIEW_WORK
+end
+
+local function shouldApplyIdleSway()
+	if player:GetAttribute("MainMenuIntroComplete") ~= true then
+		return false
+	end
+
+	-- Navigator and Work views need a perfectly stable camera so paper UI stays readable.
+	return not isPaperViewActive()
+end
+
 local function applyCameraOwnership()
 	local currentCamera = getCamera()
 
@@ -205,7 +220,7 @@ local function applyCameraOwnership()
 	currentCamera.FieldOfView = CAMERA_FIELD_OF_VIEW
 
 	if not isTweening and holdCameraCFrame then
-		if player:GetAttribute("MainMenuIntroComplete") == true and idleBaseCFrame then
+		if shouldApplyIdleSway() and idleBaseCFrame then
 			local elapsed = os.clock() - idleStartedAt
 			local offsetX = math.sin(elapsed * 0.55) * IDLE_CAMERA_SWAY_POSITION
 			local offsetY = math.sin(elapsed * 0.37) * IDLE_CAMERA_SWAY_POSITION * 0.35
@@ -216,6 +231,7 @@ local function applyCameraOwnership()
 				* CFrame.new(offsetX, offsetY, 0)
 				* CFrame.Angles(pitch, yaw, 0)
 		else
+			idleBaseCFrame = holdCameraCFrame
 			currentCamera.CFrame = holdCameraCFrame
 		end
 	end

@@ -14,6 +14,16 @@ local ACTIVITY_DEFINITIONS = {
 		RewardAmount = 10,
 		Enabled = true,
 	},
+	RoomRunner = {
+		ActivityId = "RoomRunner",
+		DisplayName = "Room Runner",
+		Description = "Help deliver fresh towels and supplies around the hotel.",
+		DurationSeconds = 7,
+		CooldownSeconds = 90,
+		RewardCurrency = "Dollars",
+		RewardAmount = 15,
+		Enabled = true,
+	},
 }
 
 local function copyActivity(activity)
