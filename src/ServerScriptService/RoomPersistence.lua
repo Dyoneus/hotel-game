@@ -2721,6 +2721,51 @@ local function savePermissionMutation(ownerPlayer, profile)
 	RoomPersistence.QueueSave(ownerPlayer)
 end
 
+local function getRoomEditorsSnapshot(roomRecord, ownerUserId)
+	local editors = {}
+
+	if typeof(roomRecord) ~= "table" then
+		return editors
+	end
+
+	roomRecord.Permissions = normalizeRoomPermissions(roomRecord.Permissions)
+
+	for userIdKey, isAllowed in pairs(roomRecord.Permissions.Editors) do
+		if isAllowed == true then
+			local userId = tonumber(userIdKey)
+
+			if userId and userId > 0 and userId ~= ownerUserId then
+				local editorPlayer = Players:GetPlayerByUserId(userId)
+				local entry = {
+					UserId = userId,
+					Allowed = true,
+				}
+
+				if editorPlayer then
+					entry.Name = editorPlayer.Name
+					entry.DisplayName = editorPlayer.DisplayName
+				end
+
+				table.insert(editors, entry)
+			end
+		end
+	end
+
+	table.sort(editors, function(a, b)
+		return a.UserId < b.UserId
+	end)
+
+	return editors
+end
+
+local function getLoadedProfileFromOwner(ownerPlayerOrUserId)
+	if typeof(ownerPlayerOrUserId) == "Instance" and ownerPlayerOrUserId:IsA("Player") then
+		return getLoadedProfileForPlayer(ownerPlayerOrUserId), ownerPlayerOrUserId
+	end
+
+	return getLoadedProfileByUserId(ownerPlayerOrUserId)
+end
+
 function RoomPersistence.GetRoomPermissionsSnapshot(player)
 	local profile = profilesByPlayer[player]
 
@@ -2741,7 +2786,25 @@ function RoomPersistence.GetRoomPermissionsSnapshotByUserId(ownerUserId)
 	return deepCopy(ensureRoomPermissions(profile))
 end
 
-function RoomPersistence.SetRoomEditorPermission(ownerPlayer, targetUserId, isAllowed)
+function RoomPersistence.GetRoomEditorsForRoom(player, roomId)
+	local profile = getLoadedProfileForPlayer(player)
+
+	if not profile then
+		return {}
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return {}
+	end
+
+	return deepCopy(getRoomEditorsSnapshot(roomRecord, player.UserId))
+end
+
+function RoomPersistence.SetRoomEditorPermissionForRoom(ownerPlayer, roomId, targetUserId, isAllowed)
 	local targetUserIdKey = normalizePermissionUserId(targetUserId)
 
 	if not targetUserIdKey then
@@ -2754,33 +2817,77 @@ function RoomPersistence.SetRoomEditorPermission(ownerPlayer, targetUserId, isAl
 		return false, "Owner profile is not loaded."
 	end
 
-	local roomPermissions = ensureRoomPermissions(profile)
-
-	if isAllowed == true then
-		roomPermissions.Editors[targetUserIdKey] = true
-	else
-		roomPermissions.Editors[targetUserIdKey] = nil
+	if tonumber(targetUserIdKey) == ownerPlayer.UserId then
+		return false, "You are already the room owner."
 	end
 
-	savePermissionMutation(ownerPlayer, profile)
+	ensureRoomsSchema(profile)
+
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found."
+	end
+
+	roomRecord.Permissions = normalizeRoomPermissions(roomRecord.Permissions)
+
+	if isAllowed == true then
+		roomRecord.Permissions.Editors[targetUserIdKey] = true
+	else
+		roomRecord.Permissions.Editors[targetUserIdKey] = nil
+	end
+
+	local now = os.time()
+	roomRecord.UpdatedAt = now
+	profile.UpdatedAt = now
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		local legacyRoomPermissions = ensureRoomPermissions(profile)
+		legacyRoomPermissions.Editors = deepCopy(roomRecord.Permissions.Editors)
+		profile.RoomPermissions = legacyRoomPermissions
+	end
+
+	RoomPersistence.QueueSave(ownerPlayer)
 
 	return true, isAllowed == true and "Room editor permission granted." or "Room editor permission removed."
 end
 
-function RoomPersistence.IsRoomEditor(ownerPlayer, targetUserId)
+function RoomPersistence.IsRoomEditorForRoom(ownerPlayerOrUserId, roomId, targetUserId)
 	local targetUserIdKey = normalizePermissionUserId(targetUserId)
 
 	if not targetUserIdKey then
 		return false
 	end
 
-	local profile = getLoadedProfileForPlayer(ownerPlayer)
+	local profile = getLoadedProfileFromOwner(ownerPlayerOrUserId)
 
 	if not profile then
 		return false
 	end
 
-	return ensureRoomPermissions(profile).Editors[targetUserIdKey] == true
+	ensureRoomsSchema(profile)
+
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false
+	end
+
+	if normalizedRoomId == PRIMARY_ROOM_ID and typeof(roomRecord.Permissions) ~= "table" then
+		return ensureRoomPermissions(profile).Editors[targetUserIdKey] == true
+	end
+
+	roomRecord.Permissions = normalizeRoomPermissions(roomRecord.Permissions)
+
+	return roomRecord.Permissions.Editors[targetUserIdKey] == true
+end
+
+function RoomPersistence.SetRoomEditorPermission(ownerPlayer, targetUserId, isAllowed)
+	return RoomPersistence.SetRoomEditorPermissionForRoom(ownerPlayer, PRIMARY_ROOM_ID, targetUserId, isAllowed)
+end
+
+function RoomPersistence.IsRoomEditor(ownerPlayer, targetUserId)
+	return RoomPersistence.IsRoomEditorForRoom(ownerPlayer, PRIMARY_ROOM_ID, targetUserId)
 end
 
 function RoomPersistence.SetRoomActionPermission(ownerPlayer, actionName, targetUserId, isAllowed)

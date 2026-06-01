@@ -13,6 +13,7 @@ local FurnitureCatalogConfig =
 local RoomPermissionService = {}
 
 local activeRooms = workspace:WaitForChild("ActiveRooms")
+local PRIMARY_ROOM_ID = "Primary"
 local SUPPORT_ATTRIBUTE_BY_ACTION = {
 	OpenClose = "SupportsOpenClose",
 	Open = "SupportsOpen",
@@ -54,6 +55,24 @@ local function normalizeActionName(actionName)
 	local normalized = actionName:match("^%s*(.-)%s*$")
 
 	if not normalized or normalized == "" then
+		return nil
+	end
+
+	return normalized
+end
+
+local function normalizeRoomId(roomId)
+	if roomId == nil or roomId == "" then
+		return PRIMARY_ROOM_ID
+	end
+
+	if typeof(roomId) ~= "string" then
+		return nil
+	end
+
+	local normalized = roomId:match("^%s*(.-)%s*$")
+
+	if not normalized or normalized == "" or not normalized:match("^[%w_%-]+$") then
 		return nil
 	end
 
@@ -255,7 +274,9 @@ function RoomPermissionService.CanEditRoom(actorPlayer, roomModel)
 		return false
 	end
 
-	return RoomPersistence.IsRoomEditor(ownerPlayer, actorPlayer.UserId)
+	local roomId = normalizeRoomId(roomModel:GetAttribute("RoomId"))
+
+	return RoomPersistence.IsRoomEditorForRoom(ownerPlayer, roomId, actorPlayer.UserId)
 end
 
 function RoomPermissionService.CanPlaceFurniture(actorPlayer, roomModel)

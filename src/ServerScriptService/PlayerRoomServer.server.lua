@@ -1502,48 +1502,18 @@ local function sendRoomListToAll()
 	end
 end
 
-local function buildRoomEditorsList(ownerPlayer)
-	local roomPermissions = RoomPersistence.GetRoomPermissionsSnapshot(ownerPlayer)
-	local editors = {}
-
-	if typeof(roomPermissions) ~= "table" or typeof(roomPermissions.Editors) ~= "table" then
-		return editors
-	end
-
-	for userIdKey, isAllowed in pairs(roomPermissions.Editors) do
-		if isAllowed == true then
-			local userId = tonumber(userIdKey)
-
-			if userId and userId > 0 and userId ~= ownerPlayer.UserId then
-				local editorPlayer = Players:GetPlayerByUserId(userId)
-				local entry = {
-					UserId = userId,
-				}
-
-				if editorPlayer then
-					entry.Name = editorPlayer.Name
-					entry.DisplayName = editorPlayer.DisplayName
-				end
-
-				table.insert(editors, entry)
-			end
-		end
-	end
-
-	table.sort(editors, function(a, b)
-		return a.UserId < b.UserId
-	end)
-
-	return editors
+local function buildRoomEditorsList(ownerPlayer, roomId)
+	return RoomPersistence.GetRoomEditorsForRoom(ownerPlayer, roomId)
 end
 
-local function sendRoomEditorsResult(player, actionName, success, message, resolvedUserId, resolvedName)
+local function sendRoomEditorsResult(player, actionName, roomId, success, message, resolvedUserId, resolvedName)
 	local response = {
 		Kind = "RoomSettings",
 		Action = actionName,
 		Success = success == true,
 		Message = message,
-		Editors = buildRoomEditorsList(player),
+		RoomId = roomId,
+		Editors = buildRoomEditorsList(player, roomId),
 	}
 
 	if resolvedUserId then
@@ -2764,12 +2734,14 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	end
 
 	if safeActionName == "GetRoomEditors" then
-		if not getOwnPlayerRoomForSettings(player) then
+		local roomId = getSettingsPayloadRoomId(payload)
+
+		if not roomId or not RoomPersistence.GetRoomRecord(player, roomId) then
 			roomSettingsResult:FireClient(player, {
 				Kind = "RoomSettings",
 				Action = "GetRoomEditors",
 				Success = false,
-				Message = "Only the room owner can manage editors.",
+				Message = "Room not found.",
 			})
 			return
 		end
@@ -2779,30 +2751,31 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			Action = "GetRoomEditors",
 			Success = true,
 			Message = "Room editors loaded.",
-			Editors = buildRoomEditorsList(player),
+			RoomId = roomId,
+			Editors = buildRoomEditorsList(player, roomId),
 		})
 		return
 	end
 
 	if safeActionName == "AddRoomEditor" or safeActionName == "RemoveRoomEditor" then
-		local roomModel = getOwnPlayerRoomForSettings(player)
-
-		if not roomModel then
-			roomSettingsResult:FireClient(player, {
-				Kind = "RoomSettings",
-				Action = safeActionName,
-				Success = false,
-				Message = "Only the room owner can manage editors.",
-			})
-			return
-		end
-
 		if typeof(payload) ~= "table" then
 			roomSettingsResult:FireClient(player, {
 				Kind = "RoomSettings",
 				Action = safeActionName,
 				Success = false,
 				Message = "Invalid user.",
+			})
+			return
+		end
+
+		local roomId = getSettingsPayloadRoomId(payload)
+
+		if not roomId or not RoomPersistence.GetRoomRecord(player, roomId) then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = safeActionName,
+				Success = false,
+				Message = "Room not found.",
 			})
 			return
 		end
@@ -2832,14 +2805,17 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 		end
 
 		local shouldAllow = safeActionName == "AddRoomEditor"
-		local success, message = RoomPersistence.SetRoomEditorPermission(player, targetUserId, shouldAllow)
+		local success, message =
+			RoomPersistence.SetRoomEditorPermissionForRoom(player, roomId, targetUserId, shouldAllow)
 		local resolvedName = getResolvedUserName(targetUserId, resolvedInputName)
 
 		if success and not shouldAllow then
 			local removedPlayer = Players:GetPlayerByUserId(targetUserId)
+			local roomModel = getActiveOwnedRoomModel(player, roomId)
 
 			if removedPlayer
 				and removedPlayer.UserId ~= player.UserId
+				and roomModel
 				and removedPlayer:GetAttribute("CurrentRoomName") == roomModel.Name
 				and removedPlayer:GetAttribute("RoomMode") == "Edit" then
 
@@ -2850,6 +2826,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 		sendRoomEditorsResult(
 			player,
 			safeActionName,
+			roomId,
 			success == true,
 			success and (shouldAllow and "Editor added." or "Editor removed.")
 				or (message or "Could not update room editors."),

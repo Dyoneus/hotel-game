@@ -2179,6 +2179,7 @@ local function renderRoomEditors()
 			setStatusMessage("Removing editor...")
 
 			requestRemote:FireServer("RemoveRoomEditor", {
+				RoomId = getSelectedSettingsRoomId(),
 				TargetUserId = targetUserId,
 			})
 		end)
@@ -2212,7 +2213,9 @@ local function requestRoomEditors()
 	roomEditorsUnavailable = false
 	roomEditorsRequestInFlight = true
 	renderRoomEditors()
-	requestRemote:FireServer("GetRoomEditors")
+	requestRemote:FireServer("GetRoomEditors", {
+		RoomId = getSelectedSettingsRoomId(),
+	})
 end
 
 local function setRoomEditors(editors)
@@ -4278,6 +4281,7 @@ ui.editorAddButton.MouseButton1Click:Connect(function()
 	setStatusMessage("Adding editor...")
 
 	requestRemote:FireServer("AddRoomEditor", {
+		RoomId = getSelectedSettingsRoomId(),
 		TargetUserInput = targetUserInput,
 	})
 end)
@@ -4597,6 +4601,13 @@ function handlers.roomSettingsResult(response)
 	if isEditorMutationAction then
 		roomEditorMutationInFlight = false
 		setRoomEditorControlsEnabled(isSettingsEditableRoom(selectedRoomData))
+	end
+
+	if (isEditorListAction or isEditorMutationAction)
+		and typeof(response.RoomId) == "string"
+		and response.RoomId ~= getSelectedSettingsRoomId() then
+
+		return
 	end
 
 	if response.Success ~= true then
