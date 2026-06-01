@@ -1472,9 +1472,17 @@ local function canJoinRoomEntry(roomData)
 			and roomData.PublicRoomId ~= ""
 	end
 
-	return roomData.IsAvailable ~= false
-		and typeof(roomData.RoomName) == "string"
-		and roomData.RoomName ~= ""
+	if roomData.IsAvailable == false or roomData.IsJoinable == false then
+		return false
+	end
+
+	if typeof(roomData.RoomName) == "string" and roomData.RoomName ~= "" then
+		return true
+	end
+
+	return roomData.RoomType == "PlayerRoom"
+		and typeof(roomData.RoomId) == "string"
+		and roomData.RoomId ~= ""
 end
 
 local function getPublicRoomStatusText(roomData)
@@ -2698,14 +2706,22 @@ local function joinSelectedRoom()
 			return
 		end
 
+		local roomId = selectedRoomData.RoomId or selectedRoomData.Id
+		local ownerUserId = selectedRoomData.OwnerUserId
 		local roomName = selectedRoomData.RoomName
 
-		if typeof(roomName) ~= "string" or roomName == "" then
+		if typeof(roomId) == "string" and roomId ~= "" then
+			joinPayload = {
+				RoomType = "PlayerRoom",
+				RoomId = roomId,
+				OwnerUserId = ownerUserId,
+			}
+		elseif typeof(roomName) == "string" and roomName ~= "" then
+			joinPayload = roomName
+		else
 			showSettingsError("This room is not available yet.")
 			return
 		end
-
-		joinPayload = roomName
 	end
 
 	joinRoomRequestInFlight = true
