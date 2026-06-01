@@ -3326,16 +3326,32 @@ function RoomPersistence.CaptureRoomState(player, roomModel)
 	profile.ProfileCreated = true
 	profile.CharacterCreated = true
 
-	local mirroredToPrimary = setRoomStateForRoomProfile(
+	local roomId = PRIMARY_ROOM_ID
+
+	if roomModel and roomModel.GetAttribute then
+		roomId = normalizeRoomId(roomModel:GetAttribute("RoomId")) or roomId
+	end
+
+	if roomId == PRIMARY_ROOM_ID then
+		local currentRoomId = normalizeRoomId(player:GetAttribute("CurrentRoomId"))
+
+		if currentRoomId then
+			roomId = currentRoomId
+		end
+	end
+
+	local roomStateSaved = setRoomStateForRoomProfile(
 		profile,
-		PRIMARY_ROOM_ID,
+		roomId,
 		roomState,
 		roomState.LayoutId
 	)
 
-	if not mirroredToPrimary then
+	if not roomStateSaved and roomId == PRIMARY_ROOM_ID then
 		profile.CurrentLayoutId = roomState.LayoutId
 		profile.RoomState = roomState
+	elseif not roomStateSaved then
+		warn("RoomPersistence: room state capture skipped for missing room", player.Name, roomId)
 	end
 
 	profile.UpdatedAt = os.time()

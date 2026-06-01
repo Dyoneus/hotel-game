@@ -97,8 +97,45 @@ local roomSettingsLastRequestAtByUserId = {}
 local roomPermissionLastRequestAtByUserId = {}
 local roomUsernameLookupLastRequestAtByUserId = {}
 
+local function normalizeRoomId(roomId)
+	if roomId == nil or roomId == "" then
+		return PRIMARY_ROOM_ID
+	end
+
+	if typeof(roomId) ~= "string" then
+		return nil
+	end
+
+	if not roomId:match("^[%w_-]+$") then
+		return nil
+	end
+
+	return roomId
+end
+
+local function getPlayerRoomName(ownerUserId, roomId)
+	local normalizedRoomId = normalizeRoomId(roomId)
+	local numericOwnerUserId = tonumber(ownerUserId)
+
+	if not normalizedRoomId
+		or not numericOwnerUserId
+		or numericOwnerUserId ~= numericOwnerUserId
+		or numericOwnerUserId <= 0
+		or numericOwnerUserId >= math.huge
+		or numericOwnerUserId ~= math.floor(numericOwnerUserId) then
+
+		return nil
+	end
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		return "Room_" .. tostring(math.floor(numericOwnerUserId))
+	end
+
+	return "Room_" .. tostring(math.floor(numericOwnerUserId)) .. "_" .. normalizedRoomId
+end
+
 local function getRoomName(player)
-	return "Room_" .. player.UserId
+	return getPlayerRoomName(player.UserId, PRIMARY_ROOM_ID)
 end
 
 local function getRoomPositionForPlayer(player)
@@ -531,6 +568,13 @@ local function removePlayerRoom(player)
 		existingRoom:Destroy()
 	end
 
+	local primaryRoomName = getRoomName(player)
+	local activePrimaryRoom = primaryRoomName and activeRooms:FindFirstChild(primaryRoomName)
+
+	if activePrimaryRoom and activePrimaryRoom ~= existingRoom then
+		activePrimaryRoom:Destroy()
+	end
+
 	playerRooms[player] = nil
 	playerRoomSlots[player] = nil
 end
@@ -576,9 +620,16 @@ local function removeEditorHelpers(roomModel)
 	end
 end
 
-local function cloneRoomForPlayer(player, layoutId)
+local function cloneRoomForPlayer(player, layoutId, roomId)
 	if not VALID_LAYOUTS[layoutId] then
 		warn("Invalid layout requested:", layoutId)
+		return nil
+	end
+
+	local normalizedRoomId = normalizeRoomId(roomId)
+
+	if not normalizedRoomId then
+		warn("Invalid room id requested:", roomId)
 		return nil
 	end
 
@@ -592,7 +643,7 @@ local function cloneRoomForPlayer(player, layoutId)
 	removePlayerRoom(player)
 
 	local roomClone = template:Clone()
-	roomClone.Name = getRoomName(player)
+	roomClone.Name = getPlayerRoomName(player.UserId, normalizedRoomId)
 	roomClone.Parent = activeRooms
 	
 	if not roomClone:IsA("Model") then
@@ -616,7 +667,9 @@ local function cloneRoomForPlayer(player, layoutId)
 	roomClone:SetAttribute("OwnerUserId", player.UserId)
 	roomClone:SetAttribute("LayoutId", layoutId)
 	roomClone:SetAttribute("RoomType", "PlayerRoom")
-	roomClone:SetAttribute("RoomId", PRIMARY_ROOM_ID)
+	roomClone:SetAttribute("RoomId", normalizedRoomId)
+	roomClone:SetAttribute("RoomKey", roomClone.Name)
+	roomClone:SetAttribute("DisplayName", player.DisplayName .. "'s Room")
 	warnRoomGridValidation(roomClone, "PlayerRoom")
 
 	playerRooms[player] = roomClone
@@ -640,7 +693,7 @@ local function setCurrentPlayerRoomContext(player, ownerUserId, roomId)
 end
 
 local function setCurrentPublicRoomContext(player, publicRoomId)
-	setCurrentRoomContextAttributes(player, "PublicSpace", 0, publicRoomId)
+	setCurrentRoomContextAttributes(player, "PublicSpace", nil, publicRoomId)
 end
 
 local function movePlayerToRoom(player, roomModel)
@@ -1050,13 +1103,21 @@ local function getRoomRecordMetadata(roomRecord, ownerDisplayName)
 	}
 end
 
-local function applyPlayerRoomMetadataAttributes(roomModel, metadata)
+local function applyPlayerRoomMetadataAttributes(roomModel, metadata, ownerUserId, layoutId)
 	if not roomModel or not roomModel:IsA("Model") or typeof(metadata) ~= "table" then
 		return
 	end
 
+	local roomId = normalizeRoomId(metadata.RoomId) or PRIMARY_ROOM_ID
+	local resolvedOwnerUserId = tonumber(ownerUserId) or roomModel:GetAttribute("OwnerUserId")
+
 	roomModel:SetAttribute("RoomType", "PlayerRoom")
-	roomModel:SetAttribute("RoomId", metadata.RoomId or "Primary")
+	roomModel:SetAttribute("RoomId", roomId)
+	roomModel:SetAttribute("OwnerUserId", resolvedOwnerUserId)
+	roomModel:SetAttribute("RoomKey", getPlayerRoomName(resolvedOwnerUserId, roomId))
+	if typeof(layoutId) == "string" and layoutId ~= "" then
+		roomModel:SetAttribute("LayoutId", layoutId)
+	end
 	roomModel:SetAttribute("DisplayName", metadata.DisplayName)
 	roomModel:SetAttribute("Category", metadata.Category)
 	roomModel:SetAttribute("IsPublic", metadata.IsPublic == true)
@@ -1065,11 +1126,7 @@ local function applyPlayerRoomMetadataAttributes(roomModel, metadata)
 end
 
 local function getOwnedRoomActiveName(ownerPlayer, roomId)
-	if roomId == PRIMARY_ROOM_ID then
-		return getRoomName(ownerPlayer)
-	end
-
-	return nil
+	return getPlayerRoomName(ownerPlayer.UserId, roomId)
 end
 
 local function getOwnedRoomEntry(ownerPlayer, roomRecord, currentRoomName)
@@ -1101,7 +1158,7 @@ local function getOwnedRoomEntry(ownerPlayer, roomRecord, currentRoomName)
 	end
 
 	if activeRoom and activeRoom:IsA("Model") then
-		applyPlayerRoomMetadataAttributes(activeRoom, metadata)
+		applyPlayerRoomMetadataAttributes(activeRoom, metadata, ownerPlayer.UserId, layoutId)
 	end
 
 	local roomKey = "PlayerRoom:" .. tostring(ownerPlayer.UserId) .. ":" .. roomId
@@ -1223,8 +1280,13 @@ local function buildRoomList(viewerPlayer)
 				ownerDisplayName = ownerName
 			end
 
-			local metadata = getRoomMetadata(ownerPlayer, ownerDisplayName)
-			applyPlayerRoomMetadataAttributes(roomModel, metadata)
+			local roomId = normalizeRoomId(roomModel:GetAttribute("RoomId")) or PRIMARY_ROOM_ID
+			local roomRecord = ownerPlayer and RoomPersistence.GetRoomRecord(ownerPlayer, roomId) or nil
+			local metadata = roomRecord
+				and getRoomRecordMetadata(roomRecord, ownerDisplayName)
+				or getRoomMetadata(ownerPlayer, ownerDisplayName)
+			roomId = metadata.RoomId
+			applyPlayerRoomMetadataAttributes(roomModel, metadata, ownerUserId, layoutId)
 
 			local isOwner = typeof(ownerUserId) == "number"
 				and viewerPlayer
@@ -1232,7 +1294,6 @@ local function buildRoomList(viewerPlayer)
 
 			if metadata.IsPublic or isOwner then
 				local playerCount = getPlayerCountInRoom(roomModel.Name)
-				local roomId = metadata.RoomId
 				local roomKey = "PlayerRoom:" .. tostring(ownerUserId) .. ":" .. roomId
 
 				if not seenPlayerRoomKeys[roomKey] then
@@ -1669,25 +1730,24 @@ local function shouldUseLegacyRoomState(primaryRoomState, legacyRoomState)
 		or (not tableHasEntries(primaryRoomState) and tableHasEntries(legacyRoomState))
 end
 
-local function getPrimarySavedRoom(player, profile)
-	local primaryRoomId = RoomPersistence.GetPrimaryRoomId(player)
+local function getSavedRoom(player, profile, roomId)
+	local normalizedRoomId = normalizeRoomId(roomId)
 
-	if typeof(primaryRoomId) ~= "string" or primaryRoomId == "" then
-		primaryRoomId = PRIMARY_ROOM_ID
+	if not normalizedRoomId then
+		return nil
 	end
 
-	local roomRecord = RoomPersistence.GetRoomRecord(player, primaryRoomId)
+	local roomRecord = RoomPersistence.GetRoomRecord(player, normalizedRoomId)
 
-	if not roomRecord and primaryRoomId ~= PRIMARY_ROOM_ID then
-		primaryRoomId = PRIMARY_ROOM_ID
-		roomRecord = RoomPersistence.GetRoomRecord(player, primaryRoomId)
+	if not roomRecord then
+		return nil
 	end
 
-	local primaryRoomState = RoomPersistence.GetRoomStateForRoom(player, primaryRoomId)
+	local primaryRoomState = RoomPersistence.GetRoomStateForRoom(player, normalizedRoomId)
 	local legacyRoomState = profile and profile.RoomState
 	local roomState = primaryRoomState
 
-	if shouldUseLegacyRoomState(primaryRoomState, legacyRoomState) then
+	if normalizedRoomId == PRIMARY_ROOM_ID and shouldUseLegacyRoomState(primaryRoomState, legacyRoomState) then
 		roomState = legacyRoomState
 	end
 
@@ -1705,34 +1765,51 @@ local function getPrimarySavedRoom(player, profile)
 	end
 
 	return {
-		RoomId = primaryRoomId,
+		RoomId = normalizedRoomId,
 		RoomRecord = roomRecord,
 		RoomState = roomState,
 		LayoutId = layoutId,
 	}
 end
 
-local function capturePrimaryRoomState(player, roomModel)
+local function getPrimarySavedRoom(player, profile)
+	local primaryRoomId = normalizeRoomId(RoomPersistence.GetPrimaryRoomId(player)) or PRIMARY_ROOM_ID
+	local savedRoom = getSavedRoom(player, profile, primaryRoomId)
+
+	if not savedRoom and primaryRoomId ~= PRIMARY_ROOM_ID then
+		savedRoom = getSavedRoom(player, profile, PRIMARY_ROOM_ID)
+	end
+
+	return savedRoom
+end
+
+local function capturePlayerRoomState(player, roomModel)
 	local roomState = RoomPersistence.CaptureRoomState(player, roomModel)
 
-	if typeof(roomState) == "table" then
-		local success, message = RoomPersistence.SetRoomStateForRoom(
-			player,
-			PRIMARY_ROOM_ID,
-			roomState,
-			roomState.LayoutId
-		)
-
-		if not success then
-			warn("Could not save Primary room state for", player.Name, message)
-		end
+	if typeof(roomState) ~= "table" then
+		return roomState
 	end
+
+	local roomId = normalizeRoomId(roomModel and roomModel:GetAttribute("RoomId"))
+		or normalizeRoomId(player:GetAttribute("CurrentRoomId"))
+		or PRIMARY_ROOM_ID
+
+	if not RoomPersistence.GetRoomRecord(player, roomId) then
+		warn("Could not save room state for", player.Name, "room not found:", roomId)
+	end
+
 
 	return roomState
 end
 
 local function enterSavedRoomForPlayer(player, profile)
 	local savedRoom = getPrimarySavedRoom(player, profile)
+
+	if not savedRoom then
+		warn("Saved primary room record is missing for", player.Name)
+		return false
+	end
+
 	local roomState = savedRoom.RoomState
 	local layoutId = savedRoom.LayoutId
 
@@ -1741,13 +1818,19 @@ local function enterSavedRoomForPlayer(player, profile)
 		return false
 	end
 
-	local roomModel = cloneRoomForPlayer(player, layoutId)
+	local roomModel = cloneRoomForPlayer(player, layoutId, savedRoom.RoomId)
 
 	if not roomModel then
 		return false
 	end
 
 	RoomPersistence.ApplyRoomState(roomModel, roomState)
+	applyPlayerRoomMetadataAttributes(
+		roomModel,
+		getRoomRecordMetadata(savedRoom.RoomRecord, player.DisplayName),
+		player.UserId,
+		layoutId
+	)
 
 	local success, errorMessage = pcall(function()
 		movePlayerToRoom(player, roomModel)
@@ -1789,6 +1872,12 @@ end
 
 local function prepareSavedRoomForMainMenu(player, profile)
 	local savedRoom = getPrimarySavedRoom(player, profile)
+
+	if not savedRoom then
+		warn("Saved primary room record is missing for", player.Name)
+		return false
+	end
+
 	local roomState = savedRoom.RoomState
 	local layoutId = savedRoom.LayoutId
 
@@ -1797,13 +1886,19 @@ local function prepareSavedRoomForMainMenu(player, profile)
 		return false
 	end
 
-	local roomModel = cloneRoomForPlayer(player, layoutId)
+	local roomModel = cloneRoomForPlayer(player, layoutId, savedRoom.RoomId)
 
 	if not roomModel then
 		return false
 	end
 
 	RoomPersistence.ApplyRoomState(roomModel, roomState)
+	applyPlayerRoomMetadataAttributes(
+		roomModel,
+		getRoomRecordMetadata(savedRoom.RoomRecord, player.DisplayName),
+		player.UserId,
+		layoutId
+	)
 
 	player:SetAttribute("CurrentLayoutId", layoutId)
 	player:SetAttribute("HasCreatedRoom", true)
@@ -1994,17 +2089,28 @@ local function joinRoom(player, roomName)
 	local ownerPlayer = getRoomOwnerPlayer(roomModel)
 	local isOwner = player.UserId == ownerUserId
 	local ownerDisplayName = ownerPlayer and ownerPlayer.DisplayName or ("User_" .. tostring(ownerUserId))
-	local metadata = getRoomMetadata(ownerPlayer, ownerDisplayName)
+	local roomId = normalizeRoomId(roomModel:GetAttribute("RoomId")) or PRIMARY_ROOM_ID
+	local roomRecord = ownerPlayer and RoomPersistence.GetRoomRecord(ownerPlayer, roomId) or nil
+	local metadata = roomRecord
+		and getRoomRecordMetadata(roomRecord, ownerDisplayName)
+		or getRoomMetadata(ownerPlayer, ownerDisplayName)
 
 	if not metadata.IsPublic and not isOwner then
 		joinRoomResult:FireClient(player, false, "Room is private.")
 		return
 	end
 
+	applyPlayerRoomMetadataAttributes(
+		roomModel,
+		metadata,
+		ownerUserId,
+		roomModel:GetAttribute("LayoutId")
+	)
+
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
-	setCurrentPlayerRoomContext(player, ownerUserId, roomModel:GetAttribute("RoomId") or PRIMARY_ROOM_ID)
+	setCurrentPlayerRoomContext(player, ownerUserId, roomId)
 	player:SetAttribute("MainMenuIntroVariant", nil)
 	player:SetAttribute("PendingOnboardingAfterIntro", false)
 	player:SetAttribute("OnboardingUiAllowed", false)
@@ -2026,23 +2132,84 @@ local function joinRoom(player, roomName)
 end
 
 local function joinOwnedRoomById(player, roomId)
-	if typeof(roomId) ~= "string" or roomId == "" then
-		roomId = PRIMARY_ROOM_ID
-	end
+	local normalizedRoomId = normalizeRoomId(roomId)
 
-	local roomRecord = RoomPersistence.GetRoomRecord(player, roomId)
-
-	if not roomRecord then
+	if not normalizedRoomId then
 		joinRoomResult:FireClient(player, false, "Room not found.")
 		return
 	end
 
-	if roomId ~= PRIMARY_ROOM_ID then
-		joinRoomResult:FireClient(player, false, "This room is not available yet.")
+	local profile = RoomPersistence.GetProfile(player)
+	local savedRoom = getSavedRoom(player, profile, normalizedRoomId)
+
+	if not savedRoom then
+		joinRoomResult:FireClient(player, false, "Room not found.")
 		return
 	end
 
-	joinRoom(player, getRoomName(player))
+	local activeRoomName = getPlayerRoomName(player.UserId, normalizedRoomId)
+	local activeRoom = activeRoomName and activeRooms:FindFirstChild(activeRoomName) or nil
+
+	if activeRoom and activeRoom:IsA("Model") then
+		joinRoom(player, activeRoom.Name)
+		return
+	end
+
+	local layoutId = savedRoom.LayoutId
+
+	if typeof(layoutId) ~= "string" or not VALID_LAYOUTS[layoutId] then
+		joinRoomResult:FireClient(player, false, "Room not found.")
+		return
+	end
+
+	local roomModel = cloneRoomForPlayer(player, layoutId, normalizedRoomId)
+
+	if not roomModel then
+		joinRoomResult:FireClient(player, false, "Could not open room.")
+		return
+	end
+
+	RoomPersistence.ApplyRoomState(roomModel, savedRoom.RoomState)
+	applyPlayerRoomMetadataAttributes(
+		roomModel,
+		getRoomRecordMetadata(savedRoom.RoomRecord, player.DisplayName),
+		player.UserId,
+		layoutId
+	)
+
+	joinRoom(player, roomModel.Name)
+end
+
+local function joinPlayerRoomById(player, ownerUserId, roomId)
+	local normalizedRoomId = normalizeRoomId(roomId)
+	local numericOwnerUserId = tonumber(ownerUserId)
+
+	if not normalizedRoomId
+		or not numericOwnerUserId
+		or numericOwnerUserId ~= numericOwnerUserId
+		or numericOwnerUserId <= 0
+		or numericOwnerUserId >= math.huge
+		or numericOwnerUserId ~= math.floor(numericOwnerUserId) then
+
+		joinRoomResult:FireClient(player, false, "Room not found.")
+		return
+	end
+
+	numericOwnerUserId = math.floor(numericOwnerUserId)
+
+	if numericOwnerUserId == player.UserId then
+		joinOwnedRoomById(player, normalizedRoomId)
+		return
+	end
+
+	local activeRoomName = getPlayerRoomName(numericOwnerUserId, normalizedRoomId)
+
+	if not activeRoomName then
+		joinRoomResult:FireClient(player, false, "Room not found.")
+		return
+	end
+
+	joinRoom(player, activeRoomName)
 end
 
 local function leaveCurrentRoom(player)
@@ -2073,7 +2240,7 @@ local function leaveCurrentRoom(player)
 		and ownerUserId == player.UserId
 		and roomModel:GetAttribute("RoomType") ~= "PublicSpace" then
 
-		capturePrimaryRoomState(player, roomModel)
+		capturePlayerRoomState(player, roomModel)
 		RoomPersistence.QueueSave(player)
 	end
 
@@ -2195,7 +2362,7 @@ Players.PlayerRemoving:Connect(function(player)
 	local ownedRoom = playerRooms[player]
 
 	if ownedRoom and ownedRoom.Parent then
-		capturePrimaryRoomState(player, ownedRoom)
+		capturePlayerRoomState(player, ownedRoom)
 	end
 
 	RoomPersistence.SavePlayer(player)
@@ -2313,7 +2480,7 @@ createRoomRequest.OnServerEvent:Connect(function(player, layoutId)
 		roomCreationInFlightByUserId[player.UserId] = nil
 	end
 
-	local roomModel = cloneRoomForPlayer(player, layoutId)
+	local roomModel = cloneRoomForPlayer(player, layoutId, PRIMARY_ROOM_ID)
 
 	if not roomModel then
 		warn("Server: Room clone failed")
@@ -2367,7 +2534,7 @@ createRoomRequest.OnServerEvent:Connect(function(player, layoutId)
 		RoomPersistence.EnsureRoomsSchema(profile)
 	end
 
-	capturePrimaryRoomState(player, roomModel)
+	capturePlayerRoomState(player, roomModel)
 	RoomPersistence.SavePlayer(player)
 
 	print("Server: Room created successfully, telling client")
@@ -2819,8 +2986,8 @@ joinRoomRequest.OnServerEvent:Connect(function(player, payload)
 	if typeof(payload) == "table" then
 		if payload.RoomType == "PublicSpace" then
 			joinPublicRoom(player, payload.PublicRoomId)
-		elseif payload.RoomType == "PlayerRoom" or payload.RoomId ~= nil then
-			joinOwnedRoomById(player, payload.RoomId or PRIMARY_ROOM_ID)
+		elseif payload.RoomType == "PlayerRoom" or payload.RoomId ~= nil or payload.OwnerUserId ~= nil then
+			joinPlayerRoomById(player, payload.OwnerUserId or player.UserId, payload.RoomId or PRIMARY_ROOM_ID)
 		else
 			joinRoomResult:FireClient(player, false, "Unknown room type.")
 		end
@@ -2897,7 +3064,7 @@ game:BindToClose(function()
 		local ownedRoom = playerRooms[player]
 
 		if ownedRoom and ownedRoom.Parent then
-			capturePrimaryRoomState(player, ownedRoom)
+			capturePlayerRoomState(player, ownedRoom)
 		end
 
 		RoomPersistence.SavePlayer(player)

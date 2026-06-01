@@ -179,7 +179,8 @@ function RoomPermissionService.GetRoomOwnerUserId(roomModel)
 		return ownerUserId
 	end
 
-	local fallbackUserId = tonumber(tostring(roomModel.Name):match("^Room_(%d+)$"))
+	local roomName = tostring(roomModel.Name)
+	local fallbackUserId = tonumber(roomName:match("^Room_(%d+)$") or roomName:match("^Room_(%d+)_[%w_-]+$"))
 
 	if isPositiveInteger(fallbackUserId) then
 		return fallbackUserId
@@ -203,7 +204,8 @@ function RoomPermissionService.IsPlayerRoom(roomModel)
 		return false
 	end
 
-	return tostring(roomModel.Name):match("^Room_%d+$") ~= nil
+	local roomName = tostring(roomModel.Name)
+	return roomName:match("^Room_%d+$") ~= nil or roomName:match("^Room_%d+_[%w_-]+$") ~= nil
 end
 
 function RoomPermissionService.IsPublicRoom(roomModel)
