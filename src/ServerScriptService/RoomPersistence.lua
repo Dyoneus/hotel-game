@@ -1217,6 +1217,126 @@ local function setRoomPermissionsForRoomProfile(profile, roomId, permissions)
 	return true, "Room permissions saved.", roomRecord, normalizedRoomId
 end
 
+local function getRoomSettingsSnapshot(roomRecord)
+	if typeof(roomRecord) ~= "table" then
+		return nil
+	end
+
+	return {
+		RoomId = roomRecord.RoomId,
+		DisplayName = roomRecord.DisplayName,
+		Category = roomRecord.Category,
+		Description = roomRecord.Description,
+		IsPublic = roomRecord.IsPublic,
+		MaxOccupancy = roomRecord.MaxOccupancy,
+		LayoutId = roomRecord.LayoutId,
+		IsPrimary = roomRecord.IsPrimary == true or roomRecord.RoomId == PRIMARY_ROOM_ID,
+		CreatedAt = roomRecord.CreatedAt,
+		UpdatedAt = roomRecord.UpdatedAt,
+		SortOrder = roomRecord.SortOrder,
+	}
+end
+
+local function mirrorPrimaryRoomSettingsToLegacy(profile, roomRecord)
+	if typeof(profile) ~= "table" or typeof(roomRecord) ~= "table" then
+		return
+	end
+
+	local roomDirectory = ensureRoomDirectory(profile)
+
+	roomDirectory.DisplayName = isNonEmptyString(roomRecord.DisplayName)
+		and roomRecord.DisplayName
+		or DEFAULT_ROOM_DISPLAY_NAME
+	roomDirectory.Category = roomRecord.Category
+	roomDirectory.Description = roomRecord.Description
+	roomDirectory.IsPublic = roomRecord.IsPublic == true
+	roomDirectory.MaxOccupancy = roomRecord.MaxOccupancy
+	roomDirectory.RoomId = PRIMARY_ROOM_ID
+	roomDirectory.PrimaryRoomId = PRIMARY_ROOM_ID
+	roomDirectory.Tags = normalizeRoomTags(roomDirectory.Tags)
+	profile.RoomDirectory = roomDirectory
+end
+
+local function updateRoomSettingsForRoomProfile(profile, roomId, updates)
+	if typeof(updates) ~= "table" then
+		return false, "Invalid room settings.", nil, nil
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found.", nil, nil
+	end
+
+	if updates.DisplayName ~= nil then
+		if typeof(updates.DisplayName) ~= "string" then
+			return false, "Room name must be text.", nil, nil
+		end
+
+		local displayName = trimString(updates.DisplayName)
+
+		if displayName == "" then
+			return false, "Room name cannot be empty.", nil, nil
+		end
+
+		if #displayName > ROOM_DISPLAY_NAME_MAX_LENGTH then
+			return false,
+				"Room name too long. Maximum " .. tostring(ROOM_DISPLAY_NAME_MAX_LENGTH) .. " characters.",
+				nil,
+				nil
+		end
+
+		roomRecord.DisplayName = displayName
+	end
+
+	if updates.Description ~= nil then
+		if typeof(updates.Description) ~= "string" then
+			return false, "Description must be text.", nil, nil
+		end
+
+		local description = trimString(updates.Description)
+
+		if #description > ROOM_DESCRIPTION_MAX_LENGTH then
+			return false,
+				"Description too long. Maximum " .. tostring(ROOM_DESCRIPTION_MAX_LENGTH) .. " characters.",
+				nil,
+				nil
+		end
+
+		roomRecord.Description = description
+	end
+
+	if updates.Category ~= nil then
+		if typeof(updates.Category) ~= "string" or not ROOM_DIRECTORY_CATEGORIES[updates.Category] then
+			return false, "Invalid room category.", nil, nil
+		end
+
+		roomRecord.Category = updates.Category
+	end
+
+	if updates.IsPublic ~= nil then
+		if typeof(updates.IsPublic) ~= "boolean" then
+			return false, "Public setting must be true or false.", nil, nil
+		end
+
+		roomRecord.IsPublic = updates.IsPublic
+	end
+
+	-- MaxOccupancy is displayed but not client-editable yet.
+
+	local now = os.time()
+	roomRecord.UpdatedAt = now
+	profile.UpdatedAt = now
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		mirrorPrimaryRoomSettingsToLegacy(profile, roomRecord)
+	end
+
+	return true, "Room settings saved.", getRoomSettingsSnapshot(roomRecord), normalizedRoomId
+end
+
 local MARKETPLACE_LISTING_FIELDS = {
 	ListingId = true,
 	SellerUserId = true,
@@ -1713,6 +1833,43 @@ function RoomPersistence.GetRoomRecord(player, roomId)
 	end
 
 	return deepCopy(roomRecord)
+end
+
+function RoomPersistence.GetRoomSettingsForRoom(player, roomId)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return nil
+	end
+
+	return getRoomSettingsSnapshot(roomRecord)
+end
+
+function RoomPersistence.UpdateRoomSettingsForRoom(player, roomId, updates)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil, nil
+	end
+
+	local success, message, settings, normalizedRoomId =
+		updateRoomSettingsForRoomProfile(profile, roomId, updates)
+
+	if not success then
+		return false, message, nil, normalizedRoomId
+	end
+
+	RoomPersistence.QueueSave(player)
+
+	return true, message, deepCopy(settings), normalizedRoomId
 end
 
 -- Internal migration helper. This returns the actual profile table record.

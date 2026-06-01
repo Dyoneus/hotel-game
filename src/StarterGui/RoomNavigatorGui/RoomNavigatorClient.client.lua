@@ -1802,6 +1802,18 @@ local function isSettingsEditableRoom(entry)
 		and entry.IsOwner == true
 end
 
+local function getSelectedSettingsRoomId()
+	if typeof(selectedRoomData) == "table" then
+		local roomId = selectedRoomData.RoomId or selectedRoomData.Id
+
+		if typeof(roomId) == "string" and roomId ~= "" then
+			return roomId
+		end
+	end
+
+	return "Primary"
+end
+
 local function setSettingsCategory(categoryName)
 	local isAllowed = false
 
@@ -1994,7 +2006,9 @@ local function requestRoomSettings()
 	end
 
 	roomSettingsRequestInFlight = true
-	requestRemote:FireServer("GetSettings")
+	requestRemote:FireServer("GetSettings", {
+		RoomId = getSelectedSettingsRoomId(),
+	})
 end
 
 local function setRoomEditorControlsEnabled(isEnabled)
@@ -4295,6 +4309,7 @@ ui.settingsSaveButton.MouseButton1Click:Connect(function()
 	end
 
 	requestRemote:FireServer("UpdateSettings", {
+		RoomId = getSelectedSettingsRoomId(),
 		DisplayName = roomName,
 		Category = selectedSettingsCategory,
 		Description = ui.settingsDescriptionBox.Text,
@@ -4634,6 +4649,8 @@ function handlers.roomSettingsResult(response)
 
 	if typeof(settings) == "table" then
 		if selectedRoomData and selectedRoomData.IsOwner == true then
+			selectedRoomData.RoomId = settings.RoomId or selectedRoomData.RoomId
+			selectedRoomData.Id = settings.RoomId or selectedRoomData.Id
 			selectedRoomData.DisplayName = settings.DisplayName
 			selectedRoomData.Category = settings.Category or selectedRoomData.Category
 			selectedRoomData.Description = settings.Description or ""

@@ -996,6 +996,33 @@ local function getOwnPlayerRoomForSettings(player)
 	return roomModel
 end
 
+local function getSettingsPayloadRoomId(payload)
+	if typeof(payload) ~= "table" or payload.RoomId == nil then
+		return PRIMARY_ROOM_ID
+	end
+
+	return normalizeRoomId(payload.RoomId)
+end
+
+local function getActiveOwnedRoomModel(ownerPlayer, roomId)
+	local activeRoomName = getPlayerRoomName(ownerPlayer.UserId, roomId)
+	local roomModel = activeRoomName and activeRooms:FindFirstChild(activeRoomName) or nil
+
+	if not roomModel or not roomModel:IsA("Model") then
+		return nil
+	end
+
+	if roomModel:GetAttribute("RoomType") == "PublicSpace" then
+		return nil
+	end
+
+	if roomModel:GetAttribute("OwnerUserId") ~= ownerPlayer.UserId then
+		return nil
+	end
+
+	return roomModel
+end
+
 local function getPlayerCountInRoom(roomName)
 	local count = 0
 
@@ -2833,7 +2860,19 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	end
 
 	if safeActionName == "GetSettings" then
-		local settings = RoomPersistence.GetRoomDirectorySnapshot(player)
+		local roomId = getSettingsPayloadRoomId(payload)
+
+		if not roomId then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = "GetSettings",
+				Success = false,
+				Message = "Room not found.",
+			})
+			return
+		end
+
+		local settings = RoomPersistence.GetRoomSettingsForRoom(player, roomId)
 
 		if typeof(settings) ~= "table" then
 			roomSettingsResult:FireClient(player, {
@@ -2862,6 +2901,18 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 				Action = "UpdateSettings",
 				Success = false,
 				Message = "Invalid room settings.",
+			})
+			return
+		end
+
+		local roomId = getSettingsPayloadRoomId(payload)
+
+		if not roomId then
+			roomSettingsResult:FireClient(player, {
+				Kind = "RoomSettings",
+				Action = "UpdateSettings",
+				Success = false,
+				Message = "Room not found.",
 			})
 			return
 		end
@@ -2938,7 +2989,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			return
 		end
 
-		local success, message, settings = RoomPersistence.UpdateRoomDirectory(player, {
+		local success, message, settings = RoomPersistence.UpdateRoomSettingsForRoom(player, roomId, {
 			DisplayName = filteredDisplayName,
 			Category = payload.Category,
 			Description = filteredDescription,
@@ -2946,10 +2997,15 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 		})
 
 		if success then
-			local roomModel = playerRooms[player] or activeRooms:FindFirstChild(getRoomName(player))
+			local roomModel = getActiveOwnedRoomModel(player, roomId)
 
 			if roomModel and roomModel:IsA("Model") then
-				applyPlayerRoomMetadataAttributes(roomModel, settings)
+				applyPlayerRoomMetadataAttributes(
+					roomModel,
+					settings,
+					player.UserId,
+					roomModel:GetAttribute("LayoutId") or settings.LayoutId
+				)
 			end
 
 			sendRoomListToAll()
