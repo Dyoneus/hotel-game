@@ -997,6 +997,59 @@ local function getRoomMetadata(ownerPlayer, ownerDisplayName)
 	}
 end
 
+local function getRoomRecordMetadata(roomRecord, ownerDisplayName)
+	local fallback = getFallbackRoomMetadata(ownerDisplayName)
+
+	if typeof(roomRecord) ~= "table" then
+		return fallback
+	end
+
+	local roomId = roomRecord.RoomId
+	if typeof(roomId) ~= "string" or roomId == "" then
+		roomId = fallback.RoomId
+	end
+
+	local displayName = roomRecord.DisplayName
+	if typeof(displayName) ~= "string" or displayName == "" then
+		displayName = fallback.DisplayName
+	end
+
+	local category = roomRecord.Category
+	if typeof(category) ~= "string" or category == "" then
+		category = fallback.Category
+	end
+
+	local isPublic = roomRecord.IsPublic
+	if typeof(isPublic) ~= "boolean" then
+		isPublic = fallback.IsPublic
+	end
+
+	local maxOccupancy = roomRecord.MaxOccupancy
+	if typeof(maxOccupancy) ~= "number"
+		or maxOccupancy ~= maxOccupancy
+		or maxOccupancy <= 0
+		or maxOccupancy >= math.huge
+		or maxOccupancy ~= math.floor(maxOccupancy) then
+
+		maxOccupancy = fallback.MaxOccupancy
+	end
+
+	local description = roomRecord.Description
+	if typeof(description) ~= "string" then
+		description = fallback.Description
+	end
+
+	return {
+		RoomId = roomId,
+		DisplayName = displayName,
+		Category = category,
+		IsPublic = isPublic,
+		MaxOccupancy = maxOccupancy,
+		Description = description,
+		Tags = copyRoomTags(roomRecord.Tags),
+	}
+end
+
 local function applyPlayerRoomMetadataAttributes(roomModel, metadata)
 	if not roomModel or not roomModel:IsA("Model") or typeof(metadata) ~= "table" then
 		return
@@ -1009,6 +1062,82 @@ local function applyPlayerRoomMetadataAttributes(roomModel, metadata)
 	roomModel:SetAttribute("IsPublic", metadata.IsPublic == true)
 	roomModel:SetAttribute("MaxOccupancy", metadata.MaxOccupancy)
 	roomModel:SetAttribute("Description", metadata.Description)
+end
+
+local function getOwnedRoomActiveName(ownerPlayer, roomId)
+	if roomId == PRIMARY_ROOM_ID then
+		return getRoomName(ownerPlayer)
+	end
+
+	return nil
+end
+
+local function getOwnedRoomEntry(ownerPlayer, roomRecord, currentRoomName)
+	if typeof(ownerPlayer) ~= "Instance"
+		or not ownerPlayer:IsA("Player")
+		or typeof(roomRecord) ~= "table" then
+
+		return nil
+	end
+
+	local ownerName = ownerPlayer.Name
+	local ownerDisplayName = ownerPlayer.DisplayName
+	local metadata = getRoomRecordMetadata(roomRecord, ownerDisplayName)
+	local roomId = metadata.RoomId
+	local activeRoomName = getOwnedRoomActiveName(ownerPlayer, roomId)
+	local activeRoom = activeRoomName and activeRooms:FindFirstChild(activeRoomName) or nil
+	local occupancy = activeRoom and getPlayerCountInRoom(activeRoom.Name) or 0
+	local layoutId = roomRecord.LayoutId
+
+	if (typeof(layoutId) ~= "string" or layoutId == "")
+		and activeRoom
+		and typeof(activeRoom:GetAttribute("LayoutId")) == "string" then
+
+		layoutId = activeRoom:GetAttribute("LayoutId")
+	end
+
+	if typeof(layoutId) ~= "string" or layoutId == "" then
+		layoutId = "Unknown"
+	end
+
+	if activeRoom and activeRoom:IsA("Model") then
+		applyPlayerRoomMetadataAttributes(activeRoom, metadata)
+	end
+
+	local roomKey = "PlayerRoom:" .. tostring(ownerPlayer.UserId) .. ":" .. roomId
+	local isCurrentRoom = activeRoomName ~= nil and activeRoomName == currentRoomName
+
+	return {
+		RoomName = activeRoom and activeRoom.Name or nil,
+		Name = activeRoom and activeRoom.Name or roomKey,
+		Owner = ownerName,
+		OwnerUserId = ownerPlayer.UserId,
+		OwnerName = ownerName,
+		OwnerDisplayName = ownerDisplayName,
+		LayoutId = layoutId,
+		PlayerCount = occupancy,
+
+		RoomType = "PlayerRoom",
+		RoomId = roomId,
+		Id = roomId,
+		RoomKey = roomKey,
+		DisplayName = metadata.DisplayName,
+		RoomDisplayName = metadata.DisplayName,
+		Category = metadata.Category,
+		IsPublic = metadata.IsPublic,
+		Occupancy = occupancy,
+		MaxOccupancy = metadata.MaxOccupancy,
+		Description = metadata.Description,
+		Tags = metadata.Tags,
+		IsOwner = true,
+		IsPrimary = roomRecord.IsPrimary == true or roomId == PRIMARY_ROOM_ID,
+		SortOrder = roomRecord.SortOrder,
+		IsActive = activeRoom ~= nil,
+		IsCurrentRoom = isCurrentRoom,
+		Current = isCurrentRoom,
+		IsFavourite = RoomPersistence.IsRoomFavourite(ownerPlayer, roomKey) == true,
+		IsAvailable = activeRoom ~= nil,
+	}
 end
 
 local function getPublicRoomEntry(player, publicRoomId, config)
@@ -1056,6 +1185,22 @@ end
 local function buildRoomList(viewerPlayer)
 	local roomList = {}
 	local currentRoomName = viewerPlayer and viewerPlayer:GetAttribute("CurrentRoomName") or nil
+	local seenPlayerRoomKeys = {}
+
+	if viewerPlayer then
+		local profile = RoomPersistence.GetProfile(viewerPlayer)
+
+		if profile and profile.ProfileCreated == true then
+			for _, roomRecord in ipairs(RoomPersistence.GetOwnedRoomsSnapshot(viewerPlayer)) do
+				local ownedRoomEntry = getOwnedRoomEntry(viewerPlayer, roomRecord, currentRoomName)
+
+				if ownedRoomEntry then
+					seenPlayerRoomKeys[ownedRoomEntry.RoomKey] = true
+					table.insert(roomList, ownedRoomEntry)
+				end
+			end
+		end
+	end
 
 	for _, roomModel in ipairs(activeRooms:GetChildren()) do
 		if roomModel:IsA("Model") then
@@ -1090,29 +1235,38 @@ local function buildRoomList(viewerPlayer)
 				local roomId = metadata.RoomId
 				local roomKey = "PlayerRoom:" .. tostring(ownerUserId) .. ":" .. roomId
 
-				table.insert(roomList, {
-					RoomName = roomModel.Name,
-					OwnerUserId = ownerUserId,
-					OwnerName = ownerName,
-					OwnerDisplayName = ownerDisplayName,
-					LayoutId = layoutId or "Unknown",
-					PlayerCount = playerCount,
+				if not seenPlayerRoomKeys[roomKey] then
+					table.insert(roomList, {
+						RoomName = roomModel.Name,
+						Name = roomModel.Name,
+						Owner = ownerName,
+						OwnerUserId = ownerUserId,
+						OwnerName = ownerName,
+						OwnerDisplayName = ownerDisplayName,
+						LayoutId = layoutId or "Unknown",
+						PlayerCount = playerCount,
 
-					RoomType = "PlayerRoom",
-					RoomId = roomId,
-					RoomKey = roomKey,
-					DisplayName = metadata.DisplayName,
-					Category = metadata.Category,
-					IsPublic = metadata.IsPublic,
-					Occupancy = playerCount,
-					MaxOccupancy = metadata.MaxOccupancy,
-					Description = metadata.Description,
-					Tags = metadata.Tags,
-					IsOwner = isOwner == true,
-					IsCurrentRoom = roomModel.Name == currentRoomName,
-					IsFavourite = viewerPlayer and RoomPersistence.IsRoomFavourite(viewerPlayer, roomKey) == true or false,
-					IsAvailable = true,
-				})
+						RoomType = "PlayerRoom",
+						RoomId = roomId,
+						Id = roomId,
+						RoomKey = roomKey,
+						DisplayName = metadata.DisplayName,
+						RoomDisplayName = metadata.DisplayName,
+						Category = metadata.Category,
+						IsPublic = metadata.IsPublic,
+						Occupancy = playerCount,
+						MaxOccupancy = metadata.MaxOccupancy,
+						Description = metadata.Description,
+						Tags = metadata.Tags,
+						IsOwner = isOwner == true,
+						IsPrimary = roomId == PRIMARY_ROOM_ID,
+						IsActive = true,
+						IsCurrentRoom = roomModel.Name == currentRoomName,
+						Current = roomModel.Name == currentRoomName,
+						IsFavourite = viewerPlayer and RoomPersistence.IsRoomFavourite(viewerPlayer, roomKey) == true or false,
+						IsAvailable = true,
+					})
+				end
 			end
 		end
 	end
@@ -1869,6 +2023,26 @@ local function joinRoom(player, roomName)
 	joinRoomResult:FireClient(player, true, "Joined room.", roomModel.Name)
 
 	sendRoomListToAll()
+end
+
+local function joinOwnedRoomById(player, roomId)
+	if typeof(roomId) ~= "string" or roomId == "" then
+		roomId = PRIMARY_ROOM_ID
+	end
+
+	local roomRecord = RoomPersistence.GetRoomRecord(player, roomId)
+
+	if not roomRecord then
+		joinRoomResult:FireClient(player, false, "Room not found.")
+		return
+	end
+
+	if roomId ~= PRIMARY_ROOM_ID then
+		joinRoomResult:FireClient(player, false, "This room is not available yet.")
+		return
+	end
+
+	joinRoom(player, getRoomName(player))
 end
 
 local function leaveCurrentRoom(player)
@@ -2645,6 +2819,8 @@ joinRoomRequest.OnServerEvent:Connect(function(player, payload)
 	if typeof(payload) == "table" then
 		if payload.RoomType == "PublicSpace" then
 			joinPublicRoom(player, payload.PublicRoomId)
+		elseif payload.RoomType == "PlayerRoom" or payload.RoomId ~= nil then
+			joinOwnedRoomById(player, payload.RoomId or PRIMARY_ROOM_ID)
 		else
 			joinRoomResult:FireClient(player, false, "Unknown room type.")
 		end
