@@ -2919,8 +2919,97 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	})
 end)
 
+local function sendCreateOwnedRoomResult(player, success, message, roomRecord)
+	roomNavigatorResult:FireClient(player, {
+		Kind = "CreateOwnedRoom",
+		Action = "CreateOwnedRoom",
+		Success = success == true,
+		Message = message or (success and "Room created." or "Could not create room."),
+		Room = roomRecord,
+		Rooms = RoomPersistence.GetOwnedRoomsSnapshot(player),
+	})
+end
+
+local function handleCreateOwnedRoomRequest(player, payload)
+	if typeof(payload) ~= "table" then
+		sendCreateOwnedRoomResult(player, false, "Invalid room options.")
+		return
+	end
+
+	local rawDescription = payload.Description
+
+	if rawDescription == nil then
+		rawDescription = ""
+	end
+
+	if typeof(payload.DisplayName) == "string" and typeof(rawDescription) == "string" then
+		local rawPolicyOk, rawPolicyMessage, rawPolicyCategory, rawPolicyLength =
+			validateRoomTextPolicy(payload.DisplayName, rawDescription)
+
+		if not rawPolicyOk then
+			warnRoomTextRejected(player, "CreateOwnedRoomRaw", rawPolicyCategory, rawPolicyLength)
+			sendCreateOwnedRoomResult(player, false, rawPolicyMessage)
+			return
+		end
+	end
+
+	local displayNameOk, displayNameMessage, filteredDisplayName = filterRoomTextForNavigator(
+		player,
+		payload.DisplayName,
+		"Room name",
+		ROOM_DISPLAY_NAME_MAX_LENGTH,
+		false
+	)
+
+	if not displayNameOk then
+		sendCreateOwnedRoomResult(player, false, displayNameMessage)
+		return
+	end
+
+	local descriptionOk, descriptionMessage, filteredDescription = filterRoomTextForNavigator(
+		player,
+		rawDescription,
+		"Description",
+		ROOM_DESCRIPTION_MAX_LENGTH,
+		true
+	)
+
+	if not descriptionOk then
+		sendCreateOwnedRoomResult(player, false, descriptionMessage)
+		return
+	end
+
+	local filteredPolicyOk, filteredPolicyMessage, filteredPolicyCategory, filteredPolicyLength =
+		validateRoomTextPolicy(filteredDisplayName, filteredDescription)
+
+	if not filteredPolicyOk then
+		warnRoomTextRejected(player, "CreateOwnedRoomFiltered", filteredPolicyCategory, filteredPolicyLength)
+		sendCreateOwnedRoomResult(player, false, filteredPolicyMessage)
+		return
+	end
+
+	local success, message, roomRecord = RoomPersistence.CreateOwnedRoom(player, {
+		LayoutId = payload.LayoutId,
+		DisplayName = filteredDisplayName,
+		Category = payload.Category,
+		Description = filteredDescription,
+		IsPublic = payload.IsPublic,
+	})
+
+	sendCreateOwnedRoomResult(player, success, message, roomRecord)
+
+	if success then
+		sendRoomListToPlayer(player)
+	end
+end
+
 roomNavigatorRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	local safeActionName = typeof(actionName) == "string" and actionName or "Unknown"
+
+	if safeActionName == "CreateOwnedRoom" then
+		handleCreateOwnedRoomRequest(player, payload)
+		return
+	end
 
 	if safeActionName == "GetFavourites" then
 		local favouriteKeys, entries = getFavouriteEntries(player)

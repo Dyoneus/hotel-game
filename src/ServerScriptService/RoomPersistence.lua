@@ -7,9 +7,12 @@ local Players = game:GetService("Players")
 
 local RoomPersistence = {}
 
+local RoomLayoutConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("RoomLayoutConfig"))
+
 local DATASTORE_NAME = "PlayerProfiles_v1"
 local SAVE_DELAY_SECONDS = 12
 local STARTER_DOLLARS = 150
+local MAX_OWNED_ROOMS = 3
 local DAILY_REWARD_CURRENCY_KEY = "Dollars"
 local DAILY_REWARD_ICON = ""
 local CLAIM_COOLDOWN_SECONDS = 24 * 60 * 60
@@ -33,6 +36,10 @@ local ROOM_DIRECTORY_CATEGORIES = {
 local PRIMARY_ROOM_ID = "Primary"
 local DEFAULT_PRIMARY_LAYOUT_ID = "Layout_01"
 local DEFAULT_ROOM_DISPLAY_NAME = "My Room"
+local ROOM_DISPLAY_NAME_MAX_LENGTH = 30
+local ROOM_DESCRIPTION_MAX_LENGTH = 100
+
+RoomPersistence.MAX_OWNED_ROOMS = MAX_OWNED_ROOMS
 
 local profileStore = DataStoreService:GetDataStore(DATASTORE_NAME)
 
@@ -1141,6 +1148,22 @@ local function getSortedOwnedRoomRecords(profile)
 	return rooms
 end
 
+local function getOwnedRoomCount(profile)
+	return #getSortedOwnedRoomRecords(profile)
+end
+
+local function getNextOwnedRoomSortOrder(profile)
+	local nextSortOrder = 1
+
+	for _, roomRecord in ipairs(getSortedOwnedRoomRecords(profile)) do
+		if isFiniteInteger(roomRecord.SortOrder) and roomRecord.SortOrder >= nextSortOrder then
+			nextSortOrder = roomRecord.SortOrder + 1
+		end
+	end
+
+	return nextSortOrder
+end
+
 local function setRoomStateForRoomProfile(profile, roomId, roomState, layoutId)
 	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
 
@@ -1634,6 +1657,32 @@ function RoomPersistence.EnsureRoomsSchema(profile)
 	return ensureRoomsSchema(profile)
 end
 
+function RoomPersistence.GetMaxOwnedRooms(_player)
+	return MAX_OWNED_ROOMS
+end
+
+function RoomPersistence.GenerateRoomId(player)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil
+	end
+
+	ensureRoomsSchema(profile)
+
+	local timestamp = os.time()
+
+	for attempt = 1, 9999 do
+		local roomId = "Room_" .. tostring(timestamp) .. "_" .. tostring(attempt)
+
+		if roomId ~= PRIMARY_ROOM_ID and not profile.Rooms[roomId] then
+			return roomId
+		end
+	end
+
+	return nil
+end
+
 function RoomPersistence.GetOwnedRoomsSnapshot(player)
 	local profile = profilesByPlayer[player]
 
@@ -1800,6 +1849,155 @@ function RoomPersistence.SetRoomPermissionsForRoom(player, roomId, permissions)
 	RoomPersistence.QueueSave(player)
 
 	return true, message, deepCopy(roomRecord.Permissions), normalizedRoomId
+end
+
+function RoomPersistence.CreateOwnedRoom(player, options)
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return false, "Profile is not loaded.", nil
+	end
+
+	if typeof(options) ~= "table" then
+		return false, "Invalid room options.", nil
+	end
+
+	ensureRoomsSchema(profile)
+
+	if getOwnedRoomCount(profile) >= MAX_OWNED_ROOMS then
+		return false, "Maximum room limit reached.", nil
+	end
+
+	local layoutId = options.LayoutId
+
+	if not isNonEmptyString(layoutId) then
+		return false, "Layout not found.", nil
+	end
+
+	local layout = RoomLayoutConfig.GetLayout(layoutId)
+
+	if not layout then
+		return false, "Layout not found.", nil
+	end
+
+	if layout.IsSelectable ~= true then
+		return false, "This layout is currently unavailable.", nil
+	end
+
+	local canUseLayout, layoutMessage = RoomLayoutConfig.CanUseLayout(layoutId, {
+		HasVip = player:GetAttribute("HasVip") == true,
+		IncludeUnavailable = false,
+	})
+
+	if not canUseLayout then
+		return false, layoutMessage or "This layout is currently unavailable.", nil
+	end
+
+	if typeof(options.DisplayName) ~= "string" then
+		return false, "Room name must be text.", nil
+	end
+
+	local displayName = trimString(options.DisplayName)
+
+	if displayName == "" then
+		return false, "Room name cannot be empty.", nil
+	end
+
+	if #displayName > ROOM_DISPLAY_NAME_MAX_LENGTH then
+		return false, "Room name too long. Maximum " .. tostring(ROOM_DISPLAY_NAME_MAX_LENGTH) .. " characters.", nil
+	end
+
+	local category = options.Category
+
+	if typeof(category) ~= "string" or category == "" then
+		category = "Chat Rooms"
+	elseif not ROOM_DIRECTORY_CATEGORIES[category] then
+		return false, "Invalid room category.", nil
+	end
+
+	local description = options.Description
+
+	if description == nil then
+		description = ""
+	end
+
+	if typeof(description) ~= "string" then
+		return false, "Description must be text.", nil
+	end
+
+	description = trimString(description)
+
+	if #description > ROOM_DESCRIPTION_MAX_LENGTH then
+		return false, "Description too long. Maximum " .. tostring(ROOM_DESCRIPTION_MAX_LENGTH) .. " characters.", nil
+	end
+
+	local isPublic = options.IsPublic
+
+	if isPublic == nil then
+		isPublic = true
+	elseif typeof(isPublic) ~= "boolean" then
+		return false, "Public setting must be true or false.", nil
+	end
+
+	local roomId = RoomPersistence.GenerateRoomId(player)
+
+	if not roomId then
+		return false, "Could not create room id.", nil
+	end
+
+	local now = os.time()
+	local maxOccupancy = layout.MaxVisitors
+
+	if not isPositiveInteger(maxOccupancy) then
+		maxOccupancy = 25
+	end
+
+	local sortOrder = getNextOwnedRoomSortOrder(profile)
+	local roomRecord = normalizeRoomRecord({
+		RoomId = roomId,
+		DisplayName = displayName,
+		LayoutId = layoutId,
+		RoomState = {},
+		Category = category,
+		IsPublic = isPublic,
+		MaxOccupancy = maxOccupancy,
+		Description = description,
+		Tags = {},
+		CreatedAt = now,
+		UpdatedAt = now,
+		IsPrimary = false,
+		SortOrder = sortOrder,
+		Permissions = createEmptyRoomPermissions(),
+	}, roomId, {
+		DisplayName = displayName,
+		LayoutId = layoutId,
+		RoomState = {},
+		Category = category,
+		IsPublic = isPublic,
+		MaxOccupancy = maxOccupancy,
+		Description = description,
+		Tags = {},
+		CreatedAt = now,
+		UpdatedAt = now,
+		SortOrder = sortOrder,
+		Permissions = createEmptyRoomPermissions(),
+	})
+
+	profile.Rooms[roomId] = roomRecord
+
+	local roomDirectory = ensureRoomDirectory(profile)
+
+	if not roomIdArrayContains(roomDirectory.RoomIds, roomId) then
+		table.insert(roomDirectory.RoomIds, roomId)
+	end
+
+	roomDirectory.PrimaryRoomId = PRIMARY_ROOM_ID
+	roomDirectory.RoomId = PRIMARY_ROOM_ID
+	profile.UpdatedAt = now
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Room created.", deepCopy(roomRecord)
 end
 
 function RoomPersistence.HasSeenHotelIntro(player)
