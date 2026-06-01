@@ -99,10 +99,13 @@ local ROOM_PLANNER_LAYOUTS = {
 	{
 		Id = "StarterStudio",
 		DisplayName = "Starter Studio",
-		SizeText = "5 x 7",
+		LayoutId = "Free_036_A",
+		DefaultRoomName = "Starter Studio",
+		SizeText = "36 tiles",
 		Description = "A simple starter layout.",
 		GridColumns = 5,
 		GridRows = 7,
+		IsCreatable = true,
 	},
 	{
 		Id = "CozyCorner",
@@ -111,6 +114,7 @@ local ROOM_PLANNER_LAYOUTS = {
 		Description = "A compact social layout.",
 		GridColumns = 4,
 		GridRows = 5,
+		IsCreatable = false,
 	},
 	{
 		Id = "WideSuite",
@@ -119,6 +123,7 @@ local ROOM_PLANNER_LAYOUTS = {
 		Description = "A larger room layout.",
 		GridColumns = 7,
 		GridRows = 5,
+		IsCreatable = false,
 	},
 }
 
@@ -161,7 +166,7 @@ local roomPlannerOpen = false
 local roomDetailsPageOpen = false
 local roomSettingsPageOpen = false
 local selectedPlannerLayoutId = "StarterStudio"
-local roomPlannerStatus = "More room slots are coming soon."
+local roomPlannerStatus = "Select Starter Studio to create a room."
 
 local function refreshOptionalRemote(name, currentRemote)
 	if currentRemote and currentRemote.Parent == remoteEvents and currentRemote:IsA("RemoteEvent") then
@@ -1347,6 +1352,8 @@ end
 local renderNavigator = nil
 local pages = {}
 local handlers = {}
+pages.createOwnedRoomRequestInFlight = false
+pages.ownRoomsStatusMessage = nil
 
 local function requestFavourites(forceRefresh)
 	if favouritesRequestInFlight then
@@ -1452,6 +1459,22 @@ local function isPublicRoomOpen(roomData)
 	end
 
 	return true
+end
+
+local function canJoinRoomEntry(roomData)
+	if typeof(roomData) ~= "table" then
+		return false
+	end
+
+	if roomData.RoomType == "PublicSpace" then
+		return isPublicRoomOpen(roomData)
+			and typeof(roomData.PublicRoomId) == "string"
+			and roomData.PublicRoomId ~= ""
+	end
+
+	return roomData.IsAvailable ~= false
+		and typeof(roomData.RoomName) == "string"
+		and roomData.RoomName ~= ""
 end
 
 local function getPublicRoomStatusText(roomData)
@@ -2530,6 +2553,13 @@ local function updateDetailPanel()
 		ui.detailStatus.Text = ""
 	end
 
+	if selectedRoomData.RoomType ~= "PublicSpace"
+		and selectedRoomData.IsPrimary ~= true
+		and not canJoinRoomEntry(selectedRoomData) then
+
+		ui.detailStatus.Text = "Room joining coming soon."
+	end
+
 	if isCurrentRoom then
 		ui.detailStatus.Text = "You are here."
 	end
@@ -2585,13 +2615,7 @@ local function updateDetailPanel()
 		return
 	end
 
-	local canGo = (typeof(selectedRoomData.RoomName) == "string" and selectedRoomData.RoomName ~= "")
-		or (
-			selectedRoomData.RoomType == "PublicSpace"
-			and typeof(selectedRoomData.PublicRoomId) == "string"
-			and selectedRoomData.PublicRoomId ~= ""
-		)
-	canGo = canGo and isPublicRoomOpen(selectedRoomData)
+	local canGo = canJoinRoomEntry(selectedRoomData)
 
 	ui.goButton.Active = canGo
 	ui.goButton.AutoButtonColor = canGo
@@ -2600,7 +2624,9 @@ local function updateDetailPanel()
 	else
 		ui.goButton.BackgroundColor3 = canGo and Color3.fromRGB(68, 143, 82) or Color3.fromRGB(110, 115, 110)
 	end
-	ui.goButton.Text = canGo and "Go" or (selectedRoomData.RoomType == "PublicSpace" and "Closed" or "Unavailable")
+	ui.goButton.Text = canGo and "Go"
+		or (selectedRoomData.RoomType == "PublicSpace" and "Closed"
+			or (selectedRoomData.IsPrimary ~= true and "Soon" or "Unavailable"))
 end
 
 local function selectRoom(roomData, row)
@@ -2614,6 +2640,7 @@ local function selectRoom(roomData, row)
 	selectedRow = row
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
+	pages.ownRoomsStatusMessage = nil
 
 	if selectedRow then
 		setRowSelected(selectedRow, true)
@@ -2665,6 +2692,12 @@ local function joinSelectedRoom()
 			PublicRoomId = publicRoomId,
 		}
 	else
+		if not canJoinRoomEntry(selectedRoomData) then
+			showSettingsError("Room joining coming soon.")
+			updateDetailPanel()
+			return
+		end
+
 		local roomName = selectedRoomData.RoomName
 
 		if typeof(roomName) ~= "string" or roomName == "" then
@@ -3107,14 +3140,30 @@ local function createRoomRow(roomData, order)
 
 		createCorner(hereBadge, 5)
 	else
-		local rowGoButton = createTextButton("RowGoButton", "Go", UDim2.fromOffset(58, 28), row)
+		local canRowGo = canJoinRoomEntry(roomData)
+		local rowGoButton = createTextButton(
+			"RowGoButton",
+			canRowGo and "Go" or "Soon",
+			UDim2.fromOffset(58, 28),
+			row
+		)
 		rowGoButton.AnchorPoint = Vector2.new(1, 1)
 		rowGoButton.Position = UDim2.new(1, -14, 1, isOwnList and -12 or -10)
-		rowGoButton.BackgroundColor3 = paper and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(68, 143, 82)
+		rowGoButton.BackgroundColor3 = canRowGo
+			and (paper and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(68, 143, 82))
+			or (paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(110, 115, 110))
 		rowGoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 		rowGoButton.TextSize = 13
+		rowGoButton.Active = canRowGo
+		rowGoButton.AutoButtonColor = canRowGo
 
 		rowGoButton.MouseButton1Click:Connect(function()
+			if not canRowGo then
+				selectRoom(roomData, row)
+				showSettingsError("Room joining coming soon.")
+				return
+			end
+
 			selectRoom(roomData, row)
 			joinSelectedRoom()
 		end)
@@ -3230,7 +3279,8 @@ function pages.createRoomPlannerCard(order)
 		roomSettingsPageOpen = false
 		selectedRoomData = nil
 		selectedRow = nil
-		roomPlannerStatus = "More room slots are coming soon."
+		roomPlannerStatus = "Select Starter Studio to create a room."
+		pages.ownRoomsStatusMessage = nil
 
 		if renderNavigator then
 			renderNavigator()
@@ -3245,7 +3295,7 @@ function pages.createRoomPlannerCard(order)
 	note.LayoutOrder = order * 2 + 1
 	note.Size = UDim2.new(1, -4, 0, 20)
 	note.BackgroundTransparency = 1
-	note.Text = "More room slots coming soon."
+	note.Text = "More layouts coming soon."
 	note.TextColor3 = paper and Color3.fromRGB(103, 84, 60) or Color3.fromRGB(92, 98, 92)
 	note.TextSize = 11
 	note.TextXAlignment = Enum.TextXAlignment.Left
@@ -3283,6 +3333,59 @@ function pages.drawRoomPlannerPreviewGrid(parent, layoutInfo)
 	end
 end
 
+function pages.createOwnedRoomFromPlanner(layoutInfo)
+	if pages.createOwnedRoomRequestInFlight then
+		return
+	end
+
+	if typeof(layoutInfo) ~= "table" or layoutInfo.IsCreatable ~= true then
+		roomPlannerStatus = "This layout is coming soon."
+
+		if renderNavigator then
+			renderNavigator()
+		end
+
+		return
+	end
+
+	if typeof(layoutInfo.LayoutId) ~= "string" or layoutInfo.LayoutId == "" then
+		roomPlannerStatus = "This layout is not available yet."
+
+		if renderNavigator then
+			renderNavigator()
+		end
+
+		return
+	end
+
+	local requestRemote = getRoomNavigatorRequestRemote()
+
+	if not requestRemote or not getRoomNavigatorResultRemote() then
+		roomPlannerStatus = "Room creation is unavailable."
+
+		if renderNavigator then
+			renderNavigator()
+		end
+
+		return
+	end
+
+	pages.createOwnedRoomRequestInFlight = true
+	roomPlannerStatus = "Creating room..."
+
+	requestRemote:FireServer("CreateOwnedRoom", {
+		LayoutId = layoutInfo.LayoutId,
+		DisplayName = layoutInfo.DefaultRoomName or layoutInfo.DisplayName,
+		Category = "Chat Rooms",
+		Description = "",
+		IsPublic = true,
+	})
+
+	if renderNavigator then
+		renderNavigator()
+	end
+end
+
 function pages.renderRoomPlanner()
 	local paper = isPaperLayout()
 	local selectedLayout = pages.getPlannerLayoutById(selectedPlannerLayoutId)
@@ -3301,7 +3404,7 @@ function pages.renderRoomPlanner()
 	backButton.TextSize = 12
 	backButton.MouseButton1Click:Connect(function()
 		roomPlannerOpen = false
-		roomPlannerStatus = "More room slots are coming soon."
+		roomPlannerStatus = "Select Starter Studio to create a room."
 
 		if renderNavigator then
 			renderNavigator()
@@ -3325,7 +3428,7 @@ function pages.renderRoomPlanner()
 	pages.createPlannerText(
 		planner,
 		"PlannerNote",
-		"Choose a blueprint preview. More room slots coming soon.",
+		"Choose a blueprint preview. More layouts coming soon.",
 		UDim2.fromOffset(14, 44),
 		UDim2.new(1, -28, 0, 20),
 		{
@@ -3360,6 +3463,7 @@ function pages.renderRoomPlanner()
 
 	for index, layoutInfo in ipairs(ROOM_PLANNER_LAYOUTS) do
 		local isSelected = layoutInfo.Id == selectedPlannerLayoutId
+		local isCreatable = layoutInfo.IsCreatable == true
 		local card = Instance.new("Frame")
 		card.Name = layoutInfo.Id .. "Card"
 		card.LayoutOrder = index
@@ -3419,15 +3523,34 @@ function pages.renderRoomPlanner()
 			}
 		)
 
-		local previewButton = createTextButton("PreviewButton", "Preview", UDim2.fromOffset(78, 28), card)
+		local previewButton = createTextButton(
+			"PreviewButton",
+			isCreatable and "Select" or "Soon",
+			UDim2.fromOffset(78, 28),
+			card
+		)
 		previewButton.AnchorPoint = Vector2.new(1, 0.5)
 		previewButton.Position = UDim2.new(1, -10, 0.5, 0)
-		previewButton.BackgroundColor3 = paper and Color3.fromRGB(126, 100, 62) or Color3.fromRGB(86, 126, 151)
+		previewButton.BackgroundColor3 = isCreatable
+			and (paper and Color3.fromRGB(126, 100, 62) or Color3.fromRGB(86, 126, 151))
+			or (paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(150, 158, 148))
 		previewButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 		previewButton.TextSize = 11
+		previewButton.Active = isCreatable
+		previewButton.AutoButtonColor = isCreatable
 		previewButton.MouseButton1Click:Connect(function()
+			if not isCreatable then
+				roomPlannerStatus = layoutInfo.DisplayName .. " is coming soon."
+
+				if renderNavigator then
+					renderNavigator()
+				end
+
+				return
+			end
+
 			selectedPlannerLayoutId = layoutInfo.Id
-			roomPlannerStatus = "Previewing " .. layoutInfo.DisplayName .. ". More room slots are coming soon."
+			roomPlannerStatus = "Ready to create " .. layoutInfo.DisplayName .. "."
 
 			if renderNavigator then
 				renderNavigator()
@@ -3479,18 +3602,25 @@ function pages.renderRoomPlanner()
 	)
 	statusLabel.Font = Enum.Font.GothamMedium
 
-	local createButton = createTextButton("CreateRoomPlaceholderButton", "Create Room", UDim2.new(1, -24, 0, 30), previewPanel)
+	local selectedLayoutIsCreatable = selectedLayout.IsCreatable == true
+	local createButton = createTextButton(
+		"CreateOwnedRoomButton",
+		pages.createOwnedRoomRequestInFlight and "Creating..."
+			or (selectedLayoutIsCreatable and "Create Room" or "Coming Soon"),
+		UDim2.new(1, -24, 0, 30),
+		previewPanel
+	)
 	createButton.AnchorPoint = Vector2.new(0, 1)
 	createButton.Position = UDim2.new(0, 12, 1, -12)
-	createButton.BackgroundColor3 = paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(150, 158, 148)
+	createButton.BackgroundColor3 = selectedLayoutIsCreatable and not pages.createOwnedRoomRequestInFlight
+		and (paper and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(68, 143, 82))
+		or (paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(150, 158, 148))
 	createButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 	createButton.TextSize = 12
+	createButton.Active = selectedLayoutIsCreatable and not pages.createOwnedRoomRequestInFlight
+	createButton.AutoButtonColor = createButton.Active
 	createButton.MouseButton1Click:Connect(function()
-		roomPlannerStatus = "Multiple room creation is coming soon."
-
-		if renderNavigator then
-			renderNavigator()
-		end
+		pages.createOwnedRoomFromPlanner(selectedLayout)
 	end)
 end
 
@@ -3677,6 +3807,20 @@ end
 function pages.renderOwnRooms()
 	local ownRooms = pages.filterOwnRooms()
 	clearSelectionIfMissing(ownRooms)
+
+	if typeof(pages.ownRoomsStatusMessage) == "string" and pages.ownRoomsStatusMessage ~= "" then
+		local statusLabel = Instance.new("TextLabel")
+		statusLabel.Name = "OwnRoomsStatus"
+		statusLabel.LayoutOrder = 0
+		statusLabel.Size = UDim2.new(1, -4, 0, 24)
+		statusLabel.BackgroundTransparency = 1
+		statusLabel.Text = pages.ownRoomsStatusMessage
+		statusLabel.TextColor3 = isPaperLayout() and Color3.fromRGB(88, 70, 48) or Color3.fromRGB(64, 100, 70)
+		statusLabel.TextSize = 12
+		statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+		statusLabel.Font = Enum.Font.GothamMedium
+		statusLabel.Parent = ui.listFrame
+	end
 
 	if #ownRooms == 0 then
 		createEmptyState("You do not have an active room yet.")
@@ -4308,7 +4452,36 @@ end)
 
 function handlers.roomNavigatorResult(response)
 	if typeof(response) ~= "table" then
-		showSettingsError("Could not update favourites.")
+		if pages.createOwnedRoomRequestInFlight then
+			pages.createOwnedRoomRequestInFlight = false
+			roomPlannerStatus = "Could not create room."
+		end
+
+		showSettingsError("Could not process room navigator response.")
+		return
+	end
+
+	if response.Kind == "CreateOwnedRoom" then
+		pages.createOwnedRoomRequestInFlight = false
+
+		if response.Success == true then
+			roomPlannerStatus = "Room created."
+			roomPlannerOpen = false
+			selectedRoomData = nil
+			selectedRow = nil
+			pages.ownRoomsStatusMessage = response.Message or "Room created."
+			setStatusMessage(response.Message or "Room created.", "success")
+			roomListRequest:FireServer()
+		else
+			pages.ownRoomsStatusMessage = nil
+			roomPlannerStatus = response.Message or "Could not create room."
+			showSettingsError(roomPlannerStatus)
+		end
+
+		if ui.panel.Visible and renderNavigator then
+			renderNavigator()
+		end
+
 		return
 	end
 
