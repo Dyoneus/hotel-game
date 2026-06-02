@@ -59,6 +59,35 @@ Future patches should use this foundation to:
 - save each owned room by room id
 - enforce VIP restrictions when VIP membership exists
 
+## Generating Free_036_A
+
+`Free_036_A` is the first real owned-room layout template. It is a simple 6 x 6 starter room with 36 walkable tiles and the configured template name `RoomLayout_Free_036_A`.
+
+After Rojo sync, run this in Studio Command Bar:
+
+```lua
+-- Paste/run docs/tools/CreateRoomLayout_Free_036_A.lua
+```
+
+Then run:
+
+```lua
+-- Paste/run docs/tools/ValidateRoomLayoutTemplates.lua
+```
+
+Expected validation behavior:
+
+- `Free_036_A` / `RoomLayout_Free_036_A` reports `[OK]` after the generator has run.
+- Other available layouts can still warn as missing until their templates are generated.
+- Unavailable legacy layouts are tracked in metadata but are not required.
+
+Manual gameplay check:
+
+- create a Starter Studio room from Room Planner
+- join the created room
+- verify DoorSpawn, EntryWalkTarget, grid hover, click-to-move, exit flow, furniture placement, and room-specific furniture persistence
+- join Primary and confirm Primary remains unchanged
+
 ## Manual Check
 
 After Rojo sync, run this in Studio Command Bar:

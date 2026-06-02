@@ -69,6 +69,8 @@ local LAYOUT_TEMPLATE_FALLBACKS = {
 	Free_036_A = "Layout_01",
 }
 local PRIMARY_ROOM_ID = "Primary"
+local DEBUG_ROOM_LIST_TRACE = false
+local DEBUG_ROOM_LIST_PAYLOAD = false
 
 local ROOM_DISPLAY_NAME_MAX_LENGTH = 30
 local ROOM_DESCRIPTION_MAX_LENGTH = 100
@@ -155,6 +157,26 @@ local function getPlayerRoomName(ownerUserId, roomId)
 	end
 
 	return "Room_" .. tostring(math.floor(numericOwnerUserId)) .. "_" .. normalizedRoomId
+end
+
+local function parsePlayerRoomName(roomName)
+	if typeof(roomName) ~= "string" or roomName == "" then
+		return nil, nil
+	end
+
+	local ownerUserIdText, roomId = roomName:match("^Room_(-?%d+)_([%w_-]+)$")
+
+	if ownerUserIdText then
+		return tonumber(ownerUserIdText), normalizeRoomId(roomId)
+	end
+
+	ownerUserIdText = roomName:match("^Room_(-?%d+)$")
+
+	if ownerUserIdText then
+		return tonumber(ownerUserIdText), PRIMARY_ROOM_ID
+	end
+
+	return nil, nil
 end
 
 local function getRoomName(player)
@@ -1349,18 +1371,58 @@ local function buildRoomList(viewerPlayer)
 	local roomList = {}
 	local currentRoomName = viewerPlayer and viewerPlayer:GetAttribute("CurrentRoomName") or nil
 	local seenPlayerRoomKeys = {}
+	local validOwnedRoomIds = {}
+	local ownedRoomIds = {}
 
 	if viewerPlayer then
 		local profile = RoomPersistence.GetProfile(viewerPlayer)
 
 		if profile and profile.ProfileCreated == true then
-			for _, roomRecord in ipairs(RoomPersistence.GetOwnedRoomsSnapshot(viewerPlayer)) do
+			local ownedRoomSnapshot = RoomPersistence.GetOwnedRoomsSnapshot(viewerPlayer)
+
+			if DEBUG_ROOM_LIST_TRACE and #ownedRoomSnapshot == 0 then
+				warn("RoomList snapshot unexpectedly had no owned rooms for", viewerPlayer.Name)
+			end
+
+			for _, roomRecord in ipairs(ownedRoomSnapshot) do
+				local roomId = normalizeRoomId(roomRecord.RoomId)
+
+				if roomId then
+					validOwnedRoomIds[roomId] = true
+					table.insert(ownedRoomIds, roomId)
+				end
+
 				local ownedRoomEntry = getOwnedRoomEntry(viewerPlayer, roomRecord, currentRoomName)
 
 				if ownedRoomEntry then
 					seenPlayerRoomKeys[ownedRoomEntry.RoomKey] = true
 					table.insert(roomList, ownedRoomEntry)
 				end
+			end
+
+			if DEBUG_ROOM_LIST_TRACE then
+				local profileRoomIds = {}
+				local directoryRoomIds = {}
+
+				if typeof(profile.Rooms) == "table" then
+					for profileRoomId in pairs(profile.Rooms) do
+						table.insert(profileRoomIds, tostring(profileRoomId))
+					end
+				end
+
+				if typeof(profile.RoomDirectory) == "table" and typeof(profile.RoomDirectory.RoomIds) == "table" then
+					for _, directoryRoomId in ipairs(profile.RoomDirectory.RoomIds) do
+						table.insert(directoryRoomIds, tostring(directoryRoomId))
+					end
+				end
+
+				warn(string.format(
+					"RoomList snapshot for %s: profileRooms=%s directoryRoomIds=%s snapshotOwned=%s",
+					viewerPlayer.Name,
+					table.concat(profileRoomIds, ","),
+					table.concat(directoryRoomIds, ","),
+					table.concat(ownedRoomIds, ",")
+				))
 			end
 		end
 	end
@@ -1388,9 +1450,21 @@ local function buildRoomList(viewerPlayer)
 
 			local roomId = normalizeRoomId(roomModel:GetAttribute("RoomId")) or PRIMARY_ROOM_ID
 			local roomRecord = ownerPlayer and RoomPersistence.GetRoomRecord(ownerPlayer, roomId) or nil
-			local metadata = roomRecord
-				and getRoomRecordMetadata(roomRecord, ownerDisplayName)
-				or getRoomMetadata(ownerPlayer, ownerDisplayName)
+
+			if not roomRecord then
+				if DEBUG_ROOM_LIST_TRACE then
+					warn(string.format(
+						"Skipping active player room without persisted room record: %s owner=%s roomId=%s",
+						roomModel.Name,
+						tostring(ownerUserId),
+						tostring(roomId)
+					))
+				end
+
+				continue
+			end
+
+			local metadata = getRoomRecordMetadata(roomRecord, ownerDisplayName)
 			roomId = metadata.RoomId
 			applyPlayerRoomMetadataAttributes(roomModel, metadata, ownerUserId, layoutId)
 
@@ -1398,12 +1472,35 @@ local function buildRoomList(viewerPlayer)
 				and viewerPlayer
 				and viewerPlayer.UserId == ownerUserId
 
+			if isOwner and not validOwnedRoomIds[roomId] then
+				if DEBUG_ROOM_LIST_TRACE then
+					warn(string.format(
+						"Skipping active owned room not in latest owned snapshot: %s owner=%s roomId=%s",
+						roomModel.Name,
+						tostring(ownerUserId),
+						tostring(roomId)
+					))
+				end
+
+				continue
+			end
+
 			if metadata.IsPublic or isOwner then
 				local playerCount = getPlayerCountInRoom(roomModel.Name)
 				local roomKey = "PlayerRoom:" .. tostring(ownerUserId) .. ":" .. roomId
 				local isJoinable = isJoinableOwnedLayout(layoutId)
 
 				if not seenPlayerRoomKeys[roomKey] then
+					if DEBUG_ROOM_LIST_TRACE and not isOwner then
+						warn(string.format(
+							"RoomList guest row from ActiveRooms: viewer=%s owner=%s roomId=%s roomName=%s",
+							viewerPlayer and viewerPlayer.Name or "Unknown",
+							tostring(ownerUserId),
+							tostring(roomId),
+							roomModel.Name
+						))
+					end
+
 					table.insert(roomList, {
 						RoomName = roomModel.Name,
 						Name = roomModel.Name,
@@ -1453,7 +1550,7 @@ local function buildRoomList(viewerPlayer)
 		end
 	end
 
-	return roomList
+	return roomList, ownedRoomIds
 end
 
 local function getFavouriteKeysArray(player)
@@ -1525,16 +1622,142 @@ local function canFavouriteRoomKey(player, roomKey)
 	return false
 end
 
-local function sendRoomListToPlayer(player)
-	local roomList = buildRoomList(player)
+local function getSortedDictionaryKeys(dictionary)
+	local keys = {}
 
-	roomListUpdate:FireClient(player, roomList, player:GetAttribute("CurrentRoomName"))
+	if typeof(dictionary) == "table" then
+		for key in pairs(dictionary) do
+			table.insert(keys, tostring(key))
+		end
+	end
+
+	table.sort(keys)
+	return keys
+end
+
+local function getOwnedRoomRowIds(roomList)
+	local ownedRowIds = {}
+
+	for _, roomEntry in ipairs(roomList or {}) do
+		if roomEntry.IsOwner == true and typeof(roomEntry.RoomId) == "string" then
+			table.insert(ownedRowIds, roomEntry.RoomId)
+		end
+	end
+
+	table.sort(ownedRowIds)
+	return ownedRowIds
+end
+
+local function ensureRoomListProfile(player)
+	local profile = RoomPersistence.GetProfile(player)
+
+	if not profile then
+		profile = RoomPersistence.LoadProfile(player)
+	end
+
+	if profile and RoomPersistence.EnsureRoomsSchema then
+		RoomPersistence.EnsureRoomsSchema(profile)
+	end
+
+	return profile
+end
+
+local function buildRoomListMetadata(ownedRoomIds)
+	return {
+		OwnedRoomIds = table.clone(ownedRoomIds or {}),
+		RoomListVersion = os.clock(),
+	}
+end
+
+local function traceRoomListPayload(player, roomList, ownedRoomIds, metadata)
+	if not DEBUG_ROOM_LIST_PAYLOAD then
+		return
+	end
+
+	local profile = RoomPersistence.GetProfile(player)
+	local profileRoomIds = profile and getSortedDictionaryKeys(profile.Rooms) or {}
+	local directoryRoomIds = {}
+	local snapshotRoomIds = {}
+
+	if profile and typeof(profile.RoomDirectory) == "table" and typeof(profile.RoomDirectory.RoomIds) == "table" then
+		for _, roomId in ipairs(profile.RoomDirectory.RoomIds) do
+			table.insert(directoryRoomIds, tostring(roomId))
+		end
+	end
+
+	for _, roomRecord in ipairs(RoomPersistence.GetOwnedRoomsSnapshot(player)) do
+		table.insert(snapshotRoomIds, tostring(roomRecord.RoomId))
+	end
+
+	table.sort(directoryRoomIds)
+	table.sort(snapshotRoomIds)
+
+	warn(string.format(
+		"RoomList payload player=%s userId=%s version=%s profileRooms=%s directoryRoomIds=%s snapshotOwned=%s sentOwnedRows=%s metaOwned=%s",
+		player.Name,
+		tostring(player.UserId),
+		tostring(metadata and metadata.RoomListVersion),
+		table.concat(profileRoomIds, ","),
+		table.concat(directoryRoomIds, ","),
+		table.concat(snapshotRoomIds, ","),
+		table.concat(getOwnedRoomRowIds(roomList), ","),
+		table.concat(metadata and metadata.OwnedRoomIds or {}, ",")
+	))
+end
+
+local function sendRoomListToPlayer(player)
+	ensureRoomListProfile(player)
+
+	local roomList, ownedRoomIds = buildRoomList(player)
+	local metadata = buildRoomListMetadata(ownedRoomIds)
+
+	if DEBUG_ROOM_LIST_TRACE then
+		local sentOwnedRoomIds = {}
+
+		for _, roomEntry in ipairs(roomList) do
+			if roomEntry.IsOwner == true and typeof(roomEntry.RoomId) == "string" then
+				table.insert(sentOwnedRoomIds, roomEntry.RoomId)
+			end
+		end
+
+		warn(string.format(
+			"RoomList send to %s: snapshotOwned=%s sentOwnedRows=%s",
+			player.Name,
+			table.concat(ownedRoomIds or {}, ","),
+			table.concat(sentOwnedRoomIds, ",")
+		))
+	end
+
+	traceRoomListPayload(player, roomList, ownedRoomIds, metadata)
+	roomListUpdate:FireClient(player, roomList, player:GetAttribute("CurrentRoomName"), metadata)
 end
 
 local function sendRoomListToAll()
 	for _, player in ipairs(Players:GetPlayers()) do
-		local roomList = buildRoomList(player)
-		roomListUpdate:FireClient(player, roomList, player:GetAttribute("CurrentRoomName"))
+		ensureRoomListProfile(player)
+
+		local roomList, ownedRoomIds = buildRoomList(player)
+		local metadata = buildRoomListMetadata(ownedRoomIds)
+
+		if DEBUG_ROOM_LIST_TRACE then
+			local sentOwnedRoomIds = {}
+
+			for _, roomEntry in ipairs(roomList) do
+				if roomEntry.IsOwner == true and typeof(roomEntry.RoomId) == "string" then
+					table.insert(sentOwnedRoomIds, roomEntry.RoomId)
+				end
+			end
+
+			warn(string.format(
+				"RoomList send to %s: snapshotOwned=%s sentOwnedRows=%s",
+				player.Name,
+				table.concat(ownedRoomIds or {}, ","),
+				table.concat(sentOwnedRoomIds, ",")
+			))
+		end
+
+		traceRoomListPayload(player, roomList, ownedRoomIds, metadata)
+		roomListUpdate:FireClient(player, roomList, player:GetAttribute("CurrentRoomName"), metadata)
 	end
 end
 
@@ -2196,6 +2419,29 @@ local function getRoomByName(roomName)
 end
 
 local function joinRoom(player, roomName)
+	local parsedOwnerUserId, parsedRoomId = parsePlayerRoomName(roomName)
+
+	if parsedOwnerUserId and parsedRoomId then
+		local ownerPlayer = getPlayerByUserId(parsedOwnerUserId)
+		local roomRecord = ownerPlayer and RoomPersistence.GetRoomRecord(ownerPlayer, parsedRoomId) or nil
+
+		if DEBUG_ROOM_LIST_TRACE then
+			warn(string.format(
+				"Join validation parsed room name: player=%s roomName=%s owner=%s roomId=%s exists=%s",
+				player.Name,
+				tostring(roomName),
+				tostring(parsedOwnerUserId),
+				tostring(parsedRoomId),
+				tostring(roomRecord ~= nil)
+			))
+		end
+
+		if not roomRecord then
+			joinRoomResult:FireClient(player, false, "Room not found.")
+			return
+		end
+	end
+
 	local roomModel = getRoomByName(roomName)
 
 	if not roomModel or not roomModel:IsA("Model") then
@@ -2220,9 +2466,24 @@ local function joinRoom(player, roomName)
 	local ownerDisplayName = ownerPlayer and ownerPlayer.DisplayName or ("User_" .. tostring(ownerUserId))
 	local roomId = normalizeRoomId(roomModel:GetAttribute("RoomId")) or PRIMARY_ROOM_ID
 	local roomRecord = ownerPlayer and RoomPersistence.GetRoomRecord(ownerPlayer, roomId) or nil
-	local metadata = roomRecord
-		and getRoomRecordMetadata(roomRecord, ownerDisplayName)
-		or getRoomMetadata(ownerPlayer, ownerDisplayName)
+
+	if DEBUG_ROOM_LIST_TRACE then
+		warn(string.format(
+			"Join validation by room name: player=%s roomName=%s owner=%s roomId=%s exists=%s",
+			player.Name,
+			tostring(roomName),
+			tostring(ownerUserId),
+			tostring(roomId),
+			tostring(roomRecord ~= nil)
+		))
+	end
+
+	if not roomRecord then
+		joinRoomResult:FireClient(player, false, "Room not found.")
+		return
+	end
+
+	local metadata = getRoomRecordMetadata(roomRecord, ownerDisplayName)
 
 	if not metadata.IsPublic and not isOwner then
 		joinRoomResult:FireClient(player, false, "Room is private.")
@@ -2270,6 +2531,15 @@ local function joinOwnedRoomById(player, roomId)
 
 	local profile = RoomPersistence.GetProfile(player)
 	local savedRoom = getSavedRoom(player, profile, normalizedRoomId)
+
+	if DEBUG_ROOM_LIST_TRACE then
+		warn(string.format(
+			"Join validation own room: player=%s roomId=%s exists=%s",
+			player.Name,
+			tostring(normalizedRoomId),
+			tostring(savedRoom ~= nil)
+		))
+	end
 
 	if not savedRoom then
 		joinRoomResult:FireClient(player, false, "Room not found.")
@@ -2335,6 +2605,24 @@ local function joinPlayerRoomById(player, ownerUserId, roomId)
 
 	if numericOwnerUserId == player.UserId then
 		joinOwnedRoomById(player, normalizedRoomId)
+		return
+	end
+
+	local ownerPlayer = getPlayerByUserId(numericOwnerUserId)
+	local ownerRoomRecord = ownerPlayer and RoomPersistence.GetRoomRecord(ownerPlayer, normalizedRoomId) or nil
+
+	if DEBUG_ROOM_LIST_TRACE then
+		warn(string.format(
+			"Join validation player room: player=%s owner=%s roomId=%s exists=%s",
+			player.Name,
+			tostring(numericOwnerUserId),
+			tostring(normalizedRoomId),
+			tostring(ownerRoomRecord ~= nil)
+		))
+	end
+
+	if not ownerPlayer or not ownerRoomRecord then
+		joinRoomResult:FireClient(player, false, "Room not found.")
 		return
 	end
 
@@ -3271,6 +3559,25 @@ roomNavigatorRequest.OnServerEvent:Connect(function(player, actionName, payload)
 end)
 
 joinRoomRequest.OnServerEvent:Connect(function(player, payload)
+	if DEBUG_ROOM_LIST_TRACE then
+		if typeof(payload) == "table" then
+			warn(string.format(
+				"JoinRoom request from %s: type=%s owner=%s roomId=%s roomName=%s",
+				player.Name,
+				tostring(payload.RoomType),
+				tostring(payload.OwnerUserId),
+				tostring(payload.RoomId),
+				tostring(payload.RoomName)
+			))
+		else
+			warn(string.format(
+				"JoinRoom request from %s: legacyPayload=%s",
+				player.Name,
+				tostring(payload)
+			))
+		end
+	end
+
 	if typeof(payload) == "table" then
 		if payload.RoomType == "PublicSpace" then
 			joinPublicRoom(player, payload.PublicRoomId)

@@ -90,7 +90,7 @@ local CONTENT_TOP_OFFSET = 124
 local DETAIL_BOTTOM_OFFSET = 18
 local DETAIL_GAP = 8
 local DETAIL_HEIGHT_EMPTY = 96
-local DETAIL_HEIGHT_GUEST_SELECTED = 142
+local DETAIL_HEIGHT_GUEST_SELECTED = 172
 local DETAIL_HEIGHT_SELECTED = 182
 local DETAIL_HEIGHT_SETTINGS = 580
 local DETAIL_SIDE_MIN_PANEL_WIDTH = 900
@@ -1358,6 +1358,13 @@ local pages = {}
 local handlers = {}
 pages.createOwnedRoomRequestInFlight = false
 pages.ownRoomsStatusMessage = nil
+pages.DEBUG_ROOM_LIST_TRACE = false
+pages.DEBUG_ROOM_NAV_PAYLOAD = false
+pages.latestOwnedRooms = {}
+pages.latestOwnedRoomIds = {}
+pages.latestOwnedRoomIdsAuthoritative = false
+pages.ownRoomsRefreshPending = false
+pages.lastRoomListVersion = nil
 
 local function requestFavourites(forceRefresh)
 	if favouritesRequestInFlight then
@@ -1381,6 +1388,21 @@ local function requestFavourites(forceRefresh)
 	requestRemote:FireServer("GetFavourites")
 end
 
+function pages.requestFreshRoomList(markOwnRoomsPending)
+	if markOwnRoomsPending == true then
+		pages.ownRoomsRefreshPending = true
+		pages.latestOwnedRooms = {}
+		pages.latestOwnedRoomIds = {}
+		pages.latestOwnedRoomIdsAuthoritative = true
+		selectedRoomData = nil
+		selectedRow = nil
+		roomDetailsPageOpen = false
+		roomSettingsPageOpen = false
+	end
+
+	roomListRequest:FireServer()
+end
+
 local function setPanelVisible(isVisible, options)
 	local forceClose = typeof(options) == "table" and options.ForceClose == true
 
@@ -1401,7 +1423,7 @@ local function setPanelVisible(isVisible, options)
 	updateOpenButton()
 
 	if isVisible then
-		roomListRequest:FireServer()
+		pages.requestFreshRoomList(selectedTopTab == TOP_TAB_ROOMS and selectedRoomSubtab == ROOM_SUBTAB_OWN)
 		requestFavourites(true)
 
 		if renderNavigator then
@@ -1474,6 +1496,14 @@ local function canJoinRoomEntry(roomData)
 		return isPublicRoomOpen(roomData)
 			and typeof(roomData.PublicRoomId) == "string"
 			and roomData.PublicRoomId ~= ""
+	end
+
+	if roomData.IsOwner == true and pages.latestOwnedRoomIdsAuthoritative == true then
+		local roomId = roomData.RoomId or roomData.Id
+
+		if typeof(roomId) ~= "string" or pages.latestOwnedRoomIds[roomId] ~= true then
+			return false
+		end
 	end
 
 	if roomData.IsAvailable == false or roomData.IsJoinable == false then
@@ -1787,6 +1817,7 @@ local function clearSelectionIfMissing(entries)
 
 	for _, entry in ipairs(entries) do
 		if isSameRoomEntry(selectedRoomData, entry) then
+			selectedRoomData = entry
 			return
 		end
 	end
@@ -1795,6 +1826,129 @@ local function clearSelectionIfMissing(entries)
 	selectedRow = nil
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
+end
+
+function pages.clearSelectedRoomState()
+	selectedRoomData = nil
+	selectedRow = nil
+	roomDetailsPageOpen = false
+	roomSettingsPageOpen = false
+	currentRoomEditors = {}
+end
+
+function pages.isOwnedRoomPayload(roomData)
+	if typeof(roomData) ~= "table"
+		or roomData.IsOwner ~= true
+		or roomData.RoomType == "PublicSpace" then
+
+		return false
+	end
+
+	local roomId = roomData.RoomId or roomData.Id
+
+	return typeof(roomId) == "string" and roomId ~= ""
+end
+
+function pages.replaceLatestRoomList(roomList, roomListMeta)
+	latestRoomList = {}
+	pages.latestOwnedRooms = {}
+	pages.latestOwnedRoomIds = {}
+	pages.latestOwnedRoomIdsAuthoritative = true
+	pages.lastRoomListVersion = typeof(roomListMeta) == "table" and roomListMeta.RoomListVersion or nil
+
+	if typeof(roomListMeta) == "table" and typeof(roomListMeta.OwnedRoomIds) == "table" then
+		for _, roomId in ipairs(roomListMeta.OwnedRoomIds) do
+			if typeof(roomId) == "string" and roomId ~= "" then
+				pages.latestOwnedRoomIds[roomId] = true
+			end
+		end
+	end
+
+	if typeof(roomList) ~= "table" then
+		return
+	end
+
+	for _, roomData in ipairs(roomList) do
+		if typeof(roomData) == "table" then
+			local roomCopy = table.clone(roomData)
+			table.insert(latestRoomList, roomCopy)
+
+			local roomId = roomCopy.RoomId or roomCopy.Id
+
+			if pages.isOwnedRoomPayload(roomCopy) and pages.latestOwnedRoomIds[roomId] == true then
+
+				table.insert(pages.latestOwnedRooms, roomCopy)
+			end
+		end
+	end
+
+	if pages.DEBUG_ROOM_LIST_TRACE then
+		local receivedOwnedRoomIds = {}
+		local renderedOwnedRoomIds = {}
+
+		for _, roomData in ipairs(latestRoomList) do
+			if roomData.IsOwner == true and typeof(roomData.RoomId) == "string" then
+				table.insert(receivedOwnedRoomIds, roomData.RoomId)
+			end
+		end
+
+		for _, roomData in ipairs(pages.latestOwnedRooms) do
+			if typeof(roomData.RoomId) == "string" then
+				table.insert(renderedOwnedRoomIds, roomData.RoomId)
+			end
+		end
+
+		warn("RoomList received own rows:", table.concat(receivedOwnedRoomIds, ","))
+		warn("RoomList rendered own rows:", table.concat(renderedOwnedRoomIds, ","))
+	end
+
+	if pages.DEBUG_ROOM_NAV_PAYLOAD then
+		local receivedOwnedRoomIds = {}
+		local latestOwnedRoomIds = {}
+		local renderedOwnedRoomIds = {}
+
+		for _, roomData in ipairs(latestRoomList) do
+			if roomData.IsOwner == true and typeof(roomData.RoomId) == "string" then
+				table.insert(receivedOwnedRoomIds, roomData.RoomId)
+			end
+		end
+
+		for roomId in pairs(pages.latestOwnedRoomIds) do
+			table.insert(latestOwnedRoomIds, roomId)
+		end
+
+		for _, roomData in ipairs(pages.latestOwnedRooms) do
+			if typeof(roomData.RoomId) == "string" then
+				table.insert(renderedOwnedRoomIds, roomData.RoomId)
+			end
+		end
+
+		table.sort(receivedOwnedRoomIds)
+		table.sort(latestOwnedRoomIds)
+		table.sort(renderedOwnedRoomIds)
+
+		warn(
+			"RoomNavigator payload:",
+			"version=" .. tostring(pages.lastRoomListVersion),
+			"receivedRows=" .. tostring(typeof(roomList) == "table" and #roomList or 0),
+			"receivedOwned=" .. table.concat(receivedOwnedRoomIds, ","),
+			"metaOwned=" .. table.concat(latestOwnedRoomIds, ","),
+			"renderedOwned=" .. table.concat(renderedOwnedRoomIds, ",")
+		)
+	end
+end
+
+function pages.clearSelectedRoomIfMissingFromLatestList()
+	if not selectedRoomData then
+		return
+	end
+
+	if selectedRoomData.IsOwner == true then
+		clearSelectionIfMissing(pages.latestOwnedRooms)
+		return
+	end
+
+	clearSelectionIfMissing(latestRoomList)
 end
 
 local function getGuestCategoryCounts()
@@ -2440,14 +2594,18 @@ local function updateDetailControlsLayout()
 		and selectedRoomSubtab == ROOM_SUBTAB_GUEST
 		and selectedRoomData ~= nil
 	local hasSettings = false
+	local hasActionRowDetail = selectedRoomData ~= nil and not hasEditButton
+	local actionRowCompact = hasActionRowDetail
+		and ui.detailPanel.AbsoluteSize.X > 0
+		and ui.detailPanel.AbsoluteSize.X < 460
 	local compactActions = hasEditButton
 		and ui.detailPanel.AbsoluteSize.X > 0
 		and ui.detailPanel.AbsoluteSize.X < 420
 
-	if compactActions then
+	if compactActions or actionRowCompact then
 		ui.settingsOpenButton.Size = UDim2.fromOffset(84, 36)
-		ui.favouriteButton.Size = UDim2.fromOffset(102, 36)
-		ui.goButton.Size = UDim2.fromOffset(70, 36)
+		ui.favouriteButton.Size = UDim2.fromOffset(actionRowCompact and 108 or 102, 36)
+		ui.goButton.Size = UDim2.fromOffset(actionRowCompact and 76 or 70, 36)
 
 		if ui.favouriteButton.Text == "Add to Favourites" then
 			ui.favouriteButton.Text = "Favourite"
@@ -2456,8 +2614,8 @@ local function updateDetailControlsLayout()
 		end
 	else
 		ui.settingsOpenButton.Size = UDim2.fromOffset(94, 36)
-		ui.favouriteButton.Size = UDim2.fromOffset(130, 36)
-		ui.goButton.Size = UDim2.fromOffset(108, 36)
+		ui.favouriteButton.Size = UDim2.fromOffset(hasActionRowDetail and 146 or 130, 36)
+		ui.goButton.Size = UDim2.fromOffset(hasActionRowDetail and 92 or 108, 36)
 
 		if ui.favouriteButton.Text == "Favourite" then
 			ui.favouriteButton.Text = "Add to Favourites"
@@ -2476,14 +2634,23 @@ local function updateDetailControlsLayout()
 		ui.goButton.Position = UDim2.new(1, -20, 0, 108)
 		ui.settingsFrame.Position = UDim2.fromOffset(14, 154)
 	else
-		local textRightPadding = hasEditButton and 28 or 260
-		local buttonY = hasEditButton and 108 or (isGuestDetail and 50 or 40)
+		local textRightPadding = (hasEditButton or hasActionRowDetail) and 28 or 260
+		local buttonY = hasEditButton and 108 or (hasActionRowDetail and 108 or 40)
+		local goButtonWidth = ui.goButton.Size.X.Offset
+		local actionGap = 10
+
 		ui.detailTitle.Size = selectedRoomData and UDim2.new(1, -textRightPadding, 0, 24) or UDim2.new(1, -28, 0, 24)
 		ui.detailOwner.Size = UDim2.new(1, -textRightPadding, 0, 20)
 		ui.detailMeta.Size = UDim2.new(1, -textRightPadding, 0, 20)
 		ui.detailDescription.Size = UDim2.new(1, -textRightPadding, 0, 18)
+
 		ui.settingsOpenButton.Position = UDim2.new(1, compactActions and -216 or -282, 0, buttonY)
-		ui.favouriteButton.Position = UDim2.new(1, compactActions and -102 or -140, 0, buttonY)
+		ui.favouriteButton.Position = UDim2.new(
+			1,
+			hasActionRowDetail and -(goButtonWidth + actionGap + 20) or (compactActions and -102 or -140),
+			0,
+			buttonY
+		)
 		ui.goButton.Position = UDim2.new(1, -20, 0, buttonY)
 		ui.settingsFrame.Position = UDim2.fromOffset(14, 108)
 	end
@@ -2507,9 +2674,9 @@ local function updateDetailControlsLayout()
 				ui.detailStatus.Visible = true
 			end
 
-			ui.detailStatus.Position = UDim2.fromOffset(14, isSideRail and 148 or (isGuestDetail and 104 or 108))
+			ui.detailStatus.Position = UDim2.fromOffset(14, isSideRail and 148 or (hasActionRowDetail and 148 or 108))
 			ui.detailStatus.Size = UDim2.new(1, -28, 0, 18)
-			ui.statusLabel.Position = UDim2.new(1, -20, 0, isSideRail and 138 or (isGuestDetail and 100 or 104))
+			ui.statusLabel.Position = UDim2.new(1, -20, 0, isSideRail and 138 or (hasActionRowDetail and 144 or 104))
 			ui.statusLabel.Size = isSideRail and UDim2.new(1, -28, 0, 28) or UDim2.fromOffset(300, 28)
 			ui.statusLabel.TextXAlignment = isSideRail and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right
 		end
@@ -2843,6 +3010,17 @@ local function joinSelectedRoom()
 			showSettingsError("This room is not available yet.")
 			return
 		end
+	end
+
+	if pages.DEBUG_ROOM_LIST_TRACE then
+		warn(
+			"RoomNavigator Go clicked:",
+			"selectedRoomId=" .. tostring(selectedRoomData.RoomId or selectedRoomData.Id),
+			"selectedRoomKey=" .. tostring(getRoomKey(selectedRoomData)),
+			"payloadType=" .. tostring(typeof(joinPayload)),
+			"payloadRoomId=" .. tostring(typeof(joinPayload) == "table" and joinPayload.RoomId or nil),
+			"payloadOwner=" .. tostring(typeof(joinPayload) == "table" and joinPayload.OwnerUserId or nil)
+		)
 	end
 
 	joinRoomRequestInFlight = true
@@ -3945,8 +4123,26 @@ function pages.renderOwnRoomDetailsPage()
 end
 
 function pages.renderOwnRooms()
+	if pages.ownRoomsRefreshPending then
+		createEmptyState("Refreshing rooms...")
+		return
+	end
+
 	local ownRooms = pages.filterOwnRooms()
 	clearSelectionIfMissing(ownRooms)
+
+	if pages.DEBUG_ROOM_NAV_PAYLOAD then
+		local renderedOwnedRoomIds = {}
+
+		for _, roomData in ipairs(ownRooms) do
+			if typeof(roomData.RoomId) == "string" then
+				table.insert(renderedOwnedRoomIds, roomData.RoomId)
+			end
+		end
+
+		table.sort(renderedOwnedRoomIds)
+		warn("RoomNavigator Own Room(s) render rows:", table.concat(renderedOwnedRoomIds, ","))
+	end
 
 	if typeof(pages.ownRoomsStatusMessage) == "string" and pages.ownRoomsStatusMessage ~= "" then
 		local statusLabel = Instance.new("TextLabel")
@@ -3963,7 +4159,7 @@ function pages.renderOwnRooms()
 	end
 
 	if #ownRooms == 0 then
-		createEmptyState("You do not have an active room yet.")
+		createEmptyState("No owned rooms found.")
 	else
 		for index, roomData in ipairs(ownRooms) do
 			createRoomRow(roomData, index)
@@ -3990,10 +4186,8 @@ end
 function pages.filterOwnRooms()
 	local rooms = {}
 
-	for _, roomData in ipairs(latestRoomList) do
-		if roomData.IsOwner == true then
-			table.insert(rooms, roomData)
-		end
+	for _, roomData in ipairs(pages.latestOwnedRooms) do
+		table.insert(rooms, roomData)
 	end
 
 	return sortOwnRooms(rooms)
@@ -4236,6 +4430,9 @@ ui.roomsTab.MouseButton1Click:Connect(function()
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	setStatusMessage("")
+	if selectedRoomSubtab == ROOM_SUBTAB_OWN then
+		pages.requestFreshRoomList(true)
+	end
 	renderNavigator()
 end)
 
@@ -4258,6 +4455,7 @@ ui.ownSubtabButton.MouseButton1Click:Connect(function()
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	setStatusMessage("")
+	pages.requestFreshRoomList(true)
 	renderNavigator()
 end)
 
@@ -4561,9 +4759,11 @@ majorMenuStateChanged.Event:Connect(function(isOpen, menuName)
 	setLocalMajorMenuState(isOpen == true, menuName)
 end)
 
-roomListUpdate.OnClientEvent:Connect(function(roomList, currentRoomName)
-	latestRoomList = typeof(roomList) == "table" and roomList or {}
+roomListUpdate.OnClientEvent:Connect(function(roomList, currentRoomName, roomListMeta)
+	pages.replaceLatestRoomList(roomList, roomListMeta)
 	latestCurrentRoomName = currentRoomName
+	pages.ownRoomsRefreshPending = false
+	pages.clearSelectedRoomIfMissingFromLatestList()
 
 	for _, roomData in ipairs(latestRoomList) do
 		if typeof(roomData.RoomKey) == "string" and roomData.RoomKey ~= "" then
@@ -4589,15 +4789,30 @@ joinRoomResult.OnClientEvent:Connect(function(success, message)
 	joinRoomRequestToken += 1
 	roomTransitionRequest:Fire("FadeIn")
 
+	local missingRoom = not success and tostring(message or "") == "Room not found."
+	local refreshOwnRooms = missingRoom
+		and selectedTopTab == TOP_TAB_ROOMS
+		and selectedRoomSubtab == ROOM_SUBTAB_OWN
+
 	if success then
 		setStatusMessage("")
 		setPanelVisible(false, { ForceClose = true })
 	else
+		if missingRoom then
+			pages.clearSelectedRoomState()
+			pages.ownRoomsRefreshPending = refreshOwnRooms
+		end
+
 		showSettingsError(message or "Could not join room.")
-		updateDetailPanel()
+
+		if missingRoom and ui.panel.Visible and renderNavigator then
+			renderNavigator()
+		else
+			updateDetailPanel()
+		end
 	end
 
-	roomListRequest:FireServer()
+	pages.requestFreshRoomList(refreshOwnRooms)
 end)
 
 function handlers.roomNavigatorResult(response)
@@ -4621,7 +4836,7 @@ function handlers.roomNavigatorResult(response)
 			selectedRow = nil
 			pages.ownRoomsStatusMessage = response.Message or "Room created."
 			setStatusMessage(response.Message or "Room created.", "success")
-			roomListRequest:FireServer()
+			pages.requestFreshRoomList(true)
 		else
 			pages.ownRoomsStatusMessage = nil
 			roomPlannerStatus = response.Message or "Could not create room."
@@ -4790,7 +5005,7 @@ function handlers.roomSettingsResult(response)
 
 	if response.Action == "UpdateSettings" then
 		setStatusMessage(response.Message or "Room settings saved.", "success")
-		roomListRequest:FireServer()
+		pages.requestFreshRoomList(selectedTopTab == TOP_TAB_ROOMS and selectedRoomSubtab == ROOM_SUBTAB_OWN)
 	else
 		setStatusMessage("")
 	end

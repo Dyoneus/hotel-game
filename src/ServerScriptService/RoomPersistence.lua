@@ -38,6 +38,9 @@ local DEFAULT_PRIMARY_LAYOUT_ID = "Layout_01"
 local DEFAULT_ROOM_DISPLAY_NAME = "My Room"
 local ROOM_DISPLAY_NAME_MAX_LENGTH = 30
 local ROOM_DESCRIPTION_MAX_LENGTH = 100
+local DEBUG_ROOM_DELETE_TRACE = false
+local DEBUG_ROOM_SAVE_TRACE = false
+local DEBUG_PROFILE_CACHE = false
 
 RoomPersistence.MAX_OWNED_ROOMS = MAX_OWNED_ROOMS
 
@@ -47,6 +50,20 @@ local profilesByPlayer = {}
 local saveScheduled = {}
 local saveRunning = {}
 local writeBlockedByUserId = {}
+
+local function traceProfileCache(...)
+	if DEBUG_PROFILE_CACHE then
+		warn("RoomPersistence profile cache:", ...)
+	end
+end
+
+local function getProfileDebugId(profile)
+	if typeof(profile) ~= "table" then
+		return "nil"
+	end
+
+	return tostring(profile)
+end
 
 local function createEmptyRoomPermissions()
 	return {
@@ -647,6 +664,84 @@ local function normalizeRoomIds(roomIds)
 	return normalizedRoomIds
 end
 
+local function normalizeRoomIdsForExistingRooms(roomIds, rooms)
+	local normalizedRoomIds = {}
+	local seenRoomIds = {}
+
+	if typeof(roomIds) == "table" and typeof(rooms) == "table" then
+		for _, roomId in ipairs(roomIds) do
+			local normalizedRoomId = normalizeRoomId(roomId)
+
+			if normalizedRoomId
+				and typeof(rooms[normalizedRoomId]) == "table"
+				and not seenRoomIds[normalizedRoomId] then
+
+				seenRoomIds[normalizedRoomId] = true
+				table.insert(normalizedRoomIds, normalizedRoomId)
+			end
+		end
+	end
+
+	if not seenRoomIds[PRIMARY_ROOM_ID] then
+		table.insert(normalizedRoomIds, 1, PRIMARY_ROOM_ID)
+	end
+
+	return normalizedRoomIds
+end
+
+local function roomIdArrayToSet(roomIds)
+	local roomIdSet = {}
+
+	if typeof(roomIds) == "table" then
+		for _, roomId in ipairs(roomIds) do
+			local normalizedRoomId = normalizeRoomId(roomId)
+
+			if normalizedRoomId then
+				roomIdSet[normalizedRoomId] = true
+			end
+		end
+	end
+
+	return roomIdSet
+end
+
+local function removeRoomIdFromDirectory(roomDirectory, roomId)
+	local normalizedRoomId = normalizeRoomId(roomId)
+
+	if not normalizedRoomId or typeof(roomDirectory) ~= "table" then
+		return false
+	end
+
+	local nextRoomIds = {}
+	local removed = false
+
+	for _, existingRoomId in ipairs(normalizeRoomIds(roomDirectory.RoomIds)) do
+		if existingRoomId == normalizedRoomId then
+			removed = true
+		else
+			table.insert(nextRoomIds, existingRoomId)
+		end
+	end
+
+	if not roomIdArrayContains(nextRoomIds, PRIMARY_ROOM_ID) then
+		table.insert(nextRoomIds, 1, PRIMARY_ROOM_ID)
+	end
+
+	roomDirectory.RoomIds = nextRoomIds
+
+	if normalizeRoomId(roomDirectory.SelectedRoomId) == normalizedRoomId then
+		roomDirectory.SelectedRoomId = PRIMARY_ROOM_ID
+	end
+
+	if normalizeRoomId(roomDirectory.PrimaryRoomId) == nil then
+		roomDirectory.PrimaryRoomId = PRIMARY_ROOM_ID
+	end
+
+	roomDirectory.RoomId = PRIMARY_ROOM_ID
+
+	return removed
+end
+
 local function normalizePermissionUserId(userId)
 	local numericUserId = nil
 
@@ -1081,7 +1176,19 @@ local function ensureRoomsSchema(profile)
 		end
 	end
 
-	roomDirectory.RoomIds = normalizeRoomIds(roomDirectory.RoomIds)
+	local previousDirectoryRoomIds = DEBUG_ROOM_DELETE_TRACE and roomIdArrayToSet(roomDirectory.RoomIds) or nil
+	roomDirectory.RoomIds = normalizeRoomIdsForExistingRooms(roomDirectory.RoomIds, profile.Rooms)
+
+	if DEBUG_ROOM_DELETE_TRACE and previousDirectoryRoomIds then
+		local normalizedDirectoryRoomIds = roomIdArrayToSet(roomDirectory.RoomIds)
+
+		for previousRoomId in pairs(previousDirectoryRoomIds) do
+			if previousRoomId ~= PRIMARY_ROOM_ID and normalizedDirectoryRoomIds[previousRoomId] ~= true then
+				warn("RoomPersistence: removed missing room id from RoomDirectory.RoomIds:", previousRoomId)
+			end
+		end
+	end
+
 	roomDirectory.PrimaryRoomId = PRIMARY_ROOM_ID
 
 	if not profile.Rooms[roomDirectory.SelectedRoomId] then
@@ -1173,6 +1280,10 @@ local function setRoomStateForRoomProfile(profile, roomId, roomState, layoutId)
 	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
 
 	if not roomRecord then
+		if DEBUG_ROOM_SAVE_TRACE then
+			warn("RoomPersistence: refused room state save for missing room id:", tostring(roomId))
+		end
+
 		return false, "Room not found."
 	end
 
@@ -1750,6 +1861,15 @@ function RoomPersistence.ApplyRoomState(roomModel, roomState)
 end
 
 function RoomPersistence.LoadProfile(player)
+	local cachedProfile = profilesByPlayer[player]
+
+	if cachedProfile then
+		cachedProfile = ensureRoomsSchema(cachedProfile)
+		profilesByPlayer[player] = cachedProfile
+		traceProfileCache("LoadProfile cache hit", player.Name, getProfileDebugId(cachedProfile))
+		return cachedProfile, true
+	end
+
 	local success, data = pcall(function()
 		return profileStore:GetAsync(getKey(player))
 	end)
@@ -1761,7 +1881,9 @@ function RoomPersistence.LoadProfile(player)
 		-- Real persistence still requires Studio API access / live server DataStores.
 		if RunService:IsStudio() then
 			local fallbackProfile = createDefaultProfile()
+			ensureRoomsSchema(fallbackProfile)
 			profilesByPlayer[player] = fallbackProfile
+			traceProfileCache("LoadProfile studio fallback", player.Name, getProfileDebugId(fallbackProfile))
 			return fallbackProfile, true
 		end
 
@@ -1770,12 +1892,24 @@ function RoomPersistence.LoadProfile(player)
 
 	local profile = fillDefaults(data)
 	profilesByPlayer[player] = profile
+	traceProfileCache("LoadProfile loaded", player.Name, getProfileDebugId(profile))
 
 	return profile, true
 end
 
 function RoomPersistence.GetProfile(player)
-	return profilesByPlayer[player]
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		traceProfileCache("GetProfile miss", player and player.Name or "nil")
+		return nil
+	end
+
+	profile = ensureRoomsSchema(profile)
+	profilesByPlayer[player] = profile
+	traceProfileCache("GetProfile hit", player.Name, getProfileDebugId(profile))
+
+	return profile
 end
 
 function RoomPersistence.EnsureRoomsSchema(profile)
@@ -1815,6 +1949,8 @@ function RoomPersistence.GetOwnedRoomsSnapshot(player)
 		return {}
 	end
 
+	ensureRoomsSchema(profile)
+
 	local snapshot = {}
 
 	for _, roomRecord in ipairs(getSortedOwnedRoomRecords(profile)) do
@@ -1830,6 +1966,8 @@ function RoomPersistence.GetRoomRecord(player, roomId)
 	if not profile then
 		return nil
 	end
+
+	ensureRoomsSchema(profile)
 
 	local roomRecord = getMutableRoomRecord(profile, roomId)
 
@@ -2160,6 +2298,91 @@ function RoomPersistence.CreateOwnedRoom(player, options)
 	RoomPersistence.QueueSave(player)
 
 	return true, "Room created.", deepCopy(roomRecord)
+end
+
+local function waitForProfileSaveSlot(player, timeoutSeconds)
+	local timeoutAt = os.clock() + (timeoutSeconds or 6)
+
+	while saveRunning[player] and os.clock() < timeoutAt do
+		task.wait(0.1)
+	end
+
+	return saveRunning[player] ~= true
+end
+
+function RoomPersistence.DeleteOwnedRoomForDebug(player, roomId)
+	local profile = RoomPersistence.GetProfile(player)
+
+	if not profile then
+		local loadedProfile, loaded = RoomPersistence.LoadProfile(player)
+
+		if not loaded or not loadedProfile then
+			return false, "Profile is not loaded.", {}, false
+		end
+
+		profile = loadedProfile
+	end
+
+	local normalizedRoomId = normalizeRoomId(roomId)
+
+	if not normalizedRoomId then
+		return false, "Invalid room id.", RoomPersistence.GetOwnedRoomsSnapshot(player), false
+	end
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		return false, "Primary room cannot be deleted.", RoomPersistence.GetOwnedRoomsSnapshot(player), false
+	end
+
+	ensureRoomsSchema(profile)
+
+	if typeof(profile.Rooms) ~= "table" or typeof(profile.Rooms[normalizedRoomId]) ~= "table" then
+		removeRoomIdFromDirectory(ensureRoomDirectory(profile), normalizedRoomId)
+		ensureRoomsSchema(profile)
+		return false, "Room not found.", RoomPersistence.GetOwnedRoomsSnapshot(player), false
+	end
+
+	profile.Rooms[normalizedRoomId] = nil
+
+	local roomDirectory = ensureRoomDirectory(profile)
+	removeRoomIdFromDirectory(roomDirectory, normalizedRoomId)
+	roomDirectory.RoomIds = normalizeRoomIdsForExistingRooms(roomDirectory.RoomIds, profile.Rooms)
+	roomDirectory.PrimaryRoomId = PRIMARY_ROOM_ID
+	roomDirectory.RoomId = PRIMARY_ROOM_ID
+
+	if normalizeRoomId(roomDirectory.SelectedRoomId) == normalizedRoomId
+		or not profile.Rooms[roomDirectory.SelectedRoomId] then
+
+		roomDirectory.SelectedRoomId = PRIMARY_ROOM_ID
+	end
+
+	profile.RoomDirectory = roomDirectory
+	profile.UpdatedAt = os.time()
+
+	if DEBUG_ROOM_DELETE_TRACE then
+		warn("RoomPersistence: DeleteOwnedRoomForDebug deleted room", player.Name, normalizedRoomId)
+	end
+
+	if not waitForProfileSaveSlot(player, 6) then
+		return false, "Room deleted in memory, but a profile save is still running.", RoomPersistence.GetOwnedRoomsSnapshot(player), false
+	end
+
+	saveScheduled[player] = nil
+
+	local saveOk, saveMessage = RoomPersistence.SavePlayer(player)
+
+	if not saveOk then
+		if DEBUG_ROOM_DELETE_TRACE then
+			warn("RoomPersistence: DeleteOwnedRoomForDebug save failed", player.Name, normalizedRoomId, saveMessage)
+		end
+
+		return false, "Room deleted in memory, but save failed: " .. tostring(saveMessage), RoomPersistence.GetOwnedRoomsSnapshot(player), false
+	end
+
+	if DEBUG_ROOM_DELETE_TRACE then
+		warn("RoomPersistence: DeleteOwnedRoomForDebug save succeeded", player.Name, normalizedRoomId)
+	end
+
+	return true, "Room deleted.", RoomPersistence.GetOwnedRoomsSnapshot(player), true
 end
 
 function RoomPersistence.HasSeenHotelIntro(player)
@@ -2552,6 +2775,8 @@ function RoomPersistence.GetRoomDirectorySnapshot(player)
 		return nil
 	end
 
+	ensureRoomsSchema(profile)
+
 	return deepCopy(ensureRoomDirectory(profile))
 end
 
@@ -2697,7 +2922,7 @@ local function getLoadedProfileByUserId(userId)
 
 	for player, profile in pairs(profilesByPlayer) do
 		if player.UserId == numericUserId then
-			return profile, player
+			return ensureRoomsSchema(profile), player
 		end
 	end
 
@@ -2709,7 +2934,13 @@ local function getLoadedProfileForPlayer(player)
 		return nil
 	end
 
-	return profilesByPlayer[player]
+	local profile = profilesByPlayer[player]
+
+	if not profile then
+		return nil
+	end
+
+	return ensureRoomsSchema(profile)
 end
 
 local function savePermissionMutation(ownerPlayer, profile)
@@ -3864,24 +4095,30 @@ end
 
 function RoomPersistence.SavePlayer(player)
 	if RoomPersistence.IsWriteBlocked(player) then
-		return false
+		traceProfileCache("SavePlayer blocked", player and player.Name or "nil")
+		return false, "Writes are blocked."
 	end
 	
 	local profile = profilesByPlayer[player]
 
 	if not profile then
-		return false
+		traceProfileCache("SavePlayer missing profile", player and player.Name or "nil")
+		return false, "Profile is not loaded."
 	end
 
 	if saveRunning[player] then
-		return false
+		traceProfileCache("SavePlayer already running", player.Name, getProfileDebugId(profile))
+		return false, "A profile save is already running."
 	end
 
+	profile = ensureRoomsSchema(profile)
+	profilesByPlayer[player] = profile
 	profile.UpdatedAt = os.time()
 
 	local profileSnapshot = deepCopy(profile)
 
 	saveRunning[player] = true
+	traceProfileCache("SavePlayer start", player.Name, getProfileDebugId(profile), "updatedAt", tostring(profile.UpdatedAt))
 
 	local success, errorMessage = pcall(function()
 		profileStore:UpdateAsync(getKey(player), function()
@@ -3893,9 +4130,13 @@ function RoomPersistence.SavePlayer(player)
 
 	if not success then
 		warn("RoomPersistence: profile save failed for", player.Name, errorMessage)
+		traceProfileCache("SavePlayer failed", player.Name, tostring(errorMessage))
+		return false, tostring(errorMessage)
 	end
 
-	return success
+	traceProfileCache("SavePlayer success", player.Name, getProfileDebugId(profile))
+
+	return true, "Profile saved."
 end
 
 function RoomPersistence.CaptureRoomState(player, roomModel)
@@ -3943,7 +4184,11 @@ function RoomPersistence.CaptureRoomState(player, roomModel)
 		profile.CurrentLayoutId = roomState.LayoutId
 		profile.RoomState = roomState
 	elseif not roomStateSaved then
-		warn("RoomPersistence: room state capture skipped for missing room", player.Name, roomId)
+		if DEBUG_ROOM_SAVE_TRACE then
+			warn("RoomPersistence: room state capture skipped for missing room", player.Name, roomId)
+		end
+
+		return nil
 	end
 
 	profile.UpdatedAt = os.time()

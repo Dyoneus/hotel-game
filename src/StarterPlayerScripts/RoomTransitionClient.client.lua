@@ -61,6 +61,7 @@ fadeFrame.Parent = gui
 local activeTween = nil
 local transitionSerial = 0
 local lastRoomName = player:GetAttribute("CurrentRoomName")
+local lastMainMenuState = player:GetAttribute("InHotelMainMenu")
 
 local function parsePayload(payload)
 	if typeof(payload) == "string" then
@@ -148,6 +149,18 @@ transitionRequest.Event:Connect(function(payload)
 	end
 end)
 
+local function finishFadeAfterContextChange()
+	if not fadeFrame.Visible or fadeFrame.BackgroundTransparency >= 0.98 then
+		return
+	end
+
+	task.delay(0.08, function()
+		if fadeFrame.Visible and fadeFrame.BackgroundTransparency < 0.98 then
+			fadeIn(FADE_TIME)
+		end
+	end)
+end
+
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
 	local currentRoomName = player:GetAttribute("CurrentRoomName")
 
@@ -156,12 +169,16 @@ player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
 	end
 
 	lastRoomName = currentRoomName
+	finishFadeAfterContextChange()
+end)
 
-	if fadeFrame.Visible and fadeFrame.BackgroundTransparency < 0.98 then
-		task.delay(0.08, function()
-			if fadeFrame.Visible and fadeFrame.BackgroundTransparency < 0.98 then
-				fadeIn(FADE_TIME)
-			end
-		end)
+player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(function()
+	local currentMainMenuState = player:GetAttribute("InHotelMainMenu")
+
+	if currentMainMenuState == lastMainMenuState then
+		return
 	end
+
+	lastMainMenuState = currentMainMenuState
+	finishFadeAfterContextChange()
 end)
