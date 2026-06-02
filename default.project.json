@@ -160,6 +160,14 @@
         "$className": "ScreenGui",
         "$path": "src/StarterGui/RoomNavigatorGui"
       },
+      "RoomPlannerGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomPlannerGui"
+      },
+      "RoomSettingsGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomSettingsGui"
+      },
       "RoomModeGui": {
         "$className": "ScreenGui",
         "$path": "src/StarterGui/RoomModeGui"

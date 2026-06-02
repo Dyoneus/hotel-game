@@ -65,6 +65,7 @@ end
 local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
 local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
 local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
+local openRoomSettings = getOrCreateClientEvent("OpenRoomSettings")
 local openInventory = getOrCreateClientEvent("OpenInventory")
 local openCatalog = getOrCreateClientEvent("OpenCatalog")
 local toggleRoomMode = getOrCreateClientEvent("ToggleRoomMode")
@@ -162,7 +163,7 @@ hud.MenuList = Instance.new("Frame")
 hud.MenuList.Name = "MenuList"
 hud.MenuList.AnchorPoint = Vector2.new(0, 1)
 hud.MenuList.Position = UDim2.new(0, 12, 0, -8)
-hud.MenuList.Size = UDim2.fromOffset(156, 116)
+hud.MenuList.Size = UDim2.fromOffset(176, 148)
 hud.MenuList.BackgroundColor3 = Color3.fromRGB(34, 42, 50)
 hud.MenuList.BackgroundTransparency = 0.02
 hud.MenuList.BorderSizePixel = 0
@@ -210,8 +211,9 @@ local function createMenuEntry(name, text, layoutOrder)
 end
 
 hud.MenuRoomsButton = createMenuEntry("MenuRoomsButton", "Rooms", 1)
-hud.MenuInventoryButton = createMenuEntry("MenuInventoryButton", "Inventory", 2)
-hud.MenuCatalogButton = createMenuEntry("MenuCatalogButton", "Catalog", 3)
+hud.MenuRoomSettingsButton = createMenuEntry("MenuRoomSettingsButton", "Room Settings", 2)
+hud.MenuInventoryButton = createMenuEntry("MenuInventoryButton", "Inventory", 3)
+hud.MenuCatalogButton = createMenuEntry("MenuCatalogButton", "Catalog", 4)
 
 hud.ChatFrame = Instance.new("Frame")
 hud.ChatFrame.Name = "ChatPlaceholder"
@@ -367,6 +369,30 @@ local function canEditCurrentRoom()
 	return roomModel:GetAttribute("OwnerUserId") == player.UserId
 end
 
+local function canOpenRoomSettings()
+	return player:GetAttribute("CurrentRoomType") == "PlayerRoom"
+		and player:GetAttribute("CurrentRoomOwnerUserId") == player.UserId
+		and typeof(player:GetAttribute("CurrentRoomName")) == "string"
+		and player:GetAttribute("CurrentRoomName") ~= ""
+end
+
+local function updateRoomSettingsMenuEntry()
+	local canOpen = canOpenRoomSettings()
+
+	hud.MenuRoomSettingsButton.Visible = canOpen
+	hud.MenuRoomSettingsButton.Active = canOpen
+	hud.MenuRoomSettingsButton.AutoButtonColor = canOpen
+	hud.MenuRoomSettingsButton.TextColor3 = canOpen
+		and Color3.fromRGB(245, 248, 250)
+		or Color3.fromRGB(165, 174, 182)
+	hud.MenuRoomSettingsButton.BackgroundColor3 = canOpen
+		and Color3.fromRGB(58, 70, 82)
+		or Color3.fromRGB(42, 49, 56)
+	hud.MenuList.Size = canOpen
+		and UDim2.fromOffset(176, 148)
+		or UDim2.fromOffset(156, 116)
+end
+
 local function updateEditButton()
 	local canEdit = canEditCurrentRoom()
 	local roomMode = player:GetAttribute("RoomMode") or "Play"
@@ -404,6 +430,7 @@ local function updateVisibility()
 	if shouldShow then
 		updateRoomDetails()
 		updateEditButton()
+		updateRoomSettingsMenuEntry()
 	else
 		setMenuExpanded(false)
 	end
@@ -416,6 +443,18 @@ end)
 hud.MenuRoomsButton.MouseButton1Click:Connect(function()
 	setMenuExpanded(false)
 	openRoomNavigator:Fire()
+end)
+
+hud.MenuRoomSettingsButton.MouseButton1Click:Connect(function()
+	if not canOpenRoomSettings() then
+		setMenuExpanded(false)
+		return
+	end
+
+	setMenuExpanded(false)
+	openRoomSettings:Fire({
+		RoomId = player:GetAttribute("CurrentRoomId") or "Primary",
+	})
 end)
 
 local function openInventoryMenu()
@@ -450,6 +489,9 @@ closeMajorMenus.Event:Connect(function()
 end)
 
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(updateVisibility)
+player:GetAttributeChangedSignal("CurrentRoomId"):Connect(updateVisibility)
+player:GetAttributeChangedSignal("CurrentRoomType"):Connect(updateVisibility)
+player:GetAttributeChangedSignal("CurrentRoomOwnerUserId"):Connect(updateVisibility)
 player:GetAttributeChangedSignal("OnboardingStep"):Connect(updateVisibility)
 player:GetAttributeChangedSignal("ControlMode"):Connect(updateVisibility)
 player:GetAttributeChangedSignal("InHotelMainMenu"):Connect(updateVisibility)

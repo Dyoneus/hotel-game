@@ -90,6 +90,7 @@ local CONTENT_TOP_OFFSET = 124
 local DETAIL_BOTTOM_OFFSET = 18
 local DETAIL_GAP = 8
 local DETAIL_HEIGHT_EMPTY = 96
+local DETAIL_HEIGHT_GUEST_SELECTED = 142
 local DETAIL_HEIGHT_SELECTED = 182
 local DETAIL_HEIGHT_SETTINGS = 580
 local DETAIL_SIDE_MIN_PANEL_WIDTH = 900
@@ -415,6 +416,8 @@ local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
 local majorMenuStateChanged = getOrCreateClientEvent("MajorMenuStateChanged")
 local roomTransitionRequest = getOrCreateClientEvent("RoomTransitionRequest")
 local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
+local openRoomSettings = getOrCreateClientEvent("OpenRoomSettings")
+local openRoomPlanner = getOrCreateClientEvent("OpenRoomPlanner")
 
 local MENU_NAME = "Rooms"
 local anyMajorMenuOpen = false
@@ -1164,6 +1167,7 @@ end
 
 local function isPaperLayout()
 	return currentPanelLayout == PANEL_LAYOUT_MAIN_MENU_PAPER
+		or currentPanelLayout == PANEL_LAYOUT_NORMAL
 end
 
 applyNavigatorStyle = function()
@@ -1744,6 +1748,22 @@ local function sortRoomsForBrowsing(rooms)
 	return rooms
 end
 
+local function sortGuestRoomsByOccupancy(rooms)
+	table.sort(rooms, function(firstRoom, secondRoom)
+		local firstOccupancy = getOccupancyValue(firstRoom)
+		local secondOccupancy = getOccupancyValue(secondRoom)
+
+		if firstOccupancy ~= secondOccupancy then
+			return firstOccupancy > secondOccupancy
+		end
+
+		return normalizeSearchText(getRoomDisplayName(firstRoom))
+			< normalizeSearchText(getRoomDisplayName(secondRoom))
+	end)
+
+	return rooms
+end
+
 local function sortOwnRooms(rooms)
 	table.sort(rooms, function(firstRoom, secondRoom)
 		local firstIsCurrent = isEntryCurrentRoom(firstRoom)
@@ -1929,6 +1949,89 @@ local function showSettingsError(message)
 	end
 
 	shakeStatusLabel()
+end
+
+local function getNavigatorRestoreState(overrides)
+	local restoreState = {
+		Mode = currentPanelLayout,
+		TopTab = selectedTopTab,
+		RoomSubtab = selectedRoomSubtab,
+		GuestCategory = selectedGuestCategory,
+		SearchQuery = searchQuery,
+	}
+
+	if selectedRoomData then
+		restoreState.SelectedRoomKey = getRoomKey(selectedRoomData)
+		restoreState.SelectedRoomId = selectedRoomData.RoomId or selectedRoomData.Id
+	end
+
+	if typeof(overrides) == "table" then
+		for key, value in pairs(overrides) do
+			restoreState[key] = value
+		end
+	end
+
+	return restoreState
+end
+
+local function applyNavigatorRestoreState(restoreState)
+	if typeof(restoreState) ~= "table" then
+		return
+	end
+
+	if restoreState.TopTab == TOP_TAB_PUBLIC or restoreState.TopTab == TOP_TAB_ROOMS then
+		selectedTopTab = restoreState.TopTab
+	end
+
+	if restoreState.RoomSubtab == ROOM_SUBTAB_SEARCH
+		or restoreState.RoomSubtab == ROOM_SUBTAB_OWN
+		or restoreState.RoomSubtab == ROOM_SUBTAB_FAVOURITES
+		or restoreState.RoomSubtab == ROOM_SUBTAB_GUEST then
+
+		selectedRoomSubtab = restoreState.RoomSubtab
+	end
+
+	if typeof(restoreState.GuestCategory) == "string" and restoreState.GuestCategory ~= "" then
+		selectedGuestCategory = restoreState.GuestCategory
+	end
+
+	if typeof(restoreState.SearchQuery) == "string" then
+		searchQuery = restoreState.SearchQuery
+
+		if ui.searchBox.Text ~= searchQuery then
+			ui.searchBox.Text = searchQuery
+		end
+	end
+
+	selectedRoomData = nil
+	selectedRow = nil
+
+	local selectedRoomKey = restoreState.SelectedRoomKey
+	local selectedRoomId = restoreState.SelectedRoomId
+
+	for _, roomData in ipairs(latestRoomList) do
+		if (typeof(selectedRoomKey) == "string" and getRoomKey(roomData) == selectedRoomKey)
+			or (typeof(selectedRoomKey) ~= "string"
+				and typeof(selectedRoomId) == "string"
+				and (roomData.RoomId == selectedRoomId or roomData.Id == selectedRoomId)) then
+
+			selectedRoomData = roomData
+			break
+		end
+	end
+end
+
+local function openSelectedRoomSettings()
+	if not isSettingsEditableRoom(selectedRoomData) then
+		showSettingsError("Select your own room first.")
+		return
+	end
+
+	openRoomSettings:Fire({
+		RoomId = getSelectedSettingsRoomId(),
+		Source = "RoomNavigator",
+		RestoreState = getNavigatorRestoreState(),
+	})
 end
 
 local function populateSettingsFromEntry(entry)
@@ -2290,6 +2393,10 @@ local function getRawDetailHeight()
 		return DETAIL_HEIGHT_EMPTY
 	end
 
+	if selectedTopTab == TOP_TAB_ROOMS and selectedRoomSubtab == ROOM_SUBTAB_GUEST then
+		return DETAIL_HEIGHT_GUEST_SELECTED
+	end
+
 	return DETAIL_HEIGHT_SELECTED
 end
 
@@ -2329,6 +2436,9 @@ local function updateDetailControlsLayout()
 
 	local isSideRail = ui.detailPanel:GetAttribute("SideRailLayout") == true
 	local hasEditButton = isSettingsEditableRoom(selectedRoomData)
+	local isGuestDetail = selectedTopTab == TOP_TAB_ROOMS
+		and selectedRoomSubtab == ROOM_SUBTAB_GUEST
+		and selectedRoomData ~= nil
 	local hasSettings = false
 	local compactActions = hasEditButton
 		and ui.detailPanel.AbsoluteSize.X > 0
@@ -2367,7 +2477,7 @@ local function updateDetailControlsLayout()
 		ui.settingsFrame.Position = UDim2.fromOffset(14, 154)
 	else
 		local textRightPadding = hasEditButton and 28 or 260
-		local buttonY = hasEditButton and 108 or 40
+		local buttonY = hasEditButton and 108 or (isGuestDetail and 50 or 40)
 		ui.detailTitle.Size = selectedRoomData and UDim2.new(1, -textRightPadding, 0, 24) or UDim2.new(1, -28, 0, 24)
 		ui.detailOwner.Size = UDim2.new(1, -textRightPadding, 0, 20)
 		ui.detailMeta.Size = UDim2.new(1, -textRightPadding, 0, 20)
@@ -2397,9 +2507,9 @@ local function updateDetailControlsLayout()
 				ui.detailStatus.Visible = true
 			end
 
-			ui.detailStatus.Position = UDim2.fromOffset(14, isSideRail and 148 or 108)
+			ui.detailStatus.Position = UDim2.fromOffset(14, isSideRail and 148 or (isGuestDetail and 104 or 108))
 			ui.detailStatus.Size = UDim2.new(1, -28, 0, 18)
-			ui.statusLabel.Position = UDim2.new(1, -20, 0, isSideRail and 138 or 104)
+			ui.statusLabel.Position = UDim2.new(1, -20, 0, isSideRail and 138 or (isGuestDetail and 100 or 104))
 			ui.statusLabel.Size = isSideRail and UDim2.new(1, -28, 0, 28) or UDim2.fromOffset(300, 28)
 			ui.statusLabel.TextXAlignment = isSideRail and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right
 		end
@@ -2606,12 +2716,10 @@ local function updateDetailPanel()
 
 	if canEditSettings then
 		ui.settingsOpenButton.Visible = true
-		populateSettingsFromEntry(selectedRoomData)
-		setSettingsEditorVisible(true)
-		roomEditorsUnavailable = not areRoomSettingsRemotesAvailable()
-		setRoomEditorControlsEnabled(true)
-		renderRoomEditors()
-		ui.detailStatus.Text = "Use Settings to edit room info and editors."
+		setSettingsEditorVisible(false)
+		currentRoomEditors = {}
+		setRoomEditorControlsEnabled(false)
+		ui.detailStatus.Text = "Open Settings to edit room info and editors."
 	else
 		setSettingsEditorVisible(false)
 		currentRoomEditors = {}
@@ -2666,6 +2774,7 @@ local function selectRoom(roomData, row)
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	pages.ownRoomsStatusMessage = nil
+	setStatusMessage("")
 
 	if selectedRow then
 		setRowSelected(selectedRow, true)
@@ -2674,13 +2783,8 @@ local function selectRoom(roomData, row)
 	updateNavigationState()
 	updateDetailPanel()
 
-	if isSettingsEditableRoom(roomData) then
-		requestRoomSettings()
-		requestRoomEditors()
-	else
-		currentRoomEditors = {}
-		renderRoomEditors()
-	end
+	currentRoomEditors = {}
+	renderRoomEditors()
 end
 
 local function joinSelectedRoom()
@@ -3307,17 +3411,22 @@ function pages.createRoomPlannerCard(order)
 	openButton.TextSize = 13
 
 	local function openPlanner()
-		roomPlannerOpen = true
+		local restoreState = getNavigatorRestoreState({
+			TopTab = TOP_TAB_ROOMS,
+			RoomSubtab = ROOM_SUBTAB_OWN,
+		})
+
+		roomPlannerOpen = false
 		roomDetailsPageOpen = false
 		roomSettingsPageOpen = false
 		selectedRoomData = nil
 		selectedRow = nil
 		roomPlannerStatus = "Select Starter Studio to create a room."
 		pages.ownRoomsStatusMessage = nil
-
-		if renderNavigator then
-			renderNavigator()
-		end
+		openRoomPlanner:Fire({
+			Source = "RoomNavigator",
+			RestoreState = restoreState,
+		})
 	end
 
 	row.MouseButton1Click:Connect(openPlanner)
@@ -3796,9 +3905,7 @@ function pages.renderOwnRoomDetailsPage()
 	settingsButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 	settingsButton.TextSize = 13
 	settingsButton.MouseButton1Click:Connect(function()
-		roomDetailsPageOpen = false
-		roomSettingsPageOpen = true
-		renderNavigator()
+		openSelectedRoomSettings()
 	end)
 
 	local favouriteButton = createTextButton(
@@ -3877,7 +3984,7 @@ function pages.filterRoomsByCategory(categoryName)
 		end
 	end
 
-	return sortRoomsForBrowsing(rooms)
+	return sortGuestRoomsByOccupancy(rooms)
 end
 
 function pages.filterOwnRooms()
@@ -3896,20 +4003,21 @@ function pages.filterSearchRooms()
 	local query = normalizeSearchText(searchQuery)
 	local rooms = {}
 
+	if query == "" or #query < 2 then
+		return rooms
+	end
+
 	for _, roomData in ipairs(latestRoomList) do
 		if isPublicPlayerRoom(roomData) then
 			local displayName = normalizeSearchText(getRoomDisplayName(roomData))
 			local ownerName = normalizeSearchText(tostring(roomData.OwnerName or ""))
 			local ownerDisplayName = normalizeSearchText(tostring(roomData.OwnerDisplayName or ""))
 			local category = normalizeSearchText(tostring(roomData.Category or ""))
-			local description = normalizeSearchText(tostring(roomData.Description or ""))
 
-			if query == ""
-				or string.find(displayName, query, 1, true)
+			if string.find(displayName, query, 1, true)
 				or string.find(ownerName, query, 1, true)
 				or string.find(ownerDisplayName, query, 1, true)
-				or string.find(category, query, 1, true)
-				or string.find(description, query, 1, true) then
+				or string.find(category, query, 1, true) then
 
 				table.insert(rooms, roomData)
 			end
@@ -3993,10 +4101,19 @@ function pages.renderRooms()
 	if selectedRoomSubtab == ROOM_SUBTAB_SEARCH then
 		ui.sectionTitle.Text = "Search Rooms"
 		ui.listFrame.Position = UDim2.fromOffset(14, 84)
-		pages.renderRoomRows(pages.filterSearchRooms(), "No rooms found.")
+		local query = normalizeSearchText(searchQuery)
+
+		if query == "" then
+			clearSelectionIfMissing({})
+			createEmptyState("Search for a room by name or owner.")
+		elseif #query < 2 then
+			clearSelectionIfMissing({})
+			createEmptyState("Type at least 2 characters to search.")
+		else
+			pages.renderRoomRows(pages.filterSearchRooms(), "No matching rooms found.")
+		end
 	elseif selectedRoomSubtab == ROOM_SUBTAB_OWN then
-		ui.sectionTitle.Text = roomSettingsPageOpen and ""
-			or (roomPlannerOpen and "Room Planner" or "Own Room(s)")
+		ui.sectionTitle.Text = roomSettingsPageOpen and "" or "Own Room(s)"
 		ui.sectionTitle.Visible = roomSettingsPageOpen ~= true
 		ui.listFrame.Position = UDim2.fromOffset(14, 44)
 		ui.listFrame.Size = UDim2.new(1, -28, 1, -58)
@@ -4005,12 +4122,8 @@ function pages.renderRooms()
 			roomPlannerOpen = false
 			roomDetailsPageOpen = false
 			pages.renderRoomSettingsPage()
-		elseif roomPlannerOpen then
-			selectedRoomData = nil
-			selectedRow = nil
-			roomDetailsPageOpen = false
-			pages.renderRoomPlanner()
 		else
+			roomPlannerOpen = false
 			pages.renderOwnRooms()
 		end
 	elseif selectedRoomSubtab == ROOM_SUBTAB_FAVOURITES then
@@ -4111,6 +4224,7 @@ ui.publicSpacesTab.MouseButton1Click:Connect(function()
 	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
+	setStatusMessage("")
 	renderNavigator()
 end)
 
@@ -4121,6 +4235,7 @@ ui.roomsTab.MouseButton1Click:Connect(function()
 	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
+	setStatusMessage("")
 	renderNavigator()
 end)
 
@@ -4131,6 +4246,7 @@ ui.searchSubtabButton.MouseButton1Click:Connect(function()
 	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
+	setStatusMessage("")
 	renderNavigator()
 end)
 
@@ -4141,6 +4257,7 @@ ui.ownSubtabButton.MouseButton1Click:Connect(function()
 	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
+	setStatusMessage("")
 	renderNavigator()
 end)
 
@@ -4151,6 +4268,7 @@ ui.favouritesSubtabButton.MouseButton1Click:Connect(function()
 	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
+	setStatusMessage("")
 	renderNavigator()
 end)
 
@@ -4161,6 +4279,7 @@ ui.guestSubtabButton.MouseButton1Click:Connect(function()
 	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
+	setStatusMessage("")
 	renderNavigator()
 end)
 
@@ -4184,16 +4303,7 @@ ui.favouriteButton.MouseButton1Click:Connect(function()
 end)
 
 ui.settingsOpenButton.MouseButton1Click:Connect(function()
-	if not isSettingsEditableRoom(selectedRoomData) then
-		showSettingsError("Select your own room first.")
-		return
-	end
-
-	debugRoomNavLayout("openRoomSettings", "renderer=pages.renderRoomSettingsPage")
-	roomSettingsPageOpen = true
-	roomDetailsPageOpen = false
-	roomPlannerOpen = false
-	renderNavigator()
+	openSelectedRoomSettings()
 end)
 
 ui.settingsBackButton.MouseButton1Click:Connect(function()
@@ -4411,11 +4521,16 @@ openRoomNavigator.Event:Connect(function(payload)
 		mode = payload
 	end
 
+	if typeof(payload) == "table" and typeof(payload.RestoreState) == "table" then
+		applyNavigatorRestoreState(payload.RestoreState)
+	end
+
 	applyPanelLayout(
 		mode == PANEL_LAYOUT_MAIN_MENU_DOCKED
 			and getMainMenuPanelLayout()
 			or PANEL_LAYOUT_NORMAL
 	)
+	setStatusMessage("")
 	setPanelVisible(true)
 	syncMainMenuNavigatorState()
 end)
@@ -4475,7 +4590,7 @@ joinRoomResult.OnClientEvent:Connect(function(success, message)
 	roomTransitionRequest:Fire("FadeIn")
 
 	if success then
-		setStatusMessage(message or "Joined room.", "success")
+		setStatusMessage("")
 		setPanelVisible(false, { ForceClose = true })
 	else
 		showSettingsError(message or "Could not join room.")
