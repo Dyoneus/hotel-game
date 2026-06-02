@@ -60,6 +60,30 @@ local ITEMS = {
 		Featured = false,
 		IsLimited = false,
 	},
+	{
+		-- Temporary development furniture for room-specific OpenClose permission testing.
+		Id = "Gate_Test_OpenClose",
+		TemplateName = "Gate_Test_OpenClose",
+		DisplayName = "Test Gate",
+		Description = "Temporary Open/Close test gate.",
+		MaxPerRoom = 20,
+		Category = "Gate",
+		FootprintWidth = 1,
+		FootprintDepth = 1,
+		Price = 1,
+		SellPrice = 0,
+		CurrencyKey = "Dollars",
+		PurchaseCurrency = "Dollars",
+		TradableOnPurchase = false,
+		SellableOnPurchase = false,
+		Sellable = false,
+		PermissionActions = { "OpenClose" },
+		SupportsOpenClose = true,
+		DefaultAction = "OpenClose",
+		OpenCloseTargetName = "GatePanel",
+		Featured = false,
+		IsLimited = false,
+	},
 }
 
 -- Future door/gate items can opt into permissioned actions without changing

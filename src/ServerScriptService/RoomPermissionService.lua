@@ -47,6 +47,27 @@ local function isPositiveInteger(value)
 		and value == math.floor(value)
 end
 
+local function isSignedInteger(value)
+	return typeof(value) == "number"
+		and value == value
+		and math.abs(value) < math.huge
+		and value == math.floor(value)
+end
+
+local function getPlayerByUserId(ownerUserId)
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.UserId == ownerUserId then
+			return player
+		end
+	end
+
+	if ownerUserId < 0 then
+		return nil
+	end
+
+	return Players:GetPlayerByUserId(ownerUserId)
+end
+
 local function normalizeActionName(actionName)
 	if typeof(actionName) ~= "string" then
 		return nil
@@ -194,14 +215,17 @@ function RoomPermissionService.GetRoomOwnerUserId(roomModel)
 
 	local ownerUserId = roomModel:GetAttribute("OwnerUserId")
 
-	if isPositiveInteger(ownerUserId) then
+	if isSignedInteger(ownerUserId) then
 		return ownerUserId
 	end
 
 	local roomName = tostring(roomModel.Name)
-	local fallbackUserId = tonumber(roomName:match("^Room_(%d+)$") or roomName:match("^Room_(%d+)_[%w_-]+$"))
+	local fallbackUserId = tonumber(
+		roomName:match("^Room_(-?%d+)$")
+			or roomName:match("^Room_(-?%d+)_[%w_-]+$")
+	)
 
-	if isPositiveInteger(fallbackUserId) then
+	if isSignedInteger(fallbackUserId) then
 		return fallbackUserId
 	end
 
@@ -224,7 +248,7 @@ function RoomPermissionService.IsPlayerRoom(roomModel)
 	end
 
 	local roomName = tostring(roomModel.Name)
-	return roomName:match("^Room_%d+$") ~= nil or roomName:match("^Room_%d+_[%w_-]+$") ~= nil
+	return roomName:match("^Room_-?%d+$") ~= nil or roomName:match("^Room_-?%d+_[%w_-]+$") ~= nil
 end
 
 function RoomPermissionService.IsPublicRoom(roomModel)
@@ -238,7 +262,7 @@ function RoomPermissionService.GetRoomOwnerPlayer(roomModel)
 		return nil
 	end
 
-	return Players:GetPlayerByUserId(ownerUserId)
+	return getPlayerByUserId(ownerUserId)
 end
 
 function RoomPermissionService.GetRoomOwnerProfile(roomModel)
@@ -421,13 +445,20 @@ function RoomPermissionService.CanRotateFurniture(actorPlayer, furnitureModel)
 	end
 
 	local ownerPlayer = RoomPermissionService.GetRoomOwnerPlayer(roomModel)
+	local roomId = normalizeRoomId(roomModel:GetAttribute("RoomId"))
 	local persistentId = RoomPermissionService.GetFurniturePersistentId(furnitureModel)
 
 	if not ownerPlayer or not persistentId then
 		return false
 	end
 
-	return RoomPersistence.IsFurnitureActionAllowed(ownerPlayer, persistentId, "Rotate", actorPlayer.UserId)
+	return RoomPersistence.IsFurnitureActionAllowedForRoom(
+		ownerPlayer,
+		roomId,
+		persistentId,
+		"Rotate",
+		actorPlayer.UserId
+	)
 end
 
 function RoomPermissionService.CanPickUpFurniture(actorPlayer, furnitureModel)
@@ -466,14 +497,16 @@ function RoomPermissionService.CanOpenCloseFurniture(actorPlayer, furnitureModel
 	end
 
 	local ownerPlayer = RoomPermissionService.GetRoomOwnerPlayer(roomModel)
+	local roomId = normalizeRoomId(roomModel:GetAttribute("RoomId"))
 	local persistentId = RoomPermissionService.GetFurniturePersistentId(furnitureModel)
 
 	if not ownerPlayer or not persistentId then
 		return false
 	end
 
-	return RoomPersistence.IsFurnitureActionAllowed(
+	return RoomPersistence.IsFurnitureActionAllowedForRoom(
 		ownerPlayer,
+		roomId,
 		persistentId,
 		"OpenClose",
 		actorPlayer.UserId

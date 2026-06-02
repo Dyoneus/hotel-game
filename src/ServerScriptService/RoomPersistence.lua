@@ -656,7 +656,12 @@ local function normalizePermissionUserId(userId)
 		numericUserId = tonumber(trimString(userId))
 	end
 
-	if not isPositiveInteger(numericUserId) then
+	if typeof(numericUserId) ~= "number"
+		or numericUserId ~= numericUserId
+		or numericUserId == 0
+		or math.abs(numericUserId) >= math.huge
+		or numericUserId ~= math.floor(numericUserId) then
+
 		return nil
 	end
 
@@ -2734,8 +2739,16 @@ local function getRoomEditorsSnapshot(roomRecord, ownerUserId)
 		if isAllowed == true then
 			local userId = tonumber(userIdKey)
 
-			if userId and userId > 0 and userId ~= ownerUserId then
-				local editorPlayer = Players:GetPlayerByUserId(userId)
+			if userId and userId ~= 0 and userId ~= ownerUserId then
+				local editorPlayer = nil
+
+				for _, candidatePlayer in ipairs(Players:GetPlayers()) do
+					if candidatePlayer.UserId == userId then
+						editorPlayer = candidatePlayer
+						break
+					end
+				end
+
 				local entry = {
 					UserId = userId,
 					Allowed = true,
@@ -2951,7 +2964,47 @@ function RoomPersistence.IsRoomActionAllowed(ownerPlayer, actionName, targetUser
 	return typeof(actionPermissions) == "table" and actionPermissions[targetUserIdKey] == true
 end
 
-function RoomPersistence.SetFurniturePermission(ownerPlayer, persistentId, actionName, targetUserId, isAllowed)
+function RoomPersistence.GetFurniturePermissionsForRoom(ownerPlayer, roomId, persistentId)
+	local normalizedPersistentId = normalizePermissionPersistentId(persistentId)
+
+	if not normalizedPersistentId then
+		return {}
+	end
+
+	local profile = getLoadedProfileForPlayer(ownerPlayer)
+
+	if not profile then
+		return {}
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return {}
+	end
+
+	roomRecord.Permissions = normalizeRoomPermissions(roomRecord.Permissions)
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		local legacyRoomPermissions = ensureRoomPermissions(profile)
+		local primaryFurniturePermissions = roomRecord.Permissions.FurniturePermissions
+
+		if not primaryFurniturePermissions[normalizedPersistentId]
+			and typeof(legacyRoomPermissions.FurniturePermissions) == "table"
+			and typeof(legacyRoomPermissions.FurniturePermissions[normalizedPersistentId]) == "table" then
+
+			primaryFurniturePermissions[normalizedPersistentId] =
+				deepCopy(legacyRoomPermissions.FurniturePermissions[normalizedPersistentId])
+			roomRecord.Permissions.FurniturePermissions = primaryFurniturePermissions
+		end
+	end
+
+	return deepCopy(roomRecord.Permissions.FurniturePermissions[normalizedPersistentId] or {})
+end
+
+function RoomPersistence.SetFurniturePermissionForRoom(ownerPlayer, roomId, persistentId, actionName, targetUserId, isAllowed)
 	local normalizedPersistentId = normalizePermissionPersistentId(persistentId)
 	local normalizedActionName = normalizePermissionActionName(actionName)
 	local targetUserIdKey = normalizePermissionUserId(targetUserId)
@@ -2974,16 +3027,39 @@ function RoomPersistence.SetFurniturePermission(ownerPlayer, persistentId, actio
 		return false, "Owner profile is not loaded."
 	end
 
-	local roomPermissions = ensureRoomPermissions(profile)
+	ensureRoomsSchema(profile)
+
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found."
+	end
+
+	roomRecord.Permissions = normalizeRoomPermissions(roomRecord.Permissions)
+	local furniturePermissionsById = roomRecord.Permissions.FurniturePermissions
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		local legacyRoomPermissions = ensureRoomPermissions(profile)
+
+		if typeof(legacyRoomPermissions.FurniturePermissions) == "table" then
+			for legacyPersistentId, legacyActionPermissions in pairs(legacyRoomPermissions.FurniturePermissions) do
+				if typeof(legacyActionPermissions) == "table"
+					and typeof(furniturePermissionsById[legacyPersistentId]) ~= "table" then
+
+					furniturePermissionsById[legacyPersistentId] = deepCopy(legacyActionPermissions)
+				end
+			end
+		end
+	end
 
 	if isAllowed == true then
-		roomPermissions.FurniturePermissions[normalizedPersistentId] =
-			roomPermissions.FurniturePermissions[normalizedPersistentId] or {}
-		roomPermissions.FurniturePermissions[normalizedPersistentId][normalizedActionName] =
-			roomPermissions.FurniturePermissions[normalizedPersistentId][normalizedActionName] or {}
-		roomPermissions.FurniturePermissions[normalizedPersistentId][normalizedActionName][targetUserIdKey] = true
+		furniturePermissionsById[normalizedPersistentId] =
+			furniturePermissionsById[normalizedPersistentId] or {}
+		furniturePermissionsById[normalizedPersistentId][normalizedActionName] =
+			furniturePermissionsById[normalizedPersistentId][normalizedActionName] or {}
+		furniturePermissionsById[normalizedPersistentId][normalizedActionName][targetUserIdKey] = true
 	else
-		local furniturePermissions = roomPermissions.FurniturePermissions[normalizedPersistentId]
+		local furniturePermissions = furniturePermissionsById[normalizedPersistentId]
 		local actionPermissions = furniturePermissions and furniturePermissions[normalizedActionName]
 
 		if actionPermissions then
@@ -2994,17 +3070,29 @@ function RoomPersistence.SetFurniturePermission(ownerPlayer, persistentId, actio
 			end
 
 			if not dictionaryHasEntries(furniturePermissions) then
-				roomPermissions.FurniturePermissions[normalizedPersistentId] = nil
+				furniturePermissionsById[normalizedPersistentId] = nil
 			end
 		end
 	end
 
-	savePermissionMutation(ownerPlayer, profile)
+	roomRecord.Permissions.FurniturePermissions = furniturePermissionsById
+
+	local now = os.time()
+	roomRecord.UpdatedAt = now
+	profile.UpdatedAt = now
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		local legacyRoomPermissions = ensureRoomPermissions(profile)
+		legacyRoomPermissions.FurniturePermissions = deepCopy(roomRecord.Permissions.FurniturePermissions)
+		profile.RoomPermissions = legacyRoomPermissions
+	end
+
+	RoomPersistence.QueueSave(ownerPlayer)
 
 	return true, isAllowed == true and "Furniture permission granted." or "Furniture permission removed."
 end
 
-function RoomPersistence.IsFurnitureActionAllowed(ownerPlayer, persistentId, actionName, targetUserId)
+function RoomPersistence.IsFurnitureActionAllowedForRoom(ownerPlayerOrUserId, roomId, persistentId, actionName, targetUserId)
 	local normalizedPersistentId = normalizePermissionPersistentId(persistentId)
 	local normalizedActionName = normalizePermissionActionName(actionName)
 	local targetUserIdKey = normalizePermissionUserId(targetUserId)
@@ -3013,17 +3101,59 @@ function RoomPersistence.IsFurnitureActionAllowed(ownerPlayer, persistentId, act
 		return false
 	end
 
-	local profile = getLoadedProfileForPlayer(ownerPlayer)
+	local profile = getLoadedProfileFromOwner(ownerPlayerOrUserId)
 
 	if not profile then
 		return false
 	end
 
-	local roomPermissions = ensureRoomPermissions(profile)
-	local furniturePermissions = roomPermissions.FurniturePermissions[normalizedPersistentId]
+	ensureRoomsSchema(profile)
+
+	local roomRecord, normalizedRoomId = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false
+	end
+
+	roomRecord.Permissions = normalizeRoomPermissions(roomRecord.Permissions)
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		local legacyRoomPermissions = ensureRoomPermissions(profile)
+
+		if not roomRecord.Permissions.FurniturePermissions[normalizedPersistentId]
+			and typeof(legacyRoomPermissions.FurniturePermissions) == "table"
+			and typeof(legacyRoomPermissions.FurniturePermissions[normalizedPersistentId]) == "table" then
+
+			roomRecord.Permissions.FurniturePermissions[normalizedPersistentId] =
+				deepCopy(legacyRoomPermissions.FurniturePermissions[normalizedPersistentId])
+		end
+	end
+
+	local furniturePermissions = roomRecord.Permissions.FurniturePermissions[normalizedPersistentId]
 	local actionPermissions = furniturePermissions and furniturePermissions[normalizedActionName]
 
 	return typeof(actionPermissions) == "table" and actionPermissions[targetUserIdKey] == true
+end
+
+function RoomPersistence.SetFurniturePermission(ownerPlayer, persistentId, actionName, targetUserId, isAllowed)
+	return RoomPersistence.SetFurniturePermissionForRoom(
+		ownerPlayer,
+		PRIMARY_ROOM_ID,
+		persistentId,
+		actionName,
+		targetUserId,
+		isAllowed
+	)
+end
+
+function RoomPersistence.IsFurnitureActionAllowed(ownerPlayer, persistentId, actionName, targetUserId)
+	return RoomPersistence.IsFurnitureActionAllowedForRoom(
+		ownerPlayer,
+		PRIMARY_ROOM_ID,
+		persistentId,
+		actionName,
+		targetUserId
+	)
 end
 
 function RoomPersistence.GetCurrency(player, currencyKey)

@@ -405,11 +405,28 @@ permissionUi.status.TextTruncate = Enum.TextTruncate.AtEnd
 permissionUi.status.Font = Enum.Font.GothamMedium
 permissionUi.status.Parent = permissionUi.panel
 
+permissionUi.accessStatus = Instance.new("TextLabel")
+permissionUi.accessStatus.Name = "AccessStatus"
+permissionUi.accessStatus.BackgroundTransparency = 0
+permissionUi.accessStatus.BackgroundColor3 = Color3.fromRGB(235, 238, 241)
+permissionUi.accessStatus.BorderSizePixel = 0
+permissionUi.accessStatus.Text = ""
+permissionUi.accessStatus.TextColor3 = MENU_TEXT_MUTED
+permissionUi.accessStatus.TextSize = 12
+permissionUi.accessStatus.TextXAlignment = Enum.TextXAlignment.Center
+permissionUi.accessStatus.Font = Enum.Font.GothamMedium
+permissionUi.accessStatus.Visible = false
+permissionUi.accessStatus.Parent = menuFrame
+ensureCorner(permissionUi.accessStatus, 8)
+ensureStroke(permissionUi.accessStatus, Color3.fromRGB(177, 184, 194), 1, 0.25)
+
 local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, showOpenClose, showAccess)
 	local contentX = 14
 	local contentWidth = MENU_WIDTH - 28
 	local y = MENU_HEADER_HEIGHT
 	local halfWidth = math.floor((contentWidth - MENU_BUTTON_GAP) / 2)
+	local showAccessStatus = typeof(permissionUi.accessStatusText) == "string"
+		and permissionUi.accessStatusText ~= ""
 
 	sitButton.Visible = showSit == true
 	moveButton.Visible = showMove == true
@@ -418,6 +435,8 @@ local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, sh
 	openCloseButton.Visible = showOpenClose == true
 	permissionUi.accessButton.Visible = showAccess == true
 	permissionUi.panel.Visible = showAccess == true and permissionUi.expanded == true
+	permissionUi.accessStatus.Visible = showAccessStatus
+	permissionUi.accessStatus.Text = showAccessStatus and permissionUi.accessStatusText or ""
 
 	if showSit then
 		sitButton.Position = UDim2.fromOffset(contentX, y)
@@ -437,6 +456,12 @@ local function layoutFurnitureMenu(showSit, showMove, showRotate, showPickUp, sh
 		openCloseButton.Position = UDim2.fromOffset(contentX, y)
 		openCloseButton.Size = UDim2.fromOffset(contentWidth, MENU_BUTTON_HEIGHT)
 		y += MENU_BUTTON_HEIGHT + MENU_BUTTON_GAP
+	end
+
+	if showAccessStatus then
+		permissionUi.accessStatus.Position = UDim2.fromOffset(contentX, y)
+		permissionUi.accessStatus.Size = UDim2.fromOffset(contentWidth, 30)
+		y += 30 + MENU_BUTTON_GAP
 	end
 
 	if showAccess then
@@ -571,6 +596,14 @@ function publicFurnitureRules.isCurrentRoomPublicSpace()
 	local roomModel = getCurrentRoomModel()
 
 	return roomModel ~= nil and roomModel:GetAttribute("RoomType") == "PublicSpace"
+end
+
+local function isCurrentPlayerRoomOwner()
+	local roomModel = getCurrentRoomModel()
+
+	return roomModel ~= nil
+		and roomModel:GetAttribute("RoomType") == "PlayerRoom"
+		and roomModel:GetAttribute("OwnerUserId") == player.UserId
 end
 
 local function getDefaultFurnitureAction(furnitureModel)
@@ -898,6 +931,11 @@ do
 
 		local minBottomY = labelHeight + helperUi.topMargin
 		local maxBottomY = viewportHeight - helperUi.topMargin
+
+		if maxBottomY < minBottomY then
+			return viewportWidth / 2, math.max(1, viewportHeight - helperUi.topMargin)
+		end
+
 		helperBottomY = math.clamp(helperBottomY, minBottomY, maxBottomY)
 
 		return viewportWidth / 2, helperBottomY
@@ -992,6 +1030,23 @@ function permissionUi.getPersistentId(furnitureModel)
 	return persistentId
 end
 
+function permissionUi.getCurrentRoomId()
+	local roomModel = getCurrentRoomModel()
+	local roomId = roomModel and roomModel:GetAttribute("RoomId")
+
+	if typeof(roomId) == "string" and roomId ~= "" then
+		return roomId
+	end
+
+	roomId = player:GetAttribute("CurrentRoomId")
+
+	if typeof(roomId) == "string" and roomId ~= "" then
+		return roomId
+	end
+
+	return "Primary"
+end
+
 function permissionUi.applyLayout()
 	layoutFurnitureMenu(
 		permissionUi.showSit,
@@ -1006,6 +1061,16 @@ end
 function permissionUi.setStatus(message, isError)
 	permissionUi.status.Text = tostring(message or "")
 	permissionUi.status.TextColor3 = isError and Color3.fromRGB(178, 72, 58) or MENU_TEXT_MUTED
+end
+
+function permissionUi.setAccessStatus(message)
+	local text = tostring(message or "")
+
+	permissionUi.accessStatusText = text
+
+	if permissionUi.accessStatus then
+		permissionUi.accessStatus.Text = text
+	end
 end
 
 function permissionUi.clearRows()
@@ -1079,6 +1144,7 @@ function permissionUi.setEntries(entries)
 
 			remoteEvents:WaitForChild("RoomPermissionRequest"):FireServer("SetFurniturePermission", {
 				Furniture = selectedFurniture,
+				RoomId = permissionUi.getCurrentRoomId(),
 				ActionName = "OpenClose",
 				TargetUserId = userId,
 				IsAllowed = false,
@@ -1099,6 +1165,7 @@ function permissionUi.requestCurrent()
 	permissionUi.setStatus("Loading...")
 	remoteEvents:WaitForChild("RoomPermissionRequest"):FireServer("GetFurniturePermissions", {
 		Furniture = selectedFurniture,
+		RoomId = permissionUi.getCurrentRoomId(),
 		ActionName = "OpenClose",
 	})
 end
@@ -1111,18 +1178,48 @@ function permissionUi.resetForMenu(furnitureModel, showSit, showMove, showRotate
 	permissionUi.showOpenClose = showOpenClose
 	permissionUi.canManage = false
 	permissionUi.expanded = false
+	permissionUi.pendingAccess = nil
+	permissionUi.isCheckingAccess = false
 	permissionUi.input.Text = ""
 	permissionUi.setStatus("")
+	permissionUi.setAccessStatus("")
 	permissionUi.setEntries({})
 end
 
-function permissionUi.requestActionAccess()
+function permissionUi.requestActionAccess(options)
 	if not selectedFurniture then
 		return
 	end
 
+	local showLoading = options == true
+	local silent = false
+
+	if typeof(options) == "table" then
+		showLoading = options.ShowLoading == true
+		silent = options.Silent == true
+	end
+
+	permissionUi.accessRequestId = (permissionUi.accessRequestId or 0) + 1
+	permissionUi.pendingAccess = {
+		Furniture = selectedFurniture,
+		PersistentId = permissionUi.getPersistentId(selectedFurniture),
+		RoomId = permissionUi.getCurrentRoomId(),
+		RequestId = permissionUi.accessRequestId,
+		Silent = silent,
+	}
+	permissionUi.isCheckingAccess = showLoading == true or silent == true
+
+	if showLoading == true then
+		permissionUi.setAccessStatus("Checking access...")
+		permissionUi.applyLayout()
+	elseif silent == true then
+		permissionUi.setAccessStatus("")
+	end
+
 	remoteEvents:WaitForChild("RoomPermissionRequest"):FireServer("GetFurnitureActionAccess", {
 		Furniture = selectedFurniture,
+		RoomId = permissionUi.getCurrentRoomId(),
+		RequestId = permissionUi.accessRequestId,
 	})
 end
 
@@ -1131,9 +1228,40 @@ function permissionUi.applyActionAccess(response)
 		return false
 	end
 
-	if not selectedFurniture or not menuFrame.Visible or response.Furniture ~= selectedFurniture then
+	local pendingAccess = permissionUi.pendingAccess
+	local isSilentPending = typeof(pendingAccess) == "table" and pendingAccess.Silent == true
+
+	if not selectedFurniture or response.Furniture ~= selectedFurniture then
 		return true
 	end
+
+	if not menuFrame.Visible and not isSilentPending then
+		return true
+	end
+
+	if typeof(pendingAccess) == "table" then
+		if typeof(response.RequestId) == "number"
+			and response.RequestId ~= pendingAccess.RequestId then
+
+			return true
+		end
+
+		if typeof(response.FurniturePersistentId) == "string"
+			and response.FurniturePersistentId ~= pendingAccess.PersistentId then
+
+			return true
+		end
+
+		if typeof(response.RoomId) == "string"
+			and response.RoomId ~= pendingAccess.RoomId then
+
+			return true
+		end
+	end
+
+	permissionUi.pendingAccess = nil
+	permissionUi.isCheckingAccess = false
+	permissionUi.setAccessStatus("")
 
 	local editing = isEditMode()
 
@@ -1154,12 +1282,30 @@ function permissionUi.applyActionAccess(response)
 		menuFrame.Visible = false
 		permissionUi.expanded = false
 		permissionUi.canManage = false
+		permissionUi.setAccessStatus("")
 		clearFurnitureHighlight()
 		return true
 	end
 
 	updateOpenCloseButtonText(selectedFurniture)
-	permissionUi.applyLayout()
+
+	if isSilentPending then
+		if permissionUi.showMenuForSelectedFurniture then
+			if not permissionUi.showMenuForSelectedFurniture("Choose an action") then
+				selectedFurniture = nil
+				menuFrame.Visible = false
+				permissionUi.expanded = false
+				permissionUi.canManage = false
+				permissionUi.setAccessStatus("")
+				clearFurnitureHighlight()
+			end
+		else
+			menuFrame.Visible = true
+			permissionUi.applyLayout()
+		end
+	else
+		permissionUi.applyLayout()
+	end
 
 	return true
 end
@@ -1180,6 +1326,10 @@ function permissionUi.handleResult(response)
 	local persistentId = permissionUi.getPersistentId(selectedFurniture)
 
 	if response.FurniturePersistentId ~= persistentId or response.ActionName ~= "OpenClose" then
+		return
+	end
+
+	if typeof(response.RoomId) == "string" and response.RoomId ~= permissionUi.getCurrentRoomId() then
 		return
 	end
 
@@ -3483,6 +3633,37 @@ RunService.RenderStepped:Connect(updatePlacementPreview)
 RunService.RenderStepped:Connect(movePreviewState.helperUi.update)
 RunService.RenderStepped:Connect(maintainActiveGridFacing)
 
+function permissionUi.showMenuForSelectedFurniture(subtitleText)
+	if not selectedFurniture then
+		return false
+	end
+
+	local occupied = isFurnitureOccupiedLocally(selectedFurniture)
+	local camera = workspace.CurrentCamera
+
+	if not camera then
+		return false
+	end
+
+	local worldPosition = furnitureInteraction.getTopPosition(selectedFurniture)
+	local _, onScreen = camera:WorldToScreenPoint(worldPosition)
+
+	if not onScreen then
+		return false
+	end
+
+	titleLabel.Text = selectedFurniture.Name
+	subtitleLabel.Text = occupied and "Currently occupied" or (subtitleText or "Choose an action")
+	occupiedBadge.Visible = occupied == true
+	updateOpenCloseButtonText(selectedFurniture)
+	highlightFurniture(selectedFurniture)
+	permissionUi.applyLayout()
+	menuFrame.Visible = true
+	updateMenuPosition()
+
+	return true
+end
+
 local function openFurnitureMenu(furnitureModel)
 	selectedFurniture = furnitureModel
 	local editing = isEditMode()
@@ -3490,25 +3671,37 @@ local function openFurnitureMenu(furnitureModel)
 	local defaultAction = getDefaultFurnitureAction(furnitureModel)
 	local inPublicRoom = publicFurnitureRules.isCurrentRoomPublicSpace()
 	local potentialOpenClose = furnitureSupportsOpenCloseBestEffort(furnitureModel)
+	local supportsSit = publicFurnitureRules.supportsSit(furnitureModel)
 
 	if inPublicRoom then
 		potentialOpenClose = publicFurnitureRules.supportsOpenClose(furnitureModel)
 	end
 
-	local showSit = not editing
-		and (
-			(inPublicRoom and publicFurnitureRules.supportsSit(furnitureModel))
-			or (not inPublicRoom and defaultAction ~= nil)
-		)
+	local showSit = not editing and supportsSit and defaultAction ~= "OpenClose"
 	local showMove = false
 	local showRotate = false
 	local showPickUp = false
 	local showOpenClose = false
+	local shouldProbeOpenCloseSilently = not editing
+		and potentialOpenClose == true
+		and showSit ~= true
+		and inPublicRoom ~= true
+		and not isCurrentPlayerRoomOwner()
 
-	if not editing and not defaultAction and not potentialOpenClose then
+	if not editing and not showSit and not potentialOpenClose then
 		selectedFurniture = nil
 		menuFrame.Visible = false
 		clearFurnitureHighlight()
+		return
+	end
+
+	if shouldProbeOpenCloseSilently then
+		menuFrame.Visible = false
+		clearFurnitureHighlight()
+		permissionUi.resetForMenu(furnitureModel, false, false, false, false, false)
+		permissionUi.requestActionAccess({
+			Silent = true,
+		})
 		return
 	end
 
@@ -3535,7 +3728,7 @@ local function openFurnitureMenu(furnitureModel)
 	if onScreen then
 		menuFrame.Visible = true
 		updateMenuPosition()
-		permissionUi.requestActionAccess()
+		permissionUi.requestActionAccess(potentialOpenClose == true or editing == true)
 	else
 		menuFrame.Visible = false
 	end
@@ -3547,6 +3740,9 @@ local function closeFurnitureMenu()
 	menuFrame.Visible = false
 	permissionUi.expanded = false
 	permissionUi.canManage = false
+	permissionUi.pendingAccess = nil
+	permissionUi.isCheckingAccess = false
+	permissionUi.setAccessStatus("")
 
 	destroyPlacementPreview()
 	clearFurnitureHighlight()
@@ -4412,6 +4608,7 @@ permissionUi.addButton.MouseButton1Click:Connect(function()
 	permissionUi.setStatus("Updating...")
 	remoteEvents:WaitForChild("RoomPermissionRequest"):FireServer("SetFurniturePermission", {
 		Furniture = selectedFurniture,
+		RoomId = permissionUi.getCurrentRoomId(),
 		ActionName = "OpenClose",
 		TargetUserInput = targetUserInput,
 		IsAllowed = true,
