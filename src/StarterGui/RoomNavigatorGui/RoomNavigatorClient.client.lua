@@ -1365,6 +1365,8 @@ pages.latestOwnedRoomIds = {}
 pages.latestOwnedRoomIdsAuthoritative = false
 pages.ownRoomsRefreshPending = false
 pages.lastRoomListVersion = nil
+pages.roomListRefreshInFlight = false
+pages.roomListRefreshQueued = false
 
 local function requestFavourites(forceRefresh)
 	if favouritesRequestInFlight then
@@ -1391,15 +1393,16 @@ end
 function pages.requestFreshRoomList(markOwnRoomsPending)
 	if markOwnRoomsPending == true then
 		pages.ownRoomsRefreshPending = true
-		pages.latestOwnedRooms = {}
-		pages.latestOwnedRoomIds = {}
-		pages.latestOwnedRoomIdsAuthoritative = true
-		selectedRoomData = nil
-		selectedRow = nil
 		roomDetailsPageOpen = false
 		roomSettingsPageOpen = false
 	end
 
+	if pages.roomListRefreshInFlight == true then
+		pages.roomListRefreshQueued = true
+		return
+	end
+
+	pages.roomListRefreshInFlight = true
 	roomListRequest:FireServer()
 end
 
@@ -3609,18 +3612,6 @@ function pages.createRoomPlannerCard(order)
 
 	row.MouseButton1Click:Connect(openPlanner)
 	openButton.MouseButton1Click:Connect(openPlanner)
-
-	local note = Instance.new("TextLabel")
-	note.Name = "CreateRoomSoonNote"
-	note.LayoutOrder = order * 2 + 1
-	note.Size = UDim2.new(1, -4, 0, 20)
-	note.BackgroundTransparency = 1
-	note.Text = "More layouts coming soon."
-	note.TextColor3 = paper and Color3.fromRGB(103, 84, 60) or Color3.fromRGB(92, 98, 92)
-	note.TextSize = 11
-	note.TextXAlignment = Enum.TextXAlignment.Left
-	note.Font = Enum.Font.Gotham
-	note.Parent = ui.listFrame
 end
 
 function pages.drawRoomPlannerPreviewGrid(parent, layoutInfo)
@@ -4123,11 +4114,6 @@ function pages.renderOwnRoomDetailsPage()
 end
 
 function pages.renderOwnRooms()
-	if pages.ownRoomsRefreshPending then
-		createEmptyState("Refreshing rooms...")
-		return
-	end
-
 	local ownRooms = pages.filterOwnRooms()
 	clearSelectionIfMissing(ownRooms)
 
@@ -4158,7 +4144,7 @@ function pages.renderOwnRooms()
 		statusLabel.Parent = ui.listFrame
 	end
 
-	if #ownRooms == 0 then
+	if #ownRooms == 0 and not pages.ownRoomsRefreshPending then
 		createEmptyState("No owned rooms found.")
 	else
 		for index, roomData in ipairs(ownRooms) do
@@ -4478,6 +4464,7 @@ ui.guestSubtabButton.MouseButton1Click:Connect(function()
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	setStatusMessage("")
+	pages.requestFreshRoomList(false)
 	renderNavigator()
 end)
 
@@ -4760,6 +4747,8 @@ majorMenuStateChanged.Event:Connect(function(isOpen, menuName)
 end)
 
 roomListUpdate.OnClientEvent:Connect(function(roomList, currentRoomName, roomListMeta)
+	pages.roomListRefreshInFlight = false
+
 	pages.replaceLatestRoomList(roomList, roomListMeta)
 	latestCurrentRoomName = currentRoomName
 	pages.ownRoomsRefreshPending = false
@@ -4782,6 +4771,11 @@ roomListUpdate.OnClientEvent:Connect(function(roomList, currentRoomName, roomLis
 	end
 
 	updateOpenButton()
+
+	if pages.roomListRefreshQueued == true then
+		pages.roomListRefreshQueued = false
+		pages.requestFreshRoomList(false)
+	end
 end)
 
 joinRoomResult.OnClientEvent:Connect(function(success, message)
