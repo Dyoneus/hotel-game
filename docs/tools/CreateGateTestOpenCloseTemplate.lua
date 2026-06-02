@@ -3,7 +3,7 @@
 -- ReplicatedStorage.FurnitureTemplates.Gate_Test_OpenClose
 --
 -- This is development-only furniture for testing room-specific OpenClose
--- permissions. The static catalog entry lives in FurnitureCatalogConfig.
+-- permissions. It is intentionally not added to the normal furniture catalog.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -63,6 +63,7 @@ model:SetAttribute("FootprintDepth", 1)
 model:SetAttribute("Price", 1)
 model:SetAttribute("SellPrice", 0)
 model:SetAttribute("CurrencyKey", "Dollars")
+model:SetAttribute("AutoCatalogEnabled", false)
 model:SetAttribute("TradableOnPurchase", false)
 model:SetAttribute("SellableOnPurchase", false)
 model:SetAttribute("SupportsOpenClose", true)
