@@ -1490,7 +1490,75 @@ local function isPublicRoomOpen(roomData)
 	return true
 end
 
-local function canJoinRoomEntry(roomData)
+function pages.getJoinDisabledReason(roomData)
+	if typeof(roomData) ~= "table" then
+		return "Room not found."
+	end
+
+	if roomData.RoomType == "PublicSpace" then
+		if not isPublicRoomOpen(roomData) then
+			return "This public room is currently closed."
+		end
+
+		return nil
+	end
+
+	if typeof(roomData.JoinDisabledReason) == "string" and roomData.JoinDisabledReason ~= "" then
+		return roomData.JoinDisabledReason
+	end
+
+	if roomData.IsJoinable == false or roomData.IsAvailable == false then
+		return "Template missing"
+	end
+
+	return nil
+end
+
+function pages.getJoinUnavailableText(roomData)
+	local reason = pages.getJoinDisabledReason(roomData)
+
+	if typeof(reason) ~= "string" or reason == "" then
+		return "Room joining coming soon."
+	end
+
+	local normalizedReason = string.lower(reason)
+
+	if string.find(normalizedReason, "template", 1, true)
+		or string.find(normalizedReason, "not ready", 1, true) then
+
+		return "Template missing"
+	end
+
+	if string.find(normalizedReason, "vip", 1, true) then
+		return "VIP required"
+	end
+
+	return reason
+end
+
+function pages.getJoinDisabledButtonText(roomData)
+	if typeof(roomData) == "table" and roomData.RoomType == "PublicSpace" then
+		return "Closed"
+	end
+
+	local unavailableText = pages.getJoinUnavailableText(roomData)
+
+	if unavailableText == "Template missing" then
+		return "Template missing"
+	end
+
+	if unavailableText == "VIP required" then
+		return "VIP"
+	end
+
+	if typeof(roomData) == "table" and roomData.IsPrimary == true then
+		return "Unavailable"
+	end
+
+	return "Soon"
+end
+
+function pages.canJoinRoomEntry(roomData)
 	if typeof(roomData) ~= "table" then
 		return false
 	end
@@ -2860,9 +2928,9 @@ local function updateDetailPanel()
 
 	if selectedRoomData.RoomType ~= "PublicSpace"
 		and selectedRoomData.IsPrimary ~= true
-		and not canJoinRoomEntry(selectedRoomData) then
+		and not pages.canJoinRoomEntry(selectedRoomData) then
 
-		ui.detailStatus.Text = "Room joining coming soon."
+		ui.detailStatus.Text = pages.getJoinUnavailableText(selectedRoomData)
 	end
 
 	if isCurrentRoom then
@@ -2905,6 +2973,8 @@ local function updateDetailPanel()
 			and Color3.fromRGB(153, 142, 119)
 			or Color3.fromRGB(110, 115, 110)
 		ui.goButton.Text = "Here"
+		ui.goButton.TextSize = 13
+		ui.goButton.TextWrapped = false
 		return
 	end
 
@@ -2915,10 +2985,12 @@ local function updateDetailPanel()
 			and Color3.fromRGB(153, 142, 119)
 			or Color3.fromRGB(110, 115, 110)
 		ui.goButton.Text = "Joining..."
+		ui.goButton.TextSize = 13
+		ui.goButton.TextWrapped = false
 		return
 	end
 
-	local canGo = canJoinRoomEntry(selectedRoomData)
+	local canGo = pages.canJoinRoomEntry(selectedRoomData)
 
 	ui.goButton.Active = canGo
 	ui.goButton.AutoButtonColor = canGo
@@ -2928,8 +3000,9 @@ local function updateDetailPanel()
 		ui.goButton.BackgroundColor3 = canGo and Color3.fromRGB(68, 143, 82) or Color3.fromRGB(110, 115, 110)
 	end
 	ui.goButton.Text = canGo and "Go"
-		or (selectedRoomData.RoomType == "PublicSpace" and "Closed"
-			or (selectedRoomData.IsPrimary ~= true and "Soon" or "Unavailable"))
+		or pages.getJoinDisabledButtonText(selectedRoomData)
+	ui.goButton.TextSize = canGo and 13 or 10
+	ui.goButton.TextWrapped = not canGo
 end
 
 local function selectRoom(roomData, row)
@@ -2991,8 +3064,8 @@ local function joinSelectedRoom()
 			PublicRoomId = publicRoomId,
 		}
 	else
-		if not canJoinRoomEntry(selectedRoomData) then
-			showSettingsError("Room joining coming soon.")
+		if not pages.canJoinRoomEntry(selectedRoomData) then
+			showSettingsError(pages.getJoinUnavailableText(selectedRoomData))
 			updateDetailPanel()
 			return
 		end
@@ -3458,10 +3531,10 @@ local function createRoomRow(roomData, order)
 
 		createCorner(hereBadge, 5)
 	else
-		local canRowGo = canJoinRoomEntry(roomData)
+		local canRowGo = pages.canJoinRoomEntry(roomData)
 		local rowGoButton = createTextButton(
 			"RowGoButton",
-			canRowGo and "Go" or "Soon",
+			canRowGo and "Go" or pages.getJoinDisabledButtonText(roomData),
 			UDim2.fromOffset(58, 28),
 			row
 		)
@@ -3471,14 +3544,15 @@ local function createRoomRow(roomData, order)
 			and (paper and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(68, 143, 82))
 			or (paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(110, 115, 110))
 		rowGoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-		rowGoButton.TextSize = 13
+		rowGoButton.TextSize = canRowGo and 13 or 9
+		rowGoButton.TextWrapped = not canRowGo
 		rowGoButton.Active = canRowGo
 		rowGoButton.AutoButtonColor = canRowGo
 
 		rowGoButton.MouseButton1Click:Connect(function()
 			if not canRowGo then
 				selectRoom(roomData, row)
-				showSettingsError("Room joining coming soon.")
+				showSettingsError(pages.getJoinUnavailableText(roomData))
 				return
 			end
 
@@ -3971,9 +4045,8 @@ function pages.renderOwnRoomDetailsPage()
 	local isFavourite = isRoomFavourite(selectedRoomData)
 	local isCurrentRoom = isEntryCurrentRoom(selectedRoomData)
 	local canFavourite = roomKey ~= nil
-	local canGo = not isCurrentRoom
-		and typeof(selectedRoomData.RoomName) == "string"
-		and selectedRoomData.RoomName ~= ""
+	local canGo = not isCurrentRoom and pages.canJoinRoomEntry(selectedRoomData)
+	local goButtonText = isCurrentRoom and "Here" or (canGo and "Go" or pages.getJoinDisabledButtonText(selectedRoomData))
 	local compactActions = ui.contentFrame.AbsoluteSize.X > 0 and ui.contentFrame.AbsoluteSize.X < 520
 
 	ui.listFrame.Visible = true
@@ -4097,7 +4170,7 @@ function pages.renderOwnRoomDetailsPage()
 
 	local goButton = createTextButton(
 		"OwnDetailsGoButton",
-		isCurrentRoom and "Here" or "Go",
+		goButtonText,
 		UDim2.fromOffset(compactActions and 70 or 92, 34),
 		detailCard
 	)
@@ -4107,7 +4180,8 @@ function pages.renderOwnRoomDetailsPage()
 		and (paper and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(68, 143, 82))
 		or (paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(110, 115, 110))
 	goButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	goButton.TextSize = 13
+	goButton.TextSize = (canGo or isCurrentRoom) and 13 or 10
+	goButton.TextWrapped = not canGo and not isCurrentRoom
 	goButton.Active = canGo
 	goButton.AutoButtonColor = canGo
 	goButton.MouseButton1Click:Connect(joinSelectedRoom)

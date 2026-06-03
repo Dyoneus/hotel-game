@@ -68,6 +68,7 @@ local VALID_LAYOUTS = {
 local LAYOUT_TEMPLATE_FALLBACKS = {
 	Free_036_A = "Layout_01",
 }
+local ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE = "Room layout template is not ready yet."
 local PRIMARY_ROOM_ID = "Primary"
 local DEBUG_ROOM_LIST_TRACE = false
 local DEBUG_ROOM_LIST_PAYLOAD = false
@@ -183,41 +184,72 @@ local function getRoomName(player)
 	return getPlayerRoomName(player.UserId, PRIMARY_ROOM_ID)
 end
 
-local function resolveTemplateNameForLayout(layoutId, warnOnFallback)
+local function resolveOwnedRoomTemplate(layoutId, warnOnFallback)
 	if typeof(layoutId) ~= "string" or layoutId == "" then
-		return nil
+		return nil, ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE
 	end
 
-	if VALID_LAYOUTS[layoutId] and roomTemplates:FindFirstChild(layoutId) then
-		return layoutId
-	end
+	local layout = RoomLayoutConfig.GetLayout(layoutId)
 
-	if layoutId == "Free_036_A" then
-		local layout = RoomLayoutConfig.GetLayout("Free_036_A")
-		if typeof(layout) == "table"
-			and typeof(layout.TemplateName) == "string"
-			and layout.TemplateName ~= ""
-			and roomTemplates:FindFirstChild(layout.TemplateName) then
+	if typeof(layout) == "table" then
+		local canUseLayout, layoutMessage = RoomLayoutConfig.CanUseLayout(layoutId, {
+			HasVip = false,
+		})
 
-			return layout.TemplateName
+		if not canUseLayout then
+			return nil, layoutMessage or ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE
 		end
 
-		local fallbackTemplateName = LAYOUT_TEMPLATE_FALLBACKS[layoutId]
+		local templateName = layout.TemplateName
 
-		if fallbackTemplateName and roomTemplates:FindFirstChild(fallbackTemplateName) then
-			if warnOnFallback then
-				warn("RoomLayout_Free_036_A missing; using Layout_01 fallback.")
+		if typeof(templateName) == "string" and templateName ~= "" then
+			local template = roomTemplates:FindFirstChild(templateName)
+
+			if template then
+				return template, nil, templateName
 			end
+		end
 
-			return fallbackTemplateName
+		if layoutId == "Free_036_A" then
+			local fallbackTemplateName = LAYOUT_TEMPLATE_FALLBACKS[layoutId]
+			local fallbackTemplate = fallbackTemplateName and roomTemplates:FindFirstChild(fallbackTemplateName) or nil
+
+			if fallbackTemplate then
+				if warnOnFallback then
+					warn("RoomLayout_Free_036_A missing; using Layout_01 fallback.")
+				end
+
+				return fallbackTemplate, nil, fallbackTemplateName
+			end
+		end
+
+		return nil, ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE
+	end
+
+	if VALID_LAYOUTS[layoutId] then
+		local template = roomTemplates:FindFirstChild(layoutId)
+
+		if template then
+			return template, nil, layoutId
 		end
 	end
 
-	return nil
+	return nil, ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE
+end
+
+local function resolveTemplateNameForLayout(layoutId, warnOnFallback)
+	local _, errorMessage, templateName = resolveOwnedRoomTemplate(layoutId, warnOnFallback)
+	return templateName, errorMessage
+end
+
+local function getOwnedLayoutJoinability(layoutId)
+	local template, errorMessage = resolveOwnedRoomTemplate(layoutId)
+	return template ~= nil, errorMessage
 end
 
 local function isJoinableOwnedLayout(layoutId)
-	return resolveTemplateNameForLayout(layoutId) ~= nil
+	local isJoinable = getOwnedLayoutJoinability(layoutId)
+	return isJoinable == true
 end
 
 local function getRoomPositionForPlayer(player)
@@ -713,10 +745,10 @@ local function removeEditorHelpers(roomModel)
 end
 
 local function cloneRoomForPlayer(player, layoutId, roomId)
-	local templateName = resolveTemplateNameForLayout(layoutId, true)
+	local template, templateError, templateName = resolveOwnedRoomTemplate(layoutId, true)
 
-	if not templateName then
-		warn("Invalid layout requested:", layoutId)
+	if not template then
+		warn("Invalid layout requested:", layoutId, templateError)
 		return nil
 	end
 
@@ -724,13 +756,6 @@ local function cloneRoomForPlayer(player, layoutId, roomId)
 
 	if not normalizedRoomId then
 		warn("Invalid room id requested:", roomId)
-		return nil
-	end
-
-	local template = roomTemplates:FindFirstChild(templateName)
-
-	if not template then
-		warn("Missing room template:", templateName)
 		return nil
 	end
 
@@ -1286,7 +1311,7 @@ local function getOwnedRoomEntry(ownerPlayer, roomRecord, currentRoomName)
 		layoutId = "Unknown"
 	end
 
-	local isJoinable = isJoinableOwnedLayout(layoutId)
+	local isJoinable, joinDisabledReason = getOwnedLayoutJoinability(layoutId)
 
 	if activeRoom and activeRoom:IsA("Model") then
 		applyPlayerRoomMetadataAttributes(activeRoom, metadata, ownerPlayer.UserId, layoutId)
@@ -1326,6 +1351,7 @@ local function getOwnedRoomEntry(ownerPlayer, roomRecord, currentRoomName)
 		IsFavourite = RoomPersistence.IsRoomFavourite(ownerPlayer, roomKey) == true,
 		IsJoinable = isJoinable,
 		IsAvailable = isJoinable,
+		JoinDisabledReason = isJoinable and nil or joinDisabledReason,
 	}
 end
 
@@ -1492,7 +1518,7 @@ local function buildRoomList(viewerPlayer)
 			if metadata.IsPublic or isOwner then
 				local playerCount = getPlayerCountInRoom(roomModel.Name)
 				local roomKey = "PlayerRoom:" .. tostring(ownerUserId) .. ":" .. roomId
-				local isJoinable = isJoinableOwnedLayout(layoutId)
+				local isJoinable, joinDisabledReason = getOwnedLayoutJoinability(layoutId)
 
 				if not seenPlayerRoomKeys[roomKey] then
 					if DEBUG_ROOM_LIST_TRACE and not isOwner then
@@ -1534,7 +1560,8 @@ local function buildRoomList(viewerPlayer)
 						Current = roomModel.Name == currentRoomName,
 						IsFavourite = viewerPlayer and RoomPersistence.IsRoomFavourite(viewerPlayer, roomKey) == true or false,
 						IsJoinable = isJoinable,
-						IsAvailable = true,
+						IsAvailable = isJoinable,
+						JoinDisabledReason = isJoinable and nil or joinDisabledReason,
 					})
 				end
 			end
@@ -2550,6 +2577,14 @@ local function joinOwnedRoomById(player, roomId)
 		return
 	end
 
+	local layoutId = savedRoom.LayoutId
+	local isJoinable, joinDisabledReason = getOwnedLayoutJoinability(layoutId)
+
+	if typeof(layoutId) ~= "string" or not isJoinable then
+		joinRoomResult:FireClient(player, false, joinDisabledReason or ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE)
+		return
+	end
+
 	local activeRoomName = getPlayerRoomName(player.UserId, normalizedRoomId)
 	local activeRoom = activeRoomName and activeRooms:FindFirstChild(activeRoomName) or nil
 	local currentOwnedRoom = playerRooms[player]
@@ -2566,17 +2601,10 @@ local function joinOwnedRoomById(player, roomId)
 		return
 	end
 
-	local layoutId = savedRoom.LayoutId
-
-	if typeof(layoutId) ~= "string" or not isJoinableOwnedLayout(layoutId) then
-		joinRoomResult:FireClient(player, false, "Room not found.")
-		return
-	end
-
 	local roomModel = cloneRoomForPlayer(player, layoutId, normalizedRoomId)
 
 	if not roomModel then
-		joinRoomResult:FireClient(player, false, "Could not open room.")
+		joinRoomResult:FireClient(player, false, ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE)
 		return
 	end
 
