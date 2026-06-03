@@ -183,7 +183,7 @@ local function getRoomName(player)
 	return getPlayerRoomName(player.UserId, PRIMARY_ROOM_ID)
 end
 
-local function resolveTemplateNameForLayout(layoutId)
+local function resolveTemplateNameForLayout(layoutId, warnOnFallback)
 	if typeof(layoutId) ~= "string" or layoutId == "" then
 		return nil
 	end
@@ -192,10 +192,10 @@ local function resolveTemplateNameForLayout(layoutId)
 		return layoutId
 	end
 
-	local layout = RoomLayoutConfig.GetLayout(layoutId)
-
-	if layoutId == "Free_036_A" and typeof(layout) == "table" then
-		if typeof(layout.TemplateName) == "string"
+	if layoutId == "Free_036_A" then
+		local layout = RoomLayoutConfig.GetLayout("Free_036_A")
+		if typeof(layout) == "table"
+			and typeof(layout.TemplateName) == "string"
 			and layout.TemplateName ~= ""
 			and roomTemplates:FindFirstChild(layout.TemplateName) then
 
@@ -205,6 +205,10 @@ local function resolveTemplateNameForLayout(layoutId)
 		local fallbackTemplateName = LAYOUT_TEMPLATE_FALLBACKS[layoutId]
 
 		if fallbackTemplateName and roomTemplates:FindFirstChild(fallbackTemplateName) then
+			if warnOnFallback then
+				warn("RoomLayout_Free_036_A missing; using Layout_01 fallback.")
+			end
+
 			return fallbackTemplateName
 		end
 	end
@@ -709,7 +713,7 @@ local function removeEditorHelpers(roomModel)
 end
 
 local function cloneRoomForPlayer(player, layoutId, roomId)
-	local templateName = resolveTemplateNameForLayout(layoutId)
+	local templateName = resolveTemplateNameForLayout(layoutId, true)
 
 	if not templateName then
 		warn("Invalid layout requested:", layoutId)

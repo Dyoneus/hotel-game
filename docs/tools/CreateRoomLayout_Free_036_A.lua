@@ -26,7 +26,8 @@ local MARKER_Y = FLOOR_TOP_Y + 2.75
 local WALL_HEIGHT = 6.5
 local WALL_THICKNESS = 1
 local WALL_CENTER_Y = FLOOR_TOP_Y + WALL_HEIGHT / 2
-local DOOR_OPENING_WIDTH = TILE_SIZE * 2
+local DOOR_OPENING_WIDTH = TILE_SIZE
+local DOORWAY_COLLISION_CLEARANCE = TILE_SIZE / 2
 
 local COLORS = {
 	Floor = Color3.fromRGB(194, 184, 162),
@@ -102,6 +103,10 @@ local function createMarker(parent, name, cframe)
 	return marker
 end
 
+local function createRoomFacingCFrame(position)
+	return CFrame.lookAt(position, position + Vector3.new(0, 0, 1))
+end
+
 local function setGridAttributes(instance)
 	instance:SetAttribute("UsesTileGrid", true)
 	instance:SetAttribute("TileSize", TILE_SIZE)
@@ -116,6 +121,16 @@ local function createWall(parent, name, size, cframe)
 		CanQuery = false,
 		Color = COLORS.Wall,
 		Material = Enum.Material.SmoothPlastic,
+	})
+end
+
+local function createInvisibleCollider(parent, name, size, cframe)
+	return createPart(parent, name, size, cframe, {
+		CanCollide = true,
+		CanTouch = false,
+		CanQuery = false,
+		CastShadow = false,
+		Transparency = 1,
 	})
 end
 
@@ -137,7 +152,9 @@ local function buildWalls(roomFolder)
 
 	local halfWidth = FLOOR_SIZE.X / 2
 	local halfDepth = FLOOR_SIZE.Z / 2
-	local frontSegmentWidth = (FLOOR_SIZE.X - DOOR_OPENING_WIDTH) / 2
+	local frontVisualSegmentWidth = (FLOOR_SIZE.X - DOOR_OPENING_WIDTH) / 2
+	local frontCollisionSegmentWidth = math.max(0, frontVisualSegmentWidth - DOORWAY_COLLISION_CLEARANCE)
+	local frontWallZ = -halfDepth - WALL_THICKNESS / 2
 
 	createWall(
 		walls,
@@ -160,25 +177,47 @@ local function buildWalls(roomFolder)
 		CFrame.new(halfWidth + WALL_THICKNESS / 2, WALL_CENTER_Y, 0)
 	)
 
-	createWall(
+	createVisualPart(
 		walls,
 		"WallFrontLeft",
-		Vector3.new(frontSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
-		CFrame.new(-(DOOR_OPENING_WIDTH / 2 + frontSegmentWidth / 2), WALL_CENTER_Y, -halfDepth - WALL_THICKNESS / 2)
+		Vector3.new(frontVisualSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
+		CFrame.new(-(DOOR_OPENING_WIDTH / 2 + frontVisualSegmentWidth / 2), WALL_CENTER_Y, frontWallZ),
+		COLORS.Wall,
+		Enum.Material.SmoothPlastic
 	)
 
-	createWall(
+	createVisualPart(
 		walls,
 		"WallFrontRight",
-		Vector3.new(frontSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
-		CFrame.new(DOOR_OPENING_WIDTH / 2 + frontSegmentWidth / 2, WALL_CENTER_Y, -halfDepth - WALL_THICKNESS / 2)
+		Vector3.new(frontVisualSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
+		CFrame.new(DOOR_OPENING_WIDTH / 2 + frontVisualSegmentWidth / 2, WALL_CENTER_Y, frontWallZ),
+		COLORS.Wall,
+		Enum.Material.SmoothPlastic
 	)
+
+	if frontCollisionSegmentWidth > 0 then
+		local frontCollisionCenterX = DOOR_OPENING_WIDTH / 2 + DOORWAY_COLLISION_CLEARANCE + frontCollisionSegmentWidth / 2
+
+		createInvisibleCollider(
+			walls,
+			"WallFrontLeftCollision",
+			Vector3.new(frontCollisionSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
+			CFrame.new(-frontCollisionCenterX, WALL_CENTER_Y, frontWallZ)
+		)
+
+		createInvisibleCollider(
+			walls,
+			"WallFrontRightCollision",
+			Vector3.new(frontCollisionSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
+			CFrame.new(frontCollisionCenterX, WALL_CENTER_Y, frontWallZ)
+		)
+	end
 
 	createVisualPart(
 		walls,
 		"DoorOpeningTrimTop",
 		Vector3.new(DOOR_OPENING_WIDTH + 0.5, 0.35, 0.7),
-		CFrame.new(0, FLOOR_TOP_Y + WALL_HEIGHT - 0.6, -halfDepth - WALL_THICKNESS / 2),
+		CFrame.new(0, FLOOR_TOP_Y + WALL_HEIGHT - 0.6, frontWallZ),
 		COLORS.Trim,
 		Enum.Material.Wood
 	)
@@ -279,8 +318,10 @@ local function buildTemplate(templateFolder)
 	setGridAttributes(template)
 
 	local roomAnchor = createMarker(template, "RoomAnchor", CFrame.new(0, 0, 0))
-	local doorSpawn = createMarker(template, "DoorSpawn", CFrame.new(0, MARKER_Y, -FLOOR_SIZE.Z / 2 - 2))
-	local entryWalkTarget = createMarker(template, "EntryWalkTarget", CFrame.new(0, MARKER_Y, -FLOOR_SIZE.Z / 2 + TILE_SIZE / 2))
+	local doorSpawnPosition = Vector3.new(0, MARKER_Y, -FLOOR_SIZE.Z / 2 - 2)
+	local entryWalkTargetPosition = Vector3.new(0, MARKER_Y, -FLOOR_SIZE.Z / 2 + TILE_SIZE / 2)
+	local doorSpawn = createMarker(template, "DoorSpawn", createRoomFacingCFrame(doorSpawnPosition))
+	local entryWalkTarget = createMarker(template, "EntryWalkTarget", createRoomFacingCFrame(entryWalkTargetPosition))
 	template.PrimaryPart = roomAnchor
 
 	local roomFolder = Instance.new("Folder")
@@ -343,5 +384,8 @@ print(string.format(
 print(TOOL_PREFIX .. " RoomAnchor position: " .. tostring(roomAnchor.Position))
 print(TOOL_PREFIX .. " DoorSpawn position: " .. tostring(doorSpawn.Position))
 print(TOOL_PREFIX .. " EntryWalkTarget position: " .. tostring(entryWalkTarget.Position))
+print(string.format("%s Cave width = %.0f tile (%.1f studs).", TOOL_PREFIX, DOOR_OPENING_WIDTH / TILE_SIZE, DOOR_OPENING_WIDTH))
+print(string.format("%s EntryWalkTarget remains first interior tile: z=%.1f.", TOOL_PREFIX, entryWalkTarget.Position.Z))
+print(TOOL_PREFIX .. " Doorway trim is non-colliding; entrance-edge visuals do not block the character.")
 print(TOOL_PREFIX .. " Entrance lane kept clear from DoorSpawn to EntryWalkTarget.")
 print(TOOL_PREFIX .. " Next: run docs/tools/ValidateRoomLayoutTemplates.lua, then create and join Starter Studio from Room Planner.")
