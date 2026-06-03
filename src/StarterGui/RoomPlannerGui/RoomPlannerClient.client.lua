@@ -9,6 +9,8 @@ local roomNavigatorRequest = remoteEvents:WaitForChild("RoomNavigatorRequest")
 local roomNavigatorResult = remoteEvents:WaitForChild("RoomNavigatorResult")
 local roomListRequest = remoteEvents:WaitForChild("RoomListRequest")
 local roomListUpdate = remoteEvents:WaitForChild("RoomListUpdate")
+local shared = ReplicatedStorage:WaitForChild("Shared")
+local RoomLayoutConfig = require(shared:WaitForChild("RoomLayoutConfig"))
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -43,48 +45,28 @@ local THEME = {
 	Error = Color3.fromRGB(151, 62, 48),
 	Success = Color3.fromRGB(48, 126, 70),
 }
-local LAYOUTS = {
-	{
-		Id = "StarterStudio",
-		DisplayName = "Starter Studio",
-		LayoutId = "Free_036_A",
-		DefaultRoomName = "Starter Studio",
-		SizeText = "36 tiles",
-		Description = "A simple starter layout.",
-		GridColumns = 5,
-		GridRows = 7,
-		IsCreatable = true,
-	},
-	{
-		Id = "CozyCorner",
-		DisplayName = "Cozy Corner",
-		SizeText = "Coming Soon",
-		Description = "A compact social layout.",
-		GridColumns = 4,
-		GridRows = 5,
-		IsCreatable = false,
-	},
-	{
-		Id = "WideSuite",
-		DisplayName = "Wide Suite",
-		SizeText = "Coming Soon",
-		Description = "A larger room layout.",
-		GridColumns = 7,
-		GridRows = 5,
-		IsCreatable = false,
-	},
+
+local DEFAULT_LAYOUT_FILTER = "Free"
+local LAYOUT_FILTERS = {
+	{ Id = "Free", Label = "Free" },
+	{ Id = "VIP", Label = "VIP" },
+	{ Id = "All", Label = "All" },
 }
 
 local state = {
 	isOpen = false,
-	selectedLayoutId = "StarterStudio",
+	selectedLayoutId = nil,
+	layoutFilter = DEFAULT_LAYOUT_FILTER,
 	requestInFlight = false,
 	roomCountKnown = false,
 	ownedRoomCount = 0,
 	restoreNavigatorState = nil,
 	openRoomName = nil,
+	lastDefaultRoomName = nil,
+	promptOkHandler = nil,
 }
 local ui = {}
+local isMaxRoomLimitReached
 
 local function createCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -208,14 +190,146 @@ local function createInput(name, placeholder, position, size, parent, multiLine)
 	return input
 end
 
+local function getRoomTemplatesFolder()
+	return ReplicatedStorage:FindFirstChild("RoomTemplates")
+end
+
+local function templateExists(layoutInfo)
+	if typeof(layoutInfo) ~= "table" or typeof(layoutInfo.TemplateName) ~= "string" or layoutInfo.TemplateName == "" then
+		return false
+	end
+
+	local roomTemplates = getRoomTemplatesFolder()
+	return roomTemplates ~= nil and roomTemplates:FindFirstChild(layoutInfo.TemplateName) ~= nil
+end
+
+local function enrichLayoutInfo(layoutInfo)
+	local enriched = {}
+
+	for key, value in pairs(layoutInfo) do
+		enriched[key] = value
+	end
+
+	local hasTemplate = templateExists(enriched)
+	local isVip = enriched.RequiresVip == true or enriched.AccessTier == RoomLayoutConfig.ACCESS_VIP
+
+	enriched.TemplateExists = hasTemplate
+	enriched.TemplateStatusText = hasTemplate and "Ready" or "Template missing"
+	enriched.IsVipLocked = isVip
+	enriched.IsCreatable = enriched.IsSelectable == true
+		and enriched.Status == RoomLayoutConfig.STATUS_AVAILABLE
+		and enriched.AccessTier == RoomLayoutConfig.ACCESS_FREE
+		and hasTemplate
+
+	if isVip then
+		enriched.DisabledReason = "VIP required"
+	elseif not hasTemplate then
+		enriched.DisabledReason = "Template missing"
+	elseif enriched.IsSelectable ~= true or enriched.Status ~= RoomLayoutConfig.STATUS_AVAILABLE then
+		enriched.DisabledReason = "Unavailable"
+	else
+		enriched.DisabledReason = nil
+	end
+
+	return enriched
+end
+
+local function getPlannerLayouts()
+	local layouts = {}
+
+	for _, layoutInfo in ipairs(RoomLayoutConfig.GetSelectableLayouts()) do
+		table.insert(layouts, enrichLayoutInfo(layoutInfo))
+	end
+
+	return layouts
+end
+
+local function layoutMatchesFilter(layoutInfo)
+	if state.layoutFilter == "Free" then
+		return layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_FREE
+	elseif state.layoutFilter == "VIP" then
+		return layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_VIP
+	end
+
+	return true
+end
+
+local function getVisibleLayouts()
+	local layouts = {}
+
+	for _, layoutInfo in ipairs(getPlannerLayouts()) do
+		if layoutMatchesFilter(layoutInfo) then
+			table.insert(layouts, layoutInfo)
+		end
+	end
+
+	return layouts
+end
+
 local function getLayoutById(layoutId)
-	for _, layoutInfo in ipairs(LAYOUTS) do
-		if layoutInfo.Id == layoutId then
+	if typeof(layoutId) ~= "string" or layoutId == "" then
+		return nil
+	end
+
+	for _, layoutInfo in ipairs(getPlannerLayouts()) do
+		if layoutInfo.LayoutId == layoutId then
 			return layoutInfo
 		end
 	end
 
-	return LAYOUTS[1]
+	return nil
+end
+
+local function getFirstVisibleLayout()
+	local firstLayout = nil
+
+	for _, layoutInfo in ipairs(getVisibleLayouts()) do
+		firstLayout = firstLayout or layoutInfo
+
+		if layoutInfo.IsCreatable == true then
+			return layoutInfo
+		end
+	end
+
+	return firstLayout
+end
+
+local function ensureSelectedLayout()
+	local selectedLayout = getLayoutById(state.selectedLayoutId)
+
+	if selectedLayout and layoutMatchesFilter(selectedLayout) then
+		return selectedLayout
+	end
+
+	selectedLayout = getFirstVisibleLayout()
+	state.selectedLayoutId = selectedLayout and selectedLayout.LayoutId or nil
+	state.lastDefaultRoomName = selectedLayout and selectedLayout.DisplayName or nil
+
+	return selectedLayout
+end
+
+local function getLayoutStatusMessage(layoutInfo)
+	if not layoutInfo then
+		return "No layouts available.", true
+	end
+
+	if layoutInfo.IsCreatable == true then
+		if isMaxRoomLimitReached() then
+			return "Maximum room limit reached.", true
+		end
+
+		return "Ready to create " .. layoutInfo.DisplayName .. ".", false
+	end
+
+	if layoutInfo.IsVipLocked == true then
+		return layoutInfo.DisplayName .. " requires VIP.", true
+	end
+
+	if layoutInfo.TemplateExists ~= true then
+		return layoutInfo.DisplayName .. " template missing.", true
+	end
+
+	return layoutInfo.DisplayName .. " is unavailable.", true
 end
 
 local function setStatus(message, isError)
@@ -223,15 +337,32 @@ local function setStatus(message, isError)
 	ui.status.TextColor3 = isError and THEME.Error or THEME.Success
 end
 
-local function isMaxRoomLimitReached()
+local function hideAcknowledgementPrompt()
+	state.promptOkHandler = nil
+
+	if ui.ackPrompt then
+		ui.ackPrompt.Visible = false
+	end
+end
+
+local function showAcknowledgementPrompt(title, message, onOk)
+	if not ui.ackPrompt then
+		return
+	end
+
+	ui.ackPromptTitle.Text = tostring(title or "")
+	ui.ackPromptMessage.Text = tostring(message or "")
+	ui.ackPromptMessage.Visible = message ~= nil and message ~= ""
+	state.promptOkHandler = onOk
+	ui.ackPrompt.Visible = true
+end
+
+isMaxRoomLimitReached = function()
 	return state.roomCountKnown == true and state.ownedRoomCount >= MAX_OWNED_ROOMS
 end
 
 local function showLimitPrompt()
-	if ui.limitPrompt then
-		ui.limitPrompt.Visible = true
-	end
-
+	showAcknowledgementPrompt("Room limit reached", "You have reached the maximum number of rooms.")
 	setStatus("Maximum room limit reached.", true)
 end
 
@@ -243,47 +374,38 @@ local function enforceTextLimit(textBox, maxLength)
 	end
 end
 
-local function drawPreviewGrid(parent, layoutInfo)
-	local columns = layoutInfo.GridColumns or 5
-	local rows = layoutInfo.GridRows or 5
-	local cellSize = math.floor(math.min(88 / columns, 72 / rows))
-	local gridWidth = cellSize * columns
-	local gridHeight = cellSize * rows
-	local grid = Instance.new("Frame")
-	grid.Name = "GridPreview"
-	grid.AnchorPoint = Vector2.new(1, 0.5)
-	grid.Position = UDim2.new(1, -12, 0.5, 0)
-	grid.Size = UDim2.fromOffset(gridWidth, gridHeight)
-	grid.BackgroundColor3 = Color3.fromRGB(214, 190, 146)
-	grid.BorderSizePixel = 0
-	grid.Parent = parent
-
-	createCorner(grid, 4)
-
-	for rowIndex = 1, rows do
-		for columnIndex = 1, columns do
-			local cell = Instance.new("Frame")
-			cell.Name = "Cell"
-			cell.Position = UDim2.fromOffset((columnIndex - 1) * cellSize + 1, (rowIndex - 1) * cellSize + 1)
-			cell.Size = UDim2.fromOffset(math.max(2, cellSize - 2), math.max(2, cellSize - 2))
-			cell.BackgroundColor3 = Color3.fromRGB(251, 239, 206)
-			cell.BorderSizePixel = 0
-			cell.Parent = grid
-		end
-	end
-end
-
 local function updateCreateButton()
-	local selectedLayout = getLayoutById(state.selectedLayoutId)
-	local canCreate = selectedLayout.IsCreatable == true and not state.requestInFlight
+	local selectedLayout = ensureSelectedLayout()
+	local selectedLayoutCanCreate = selectedLayout ~= nil and selectedLayout.IsCreatable == true
+	local canClick = selectedLayoutCanCreate and not state.requestInFlight
 	local atMaxRooms = isMaxRoomLimitReached()
 
-	ui.createButton.Active = canCreate
-	ui.createButton.AutoButtonColor = canCreate
-	ui.createButton.Text = state.requestInFlight and "Creating..." or (atMaxRooms and "Limit Reached" or "Create Room")
-	ui.createButton.BackgroundColor3 = canCreate
+	ui.createButton.Active = canClick
+	ui.createButton.AutoButtonColor = canClick
+	ui.createButton.Text = state.requestInFlight and "Creating..."
+		or (selectedLayout == nil and "No Layout")
+		or (selectedLayoutCanCreate and atMaxRooms and "Limit Reached")
+		or "Create Room"
+	ui.createButton.BackgroundColor3 = canClick
 		and (atMaxRooms and THEME.ButtonMuted or THEME.Confirm)
 		or THEME.ButtonMuted
+end
+
+local function renderFilterButtons()
+	if not ui.filterButtons then
+		return
+	end
+
+	for _, filterInfo in ipairs(LAYOUT_FILTERS) do
+		local button = ui.filterButtons[filterInfo.Id]
+		local isSelected = state.layoutFilter == filterInfo.Id
+
+		if button then
+			button.BackgroundColor3 = isSelected and THEME.ButtonSelected or Color3.fromRGB(214, 204, 185)
+			button.TextColor3 = isSelected and THEME.HeaderText or THEME.SubtleText
+			button.AutoButtonColor = not isSelected
+		end
+	end
 end
 
 local function renderLayoutCards()
@@ -293,17 +415,32 @@ local function renderLayoutCards()
 		end
 	end
 
-	for index, layoutInfo in ipairs(LAYOUTS) do
-		local isSelected = layoutInfo.Id == state.selectedLayoutId
+	local visibleLayouts = getVisibleLayouts()
+	local selectedLayout = ensureSelectedLayout()
+
+	for index, layoutInfo in ipairs(visibleLayouts) do
+		local isSelected = selectedLayout ~= nil and layoutInfo.LayoutId == selectedLayout.LayoutId
 		local isCreatable = layoutInfo.IsCreatable == true
+		local statusText = isSelected and "Selected" or (isCreatable and "Creatable" or layoutInfo.DisabledReason or "Unavailable")
+		local accessText = tostring(layoutInfo.AccessTier or "Free")
+		local maxVisitorsText = typeof(layoutInfo.MaxVisitors) == "number"
+			and ("Max visitors: " .. tostring(layoutInfo.MaxVisitors))
+			or nil
+		local metaText = tostring(layoutInfo.TileCount or "?") .. " tiles | " .. accessText
+
+		if maxVisitorsText then
+			metaText = metaText .. " | " .. maxVisitorsText
+		end
+
 		local card = Instance.new("TextButton")
-		card.Name = layoutInfo.Id .. "Card"
+		card.Name = layoutInfo.LayoutId .. "Card"
 		card.LayoutOrder = index
-		card.Size = UDim2.new(1, 0, 0, 92)
-		card.BackgroundColor3 = isSelected and Color3.fromRGB(248, 235, 200) or THEME.PanelAlt
+		card.Size = UDim2.new(1, 0, 0, 112)
+		card.BackgroundColor3 = isSelected and Color3.fromRGB(248, 235, 200)
+			or (isCreatable and THEME.PanelAlt or Color3.fromRGB(239, 230, 207))
 		card.BorderSizePixel = 0
 		card.Text = ""
-		card.AutoButtonColor = isCreatable
+		card.AutoButtonColor = true
 		card.Parent = ui.layoutList
 
 		createCorner(card, 7)
@@ -314,17 +451,19 @@ local function renderLayoutCards()
 			isCreatable and 0 or 0.35
 		)
 		card.MouseButton1Click:Connect(function()
-			if not isCreatable then
-				setStatus(layoutInfo.DisplayName .. " is coming soon.", true)
-				return
+			local previousLayout = getLayoutById(state.selectedLayoutId)
+			local currentName = ui.nameInput.Text or ""
+			local previousDefaultName = state.lastDefaultRoomName or (previousLayout and previousLayout.DisplayName)
+
+			state.selectedLayoutId = layoutInfo.LayoutId
+			state.lastDefaultRoomName = layoutInfo.DisplayName
+
+			if currentName == "" or currentName == previousDefaultName then
+				ui.nameInput.Text = layoutInfo.DisplayName
 			end
 
-			state.selectedLayoutId = layoutInfo.Id
-			if isMaxRoomLimitReached() then
-				setStatus("Maximum room limit reached.", true)
-			else
-				setStatus("Ready to create " .. layoutInfo.DisplayName .. ".", false)
-			end
+			local message, isError = getLayoutStatusMessage(layoutInfo)
+			setStatus(message, isError)
 			renderLayoutCards()
 			updateCreateButton()
 		end)
@@ -335,29 +474,69 @@ local function renderLayoutCards()
 			TextTruncate = Enum.TextTruncate.AtEnd,
 		})
 		createLabel(
-			"Meta",
-			"Size: " .. layoutInfo.SizeText,
+			"LayoutId",
+			"ID: " .. tostring(layoutInfo.LayoutId),
 			UDim2.fromOffset(12, 30),
 			UDim2.new(1, -128, 0, 16),
 			card,
 			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd }
 		)
 		createLabel(
-			"Description",
-			layoutInfo.Description,
+			"Meta",
+			metaText,
 			UDim2.fromOffset(12, 50),
+			UDim2.new(1, -128, 0, 16),
+			card,
+			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd }
+		)
+		createLabel(
+			"Notes",
+			tostring(layoutInfo.Notes or ""),
+			UDim2.fromOffset(12, 70),
 			UDim2.new(1, -128, 0, 34),
 			card,
 			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextWrapped = true }
 		)
 
-		drawPreviewGrid(card, layoutInfo)
+		local templateBadge = createLabel(
+			"TemplateStatus",
+			layoutInfo.TemplateStatusText,
+			UDim2.new(1, -116, 0, 12),
+			UDim2.fromOffset(104, 22),
+			card,
+			{
+				TextColor3 = layoutInfo.TemplateExists and THEME.HeaderText or THEME.SubtleText,
+				TextSize = 11,
+				Font = Enum.Font.GothamBold,
+				TextXAlignment = Enum.TextXAlignment.Center,
+			}
+		)
+		templateBadge.BackgroundColor3 = layoutInfo.TemplateExists and THEME.Confirm or Color3.fromRGB(214, 204, 185)
+		templateBadge.BackgroundTransparency = 0
+		createCorner(templateBadge, 5)
+
+		local accessBadge = createLabel(
+			"AccessTier",
+			accessText,
+			UDim2.new(1, -116, 0, 40),
+			UDim2.fromOffset(104, 22),
+			card,
+			{
+				TextColor3 = THEME.HeaderText,
+				TextSize = 11,
+				Font = Enum.Font.GothamBold,
+				TextXAlignment = Enum.TextXAlignment.Center,
+			}
+		)
+		accessBadge.BackgroundColor3 = layoutInfo.IsVipLocked and Color3.fromRGB(126, 91, 143) or THEME.Button
+		accessBadge.BackgroundTransparency = 0
+		createCorner(accessBadge, 5)
 
 		local statusBadge = createLabel(
 			"SelectionStatus",
-			isSelected and "Selected" or (isCreatable and "Click card" or "Coming Soon"),
-			UDim2.new(1, -92, 1, -30),
-			UDim2.fromOffset(80, 22),
+			statusText,
+			UDim2.new(1, -116, 0, 68),
+			UDim2.fromOffset(104, 22),
 			card,
 			{
 				TextColor3 = isCreatable and THEME.HeaderText or THEME.SubtleText,
@@ -366,10 +545,28 @@ local function renderLayoutCards()
 				TextXAlignment = Enum.TextXAlignment.Center,
 			}
 		)
-		statusBadge.BackgroundColor3 = isSelected and THEME.ButtonSelected or (isCreatable and THEME.Button or Color3.fromRGB(214, 204, 185))
+		statusBadge.BackgroundColor3 = isSelected and THEME.ButtonSelected
+			or (isCreatable and THEME.Button or Color3.fromRGB(214, 204, 185))
 		statusBadge.BackgroundTransparency = 0
 		createCorner(statusBadge, 5)
 	end
+
+	if #visibleLayouts == 0 then
+		createLabel(
+			"NoLayouts",
+			"No layouts in this filter.",
+			UDim2.fromOffset(0, 0),
+			UDim2.new(1, 0, 0, 42),
+			ui.layoutList,
+			{ TextColor3 = THEME.SubtleText, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Center }
+		)
+	end
+
+	if ui.layoutListLayout then
+		ui.layoutList.CanvasSize = UDim2.fromOffset(0, ui.layoutListLayout.AbsoluteContentSize.Y + 10)
+	end
+
+	renderFilterButtons()
 end
 
 ui.backdrop = Instance.new("Frame")
@@ -502,17 +699,60 @@ createLabel("LayoutTitle", "Choose Layout", UDim2.fromOffset(16, 14), UDim2.new(
 	TextSize = 15,
 })
 
-ui.layoutList = Instance.new("Frame")
+ui.filterBar = Instance.new("Frame")
+ui.filterBar.Name = "LayoutFilters"
+ui.filterBar.Position = UDim2.fromOffset(16, 42)
+ui.filterBar.Size = UDim2.new(1, -32, 0, 28)
+ui.filterBar.BackgroundTransparency = 1
+ui.filterBar.Parent = ui.rightPanel
+
+ui.filterButtons = {}
+
+local filterButtonLayout = Instance.new("UIListLayout")
+filterButtonLayout.FillDirection = Enum.FillDirection.Horizontal
+filterButtonLayout.SortOrder = Enum.SortOrder.LayoutOrder
+filterButtonLayout.Padding = UDim.new(0, 6)
+filterButtonLayout.Parent = ui.filterBar
+
+for index, filterInfo in ipairs(LAYOUT_FILTERS) do
+	local filterButton = createTextButton("Filter" .. filterInfo.Id, filterInfo.Label, UDim2.new(0.33, -4, 1, 0), ui.filterBar)
+	filterButton.LayoutOrder = index
+	filterButton.TextSize = 12
+	filterButton.MouseButton1Click:Connect(function()
+		if state.layoutFilter == filterInfo.Id then
+			return
+		end
+
+		state.layoutFilter = filterInfo.Id
+		ensureSelectedLayout()
+
+		local selectedLayout = getLayoutById(state.selectedLayoutId)
+		local message, isError = getLayoutStatusMessage(selectedLayout)
+		setStatus(message, isError)
+		renderLayoutCards()
+		updateCreateButton()
+	end)
+	ui.filterButtons[filterInfo.Id] = filterButton
+end
+
+ui.layoutList = Instance.new("ScrollingFrame")
 ui.layoutList.Name = "LayoutCards"
-ui.layoutList.Position = UDim2.fromOffset(16, 48)
-ui.layoutList.Size = UDim2.new(1, -32, 1, -64)
+ui.layoutList.Position = UDim2.fromOffset(16, 80)
+ui.layoutList.Size = UDim2.new(1, -32, 1, -96)
 ui.layoutList.BackgroundTransparency = 1
+ui.layoutList.BorderSizePixel = 0
+ui.layoutList.ScrollBarThickness = 5
+ui.layoutList.ScrollingDirection = Enum.ScrollingDirection.Y
+ui.layoutList.CanvasSize = UDim2.fromOffset(0, 0)
 ui.layoutList.Parent = ui.rightPanel
 
-local layout = Instance.new("UIListLayout")
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Padding = UDim.new(0, 10)
-layout.Parent = ui.layoutList
+ui.layoutListLayout = Instance.new("UIListLayout")
+ui.layoutListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ui.layoutListLayout.Padding = UDim.new(0, 10)
+ui.layoutListLayout.Parent = ui.layoutList
+ui.layoutListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	ui.layoutList.CanvasSize = UDim2.fromOffset(0, ui.layoutListLayout.AbsoluteContentSize.Y + 10)
+end)
 
 ui.footer = Instance.new("Frame")
 ui.footer.Name = "Footer"
@@ -544,43 +784,49 @@ ui.createButton.AnchorPoint = Vector2.new(1, 0.5)
 ui.createButton.Position = UDim2.new(1, 0, 0.5, 0)
 ui.createButton.BackgroundColor3 = THEME.Confirm
 
-ui.limitPrompt = Instance.new("Frame")
-ui.limitPrompt.Name = "RoomLimitPrompt"
-ui.limitPrompt.AnchorPoint = Vector2.new(0.5, 0.5)
-ui.limitPrompt.Position = UDim2.fromScale(0.5, 0.5)
-ui.limitPrompt.Size = UDim2.fromOffset(360, 156)
-ui.limitPrompt.BackgroundColor3 = THEME.Panel
-ui.limitPrompt.BorderSizePixel = 0
-ui.limitPrompt.Visible = false
-ui.limitPrompt.ZIndex = 20
-ui.limitPrompt.Parent = ui.backdrop
+ui.ackPrompt = Instance.new("Frame")
+ui.ackPrompt.Name = "AcknowledgementPrompt"
+ui.ackPrompt.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.ackPrompt.Position = UDim2.fromScale(0.5, 0.5)
+ui.ackPrompt.Size = UDim2.fromOffset(360, 156)
+ui.ackPrompt.BackgroundColor3 = THEME.Panel
+ui.ackPrompt.BorderSizePixel = 0
+ui.ackPrompt.Visible = false
+ui.ackPrompt.ZIndex = 20
+ui.ackPrompt.Parent = ui.backdrop
 
-createCorner(ui.limitPrompt, 8)
-createStroke(ui.limitPrompt, THEME.Header, 2, 0)
+createCorner(ui.ackPrompt, 8)
+createStroke(ui.ackPrompt, THEME.Header, 2, 0)
 
-local promptTitle = createLabel("PromptTitle", "Room limit reached", UDim2.fromOffset(18, 14), UDim2.new(1, -36, 0, 24), ui.limitPrompt, {
+ui.ackPromptTitle = createLabel("PromptTitle", "", UDim2.fromOffset(18, 14), UDim2.new(1, -36, 0, 24), ui.ackPrompt, {
 	Font = Enum.Font.GothamBold,
 	TextSize = 15,
 	TextColor3 = THEME.Text,
 })
-promptTitle.ZIndex = 21
+ui.ackPromptTitle.ZIndex = 21
 
-local promptMessage = createLabel(
+ui.ackPromptMessage = createLabel(
 	"PromptMessage",
-	"You have reached the maximum number of rooms.",
+	"",
 	UDim2.fromOffset(18, 48),
 	UDim2.new(1, -36, 0, 42),
-	ui.limitPrompt,
+	ui.ackPrompt,
 	{ TextWrapped = true, TextColor3 = THEME.SubtleText, TextSize = 13 }
 )
-promptMessage.ZIndex = 21
+ui.ackPromptMessage.ZIndex = 21
 
-ui.limitPromptOkButton = createTextButton("PromptOkButton", "OK", UDim2.fromOffset(96, 32), ui.limitPrompt)
-ui.limitPromptOkButton.AnchorPoint = Vector2.new(0.5, 1)
-ui.limitPromptOkButton.Position = UDim2.new(0.5, 0, 1, -16)
-ui.limitPromptOkButton.ZIndex = 21
-ui.limitPromptOkButton.MouseButton1Click:Connect(function()
-	ui.limitPrompt.Visible = false
+ui.ackPromptOkButton = createTextButton("PromptOkButton", "OK", UDim2.fromOffset(96, 32), ui.ackPrompt)
+ui.ackPromptOkButton.AnchorPoint = Vector2.new(0.5, 1)
+ui.ackPromptOkButton.Position = UDim2.new(0.5, 0, 1, -16)
+ui.ackPromptOkButton.ZIndex = 21
+ui.ackPromptOkButton.MouseButton1Click:Connect(function()
+	local onOk = state.promptOkHandler
+
+	hideAcknowledgementPrompt()
+
+	if onOk then
+		onOk()
+	end
 end)
 
 ui.nameInput:GetPropertyChangedSignal("Text"):Connect(function()
@@ -657,17 +903,9 @@ local function refreshRoomLimitStatus()
 		return
 	end
 
-	if isMaxRoomLimitReached() then
-		setStatus("Maximum room limit reached.", true)
-	else
-		local selectedLayout = getLayoutById(state.selectedLayoutId)
-
-		if selectedLayout.IsCreatable == true then
-			setStatus("Ready to create " .. selectedLayout.DisplayName .. ".", false)
-		else
-			setStatus(selectedLayout.DisplayName .. " is coming soon.", true)
-		end
-	end
+	local selectedLayout = ensureSelectedLayout()
+	local message, isError = getLayoutStatusMessage(selectedLayout)
+	setStatus(message, isError)
 
 	updateCreateButton()
 end
@@ -698,9 +936,11 @@ end
 local function openWindow(payload)
 	state.isOpen = true
 	state.requestInFlight = false
-	state.selectedLayoutId = "StarterStudio"
+	state.layoutFilter = DEFAULT_LAYOUT_FILTER
+	state.selectedLayoutId = nil
 	state.restoreNavigatorState = nil
 	state.openRoomName = player:GetAttribute("CurrentRoomName")
+	state.lastDefaultRoomName = nil
 
 	if typeof(payload) == "table"
 		and payload.Source == "RoomNavigator"
@@ -709,10 +949,14 @@ local function openWindow(payload)
 		state.restoreNavigatorState = payload.RestoreState
 	end
 
-	ui.nameInput.Text = "Starter Studio"
+	local selectedLayout = ensureSelectedLayout()
+	local defaultRoomName = selectedLayout and selectedLayout.DisplayName or "Room"
+
+	state.lastDefaultRoomName = defaultRoomName
+	ui.nameInput.Text = defaultRoomName
 	ui.descriptionInput.Text = ""
 	ui.backdrop.Visible = true
-	ui.limitPrompt.Visible = false
+	hideAcknowledgementPrompt()
 	ui.body.CanvasPosition = Vector2.zero
 	applyWindowLayout()
 	if state.roomCountKnown then
@@ -736,7 +980,7 @@ local function closeWindow(options)
 	state.restoreNavigatorState = nil
 	state.openRoomName = nil
 	ui.backdrop.Visible = false
-	ui.limitPrompt.Visible = false
+	hideAcknowledgementPrompt()
 	setStatus("", false)
 	updateCreateButton()
 
@@ -756,10 +1000,11 @@ ui.createButton.MouseButton1Click:Connect(function()
 		return
 	end
 
-	local selectedLayout = getLayoutById(state.selectedLayoutId)
+	local selectedLayout = ensureSelectedLayout()
 
-	if selectedLayout.IsCreatable ~= true then
-		setStatus(selectedLayout.DisplayName .. " is coming soon.", true)
+	if selectedLayout == nil or selectedLayout.IsCreatable ~= true then
+		local message, isError = getLayoutStatusMessage(selectedLayout)
+		setStatus(message, isError)
 		return
 	end
 
@@ -777,6 +1022,7 @@ ui.createButton.MouseButton1Click:Connect(function()
 	end
 
 	state.requestInFlight = true
+	hideAcknowledgementPrompt()
 	setStatus("Creating room...", false)
 	updateCreateButton()
 	roomNavigatorRequest:FireServer("CreateOwnedRoom", {
@@ -849,8 +1095,7 @@ roomNavigatorResult.OnClientEvent:Connect(function(response)
 	if response.Success == true then
 		setStatus(response.Message or "Room created.", false)
 		roomListRequest:FireServer()
-
-		task.delay(0.65, function()
+		showAcknowledgementPrompt("Room created.", "", function()
 			if state.isOpen and not state.requestInFlight then
 				closeWindow()
 			end
