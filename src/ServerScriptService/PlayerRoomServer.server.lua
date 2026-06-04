@@ -1110,6 +1110,65 @@ local function getActiveOwnedRoomModel(ownerPlayer, roomId)
 	return roomModel
 end
 
+local function playerOccupiesRoomModel(player, roomModel)
+	if typeof(player) ~= "Instance"
+		or not player:IsA("Player")
+		or typeof(roomModel) ~= "Instance"
+		or not roomModel:IsA("Model") then
+
+		return false
+	end
+
+	if player:GetAttribute("CurrentRoomName") == roomModel.Name then
+		return true
+	end
+
+	if player:GetAttribute("CurrentRoomType") ~= "PlayerRoom" then
+		return false
+	end
+
+	local ownerUserId = roomModel:GetAttribute("OwnerUserId")
+
+	return player:GetAttribute("CurrentRoomId") == roomModel:GetAttribute("RoomId")
+		and typeof(ownerUserId) == "number"
+		and player:GetAttribute("CurrentRoomOwnerUserId") == ownerUserId
+end
+
+local function roomModelHasOccupants(roomModel)
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		if playerOccupiesRoomModel(otherPlayer, roomModel) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function destroyOwnedRoomCloneIfEmpty(roomModel)
+	if typeof(roomModel) ~= "Instance"
+		or not roomModel:IsA("Model")
+		or roomModel:GetAttribute("RoomType") == "PublicSpace"
+		or roomModelHasOccupants(roomModel) then
+
+		return false
+	end
+
+	local ownerUserId = roomModel:GetAttribute("OwnerUserId")
+
+	if typeof(ownerUserId) ~= "number" then
+		return false
+	end
+
+	local ownerPlayer = getPlayerByUserId(ownerUserId)
+
+	if ownerPlayer and playerRooms[ownerPlayer] == roomModel then
+		playerRooms[ownerPlayer] = nil
+	end
+
+	roomModel:Destroy()
+	return true
+end
+
 local function getPlayerCountInRoom(roomName)
 	local count = 0
 
@@ -2691,16 +2750,20 @@ local function leaveCurrentRoom(player)
 	end
 
 	local ownerUserId = roomModel:GetAttribute("OwnerUserId")
-
-	if typeof(ownerUserId) == "number"
+	local shouldDestroyEmptyOwnedRoom = typeof(ownerUserId) == "number"
 		and ownerUserId == player.UserId
-		and roomModel:GetAttribute("RoomType") ~= "PublicSpace" then
+		and roomModel:GetAttribute("RoomType") ~= "PublicSpace"
 
+	if shouldDestroyEmptyOwnedRoom then
 		capturePlayerRoomState(player, roomModel)
 		RoomPersistence.QueueSave(player)
 	end
 
 	enterMainMenuForPlayer(player, MAIN_MENU_INTRO_RETURNING)
+
+	if shouldDestroyEmptyOwnedRoom then
+		destroyOwnedRoomCloneIfEmpty(roomModel)
+	end
 
 	leaveRoomResult:FireClient(player, true, "Left room.")
 	sendRoomListToAll()
@@ -3449,6 +3512,25 @@ local function sendCreateOwnedRoomResult(player, success, message, roomRecord)
 	})
 end
 
+local function sendDeleteOwnedRoomResult(player, success, message, roomId, result)
+	local response = {
+		Kind = "DeleteOwnedRoom",
+		Action = "DeleteOwnedRoom",
+		Success = success == true,
+		Message = message or (success and "Room deleted." or "Could not delete room."),
+		RoomId = roomId,
+	}
+
+	if typeof(result) == "table" then
+		response.RoomId = result.RoomId or response.RoomId
+		response.Rooms = result.Rooms
+		response.ReturnedItems = result.ReturnedItems
+		response.ReturnedCount = result.ReturnedCount
+	end
+
+	roomNavigatorResult:FireClient(player, response)
+end
+
 local function handleCreateOwnedRoomRequest(player, payload)
 	if typeof(payload) ~= "table" then
 		sendCreateOwnedRoomResult(player, false, "Invalid room options.")
@@ -3522,11 +3604,35 @@ local function handleCreateOwnedRoomRequest(player, payload)
 	end
 end
 
+local function handleDeleteOwnedRoomRequest(player, payload)
+	if typeof(payload) ~= "table" then
+		sendDeleteOwnedRoomResult(player, false, "Invalid room options.", nil, nil)
+		return
+	end
+
+	local roomId = typeof(payload.RoomId) == "string" and payload.RoomId or nil
+	local success, message, result = RoomPersistence.DeleteOwnedRoom(player, roomId, {
+		ConfirmDisplayName = payload.ConfirmDisplayName,
+		RequireDisplayNameConfirmation = true,
+	})
+
+	sendDeleteOwnedRoomResult(player, success, message, roomId, result)
+
+	if success then
+		sendRoomListToPlayer(player)
+	end
+end
+
 roomNavigatorRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	local safeActionName = typeof(actionName) == "string" and actionName or "Unknown"
 
 	if safeActionName == "CreateOwnedRoom" then
 		handleCreateOwnedRoomRequest(player, payload)
+		return
+	end
+
+	if safeActionName == "DeleteOwnedRoom" then
+		handleDeleteOwnedRoomRequest(player, payload)
 		return
 	end
 

@@ -151,6 +151,11 @@ local favouriteEntries = {}
 local favouritesRequestInFlight = false
 local favouritesLoaded = false
 local pendingFavouriteToggleByRoomKey = {}
+local roomDeleteUi = {
+	inFlight = false,
+	deletedRoomIds = {},
+	deletedRoomKeys = {},
+}
 local searchQuery = ""
 local selectedSettingsCategory = "Chat Rooms"
 local selectedSettingsIsPublic = true
@@ -418,6 +423,7 @@ local roomTransitionRequest = getOrCreateClientEvent("RoomTransitionRequest")
 local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
 local openRoomSettings = getOrCreateClientEvent("OpenRoomSettings")
 local openRoomPlanner = getOrCreateClientEvent("OpenRoomPlanner")
+local inventoryRefreshRequested = getOrCreateClientEvent("InventoryRefreshRequested")
 
 local MENU_NAME = "Rooms"
 local anyMajorMenuOpen = false
@@ -841,6 +847,13 @@ ui.goButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 ui.goButton.Active = false
 ui.goButton.AutoButtonColor = false
 
+ui.deleteRoomButton = createTextButton("DeleteRoomButton", "Delete", UDim2.fromOffset(92, 36), ui.detailPanel)
+ui.deleteRoomButton.AnchorPoint = Vector2.new(1, 0)
+ui.deleteRoomButton.Position = UDim2.new(1, -382, 0, 40)
+ui.deleteRoomButton.BackgroundColor3 = Color3.fromRGB(148, 66, 66)
+ui.deleteRoomButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.deleteRoomButton.Visible = false
+
 ui.statusLabel = Instance.new("TextLabel")
 ui.statusLabel.Name = "StatusLabel"
 ui.statusLabel.AnchorPoint = Vector2.new(1, 0)
@@ -1151,6 +1164,154 @@ ui.settingsCategoryDropdownPadding.PaddingLeft = UDim.new(0, 4)
 ui.settingsCategoryDropdownPadding.PaddingRight = UDim.new(0, 4)
 ui.settingsCategoryDropdownPadding.Parent = ui.settingsCategoryDropdown
 
+ui.deletePromptOverlay = Instance.new("Frame")
+ui.deletePromptOverlay.Name = "DeleteRoomPromptOverlay"
+ui.deletePromptOverlay.Size = UDim2.fromScale(1, 1)
+ui.deletePromptOverlay.BackgroundColor3 = Color3.fromRGB(20, 24, 24)
+ui.deletePromptOverlay.BackgroundTransparency = 0.38
+ui.deletePromptOverlay.BorderSizePixel = 0
+ui.deletePromptOverlay.Visible = false
+ui.deletePromptOverlay.Active = true
+ui.deletePromptOverlay.ZIndex = 200
+ui.deletePromptOverlay.Parent = ui.panel
+
+ui.deletePromptCard = Instance.new("Frame")
+ui.deletePromptCard.Name = "DeleteRoomPrompt"
+ui.deletePromptCard.AnchorPoint = Vector2.new(0.5, 0.5)
+ui.deletePromptCard.Position = UDim2.fromScale(0.5, 0.5)
+ui.deletePromptCard.Size = UDim2.new(1, -40, 0, 334)
+ui.deletePromptCard.BackgroundColor3 = Color3.fromRGB(248, 246, 239)
+ui.deletePromptCard.BorderSizePixel = 0
+ui.deletePromptCard.ZIndex = 201
+ui.deletePromptCard.Parent = ui.deletePromptOverlay
+
+createCorner(ui.deletePromptCard, 8)
+createStroke(ui.deletePromptCard, Color3.fromRGB(166, 146, 118), 1, 0)
+
+ui.deletePromptSize = Instance.new("UISizeConstraint")
+ui.deletePromptSize.MinSize = Vector2.new(312, 300)
+ui.deletePromptSize.MaxSize = Vector2.new(440, 360)
+ui.deletePromptSize.Parent = ui.deletePromptCard
+
+ui.deletePromptTitle = Instance.new("TextLabel")
+ui.deletePromptTitle.Name = "Title"
+ui.deletePromptTitle.Position = UDim2.fromOffset(22, 18)
+ui.deletePromptTitle.Size = UDim2.new(1, -44, 0, 28)
+ui.deletePromptTitle.BackgroundTransparency = 1
+ui.deletePromptTitle.Text = "Delete Room"
+ui.deletePromptTitle.TextColor3 = Color3.fromRGB(54, 44, 38)
+ui.deletePromptTitle.TextSize = 20
+ui.deletePromptTitle.TextXAlignment = Enum.TextXAlignment.Left
+ui.deletePromptTitle.Font = Enum.Font.GothamBold
+ui.deletePromptTitle.ZIndex = 202
+ui.deletePromptTitle.Parent = ui.deletePromptCard
+
+ui.deletePromptWarning = Instance.new("TextLabel")
+ui.deletePromptWarning.Name = "Warning"
+ui.deletePromptWarning.Position = UDim2.fromOffset(22, 60)
+ui.deletePromptWarning.Size = UDim2.new(1, -44, 0, 48)
+ui.deletePromptWarning.BackgroundTransparency = 1
+ui.deletePromptWarning.Text = "This room will be deleted. Placed furniture will be returned to your Inventory."
+ui.deletePromptWarning.TextColor3 = Color3.fromRGB(70, 62, 54)
+ui.deletePromptWarning.TextSize = 14
+ui.deletePromptWarning.TextWrapped = true
+ui.deletePromptWarning.TextXAlignment = Enum.TextXAlignment.Left
+ui.deletePromptWarning.TextYAlignment = Enum.TextYAlignment.Top
+ui.deletePromptWarning.Font = Enum.Font.Gotham
+ui.deletePromptWarning.ZIndex = 202
+ui.deletePromptWarning.Parent = ui.deletePromptCard
+
+ui.deletePromptStrongWarning = Instance.new("TextLabel")
+ui.deletePromptStrongWarning.Name = "StrongWarning"
+ui.deletePromptStrongWarning.Position = UDim2.fromOffset(22, 116)
+ui.deletePromptStrongWarning.Size = UDim2.new(1, -44, 0, 22)
+ui.deletePromptStrongWarning.BackgroundTransparency = 1
+ui.deletePromptStrongWarning.Text = "This cannot be undone."
+ui.deletePromptStrongWarning.TextColor3 = Color3.fromRGB(142, 52, 48)
+ui.deletePromptStrongWarning.TextSize = 14
+ui.deletePromptStrongWarning.TextXAlignment = Enum.TextXAlignment.Left
+ui.deletePromptStrongWarning.Font = Enum.Font.GothamBold
+ui.deletePromptStrongWarning.ZIndex = 202
+ui.deletePromptStrongWarning.Parent = ui.deletePromptCard
+
+ui.deletePromptInstruction = Instance.new("TextLabel")
+ui.deletePromptInstruction.Name = "Instruction"
+ui.deletePromptInstruction.Position = UDim2.fromOffset(22, 152)
+ui.deletePromptInstruction.Size = UDim2.new(1, -44, 0, 20)
+ui.deletePromptInstruction.BackgroundTransparency = 1
+ui.deletePromptInstruction.Text = "Type the room name to confirm."
+ui.deletePromptInstruction.TextColor3 = Color3.fromRGB(70, 62, 54)
+ui.deletePromptInstruction.TextSize = 13
+ui.deletePromptInstruction.TextXAlignment = Enum.TextXAlignment.Left
+ui.deletePromptInstruction.Font = Enum.Font.GothamMedium
+ui.deletePromptInstruction.ZIndex = 202
+ui.deletePromptInstruction.Parent = ui.deletePromptCard
+
+ui.deletePromptNameBox = Instance.new("TextBox")
+ui.deletePromptNameBox.Name = "RoomNameConfirmation"
+ui.deletePromptNameBox.Position = UDim2.fromOffset(22, 180)
+ui.deletePromptNameBox.Size = UDim2.new(1, -44, 0, 38)
+ui.deletePromptNameBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+ui.deletePromptNameBox.BorderSizePixel = 0
+ui.deletePromptNameBox.PlaceholderText = ""
+ui.deletePromptNameBox.Text = ""
+ui.deletePromptNameBox.TextColor3 = Color3.fromRGB(42, 48, 42)
+ui.deletePromptNameBox.PlaceholderColor3 = Color3.fromRGB(132, 128, 120)
+ui.deletePromptNameBox.TextSize = 14
+ui.deletePromptNameBox.TextXAlignment = Enum.TextXAlignment.Left
+ui.deletePromptNameBox.Font = Enum.Font.Gotham
+ui.deletePromptNameBox.ClearTextOnFocus = false
+ui.deletePromptNameBox.ZIndex = 202
+ui.deletePromptNameBox.Parent = ui.deletePromptCard
+
+createCorner(ui.deletePromptNameBox, 6)
+createStroke(ui.deletePromptNameBox, Color3.fromRGB(194, 184, 168), 1, 0)
+
+ui.deletePromptNamePadding = Instance.new("UIPadding")
+ui.deletePromptNamePadding.PaddingLeft = UDim.new(0, 10)
+ui.deletePromptNamePadding.PaddingRight = UDim.new(0, 10)
+ui.deletePromptNamePadding.Parent = ui.deletePromptNameBox
+
+ui.deletePromptStatus = Instance.new("TextLabel")
+ui.deletePromptStatus.Name = "Status"
+ui.deletePromptStatus.Position = UDim2.fromOffset(22, 226)
+ui.deletePromptStatus.Size = UDim2.new(1, -44, 0, 42)
+ui.deletePromptStatus.BackgroundTransparency = 1
+ui.deletePromptStatus.Text = ""
+ui.deletePromptStatus.TextColor3 = Color3.fromRGB(142, 52, 48)
+ui.deletePromptStatus.TextSize = 12
+ui.deletePromptStatus.TextWrapped = true
+ui.deletePromptStatus.TextXAlignment = Enum.TextXAlignment.Left
+ui.deletePromptStatus.TextYAlignment = Enum.TextYAlignment.Top
+ui.deletePromptStatus.Font = Enum.Font.GothamMedium
+ui.deletePromptStatus.ZIndex = 202
+ui.deletePromptStatus.Parent = ui.deletePromptCard
+
+ui.deletePromptCancelButton = createTextButton("DeleteRoomCancelButton", "Cancel", UDim2.fromOffset(108, 36), ui.deletePromptCard)
+ui.deletePromptCancelButton.AnchorPoint = Vector2.new(1, 1)
+ui.deletePromptCancelButton.Position = UDim2.new(1, -142, 1, -20)
+ui.deletePromptCancelButton.BackgroundColor3 = Color3.fromRGB(216, 210, 198)
+ui.deletePromptCancelButton.TextColor3 = Color3.fromRGB(58, 52, 46)
+ui.deletePromptCancelButton.TextSize = 13
+ui.deletePromptCancelButton.ZIndex = 202
+
+ui.deletePromptConfirmButton = createTextButton("DeleteRoomConfirmButton", "Delete", UDim2.fromOffset(112, 36), ui.deletePromptCard)
+ui.deletePromptConfirmButton.AnchorPoint = Vector2.new(1, 1)
+ui.deletePromptConfirmButton.Position = UDim2.new(1, -22, 1, -20)
+ui.deletePromptConfirmButton.BackgroundColor3 = Color3.fromRGB(150, 66, 66)
+ui.deletePromptConfirmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.deletePromptConfirmButton.TextSize = 13
+ui.deletePromptConfirmButton.ZIndex = 202
+
+ui.deletePromptOkButton = createTextButton("DeleteRoomOkButton", "OK", UDim2.fromOffset(112, 36), ui.deletePromptCard)
+ui.deletePromptOkButton.AnchorPoint = Vector2.new(1, 1)
+ui.deletePromptOkButton.Position = UDim2.new(1, -22, 1, -20)
+ui.deletePromptOkButton.BackgroundColor3 = Color3.fromRGB(68, 143, 82)
+ui.deletePromptOkButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ui.deletePromptOkButton.TextSize = 13
+ui.deletePromptOkButton.Visible = false
+ui.deletePromptOkButton.ZIndex = 202
+
 local categoryButtons = {}
 
 local function setFirstStroke(instance, color, thickness, transparency)
@@ -1422,6 +1583,14 @@ local function setPanelVisible(isVisible, options)
 	end
 
 	ui.panel.Visible = isVisible
+
+	if not isVisible and not roomDeleteUi.inFlight then
+		ui.deletePromptOverlay.Visible = false
+		roomDeleteUi.roomId = nil
+		roomDeleteUi.roomKey = nil
+		roomDeleteUi.displayName = nil
+	end
+
 	updateCloseButtonForMode()
 	updateOpenButton()
 
@@ -1920,6 +2089,18 @@ function pages.isOwnedRoomPayload(roomData)
 	return typeof(roomId) == "string" and roomId ~= ""
 end
 
+roomDeleteUi.isTombstoned = function(roomData)
+	if not pages.isOwnedRoomPayload(roomData) then
+		return false
+	end
+
+	local roomKey = roomData.RoomKey
+	local roomId = roomData.RoomId or roomData.Id
+
+	return (typeof(roomKey) == "string" and roomDeleteUi.deletedRoomKeys[roomKey] == true)
+		or (typeof(roomId) == "string" and roomDeleteUi.deletedRoomIds[roomId] == true)
+end
+
 function pages.replaceLatestRoomList(roomList, roomListMeta)
 	latestRoomList = {}
 	pages.latestOwnedRooms = {}
@@ -1929,7 +2110,7 @@ function pages.replaceLatestRoomList(roomList, roomListMeta)
 
 	if typeof(roomListMeta) == "table" and typeof(roomListMeta.OwnedRoomIds) == "table" then
 		for _, roomId in ipairs(roomListMeta.OwnedRoomIds) do
-			if typeof(roomId) == "string" and roomId ~= "" then
+			if typeof(roomId) == "string" and roomId ~= "" and roomDeleteUi.deletedRoomIds[roomId] ~= true then
 				pages.latestOwnedRoomIds[roomId] = true
 			end
 		end
@@ -1941,6 +2122,10 @@ function pages.replaceLatestRoomList(roomList, roomListMeta)
 
 	for _, roomData in ipairs(roomList) do
 		if typeof(roomData) == "table" then
+			if roomDeleteUi.isTombstoned(roomData) then
+				continue
+			end
+
 			local roomCopy = table.clone(roomData)
 			table.insert(latestRoomList, roomCopy)
 
@@ -2047,11 +2232,38 @@ local function isSettingsEditableRoom(entry)
 		and entry.IsOwner == true
 end
 
+roomDeleteUi.getRoomId = function(entry)
+	if typeof(entry) ~= "table" then
+		return nil
+	end
+
+	local roomId = entry.RoomId or entry.Id
+
+	if typeof(roomId) ~= "string" or roomId == "" then
+		return nil
+	end
+
+	return roomId
+end
+
+roomDeleteUi.canDelete = function(entry)
+	local roomId = roomDeleteUi.getRoomId(entry)
+
+	return selectedTopTab == TOP_TAB_ROOMS
+		and selectedRoomSubtab == ROOM_SUBTAB_OWN
+		and typeof(entry) == "table"
+		and entry.RoomType ~= "PublicSpace"
+		and entry.IsOwner == true
+		and entry.IsPrimary ~= true
+		and roomId ~= nil
+		and roomId ~= "Primary"
+end
+
 local function getSelectedSettingsRoomId()
 	if typeof(selectedRoomData) == "table" then
-		local roomId = selectedRoomData.RoomId or selectedRoomData.Id
+		local roomId = roomDeleteUi.getRoomId(selectedRoomData)
 
-		if typeof(roomId) == "string" and roomId ~= "" then
+		if roomId then
 			return roomId
 		end
 	end
@@ -2174,6 +2386,290 @@ local function showSettingsError(message)
 	end
 
 	shakeStatusLabel()
+end
+
+roomDeleteUi.setConfirmEnabled = function(enabled)
+	ui.deletePromptConfirmButton.Active = enabled == true
+	ui.deletePromptConfirmButton.AutoButtonColor = enabled == true
+	ui.deletePromptConfirmButton.BackgroundColor3 = enabled == true
+		and Color3.fromRGB(150, 66, 66)
+		or Color3.fromRGB(174, 150, 146)
+end
+
+roomDeleteUi.updateConfirmState = function()
+	local textMatches = ui.deletePromptNameBox.Text == roomDeleteUi.displayName
+	local canConfirm = textMatches and not roomDeleteUi.inFlight and roomDeleteUi.roomId ~= nil
+
+	ui.deletePromptConfirmButton.Text = roomDeleteUi.inFlight and "Deleting..." or "Delete"
+	roomDeleteUi.setConfirmEnabled(canConfirm)
+	ui.deletePromptCancelButton.Active = not roomDeleteUi.inFlight
+	ui.deletePromptCancelButton.AutoButtonColor = not roomDeleteUi.inFlight
+end
+
+roomDeleteUi.hide = function()
+	if roomDeleteUi.inFlight then
+		return
+	end
+
+	ui.deletePromptOverlay.Visible = false
+	roomDeleteUi.roomId = nil
+	roomDeleteUi.roomKey = nil
+	roomDeleteUi.displayName = nil
+	ui.deletePromptNameBox.Text = ""
+	ui.deletePromptStatus.Text = ""
+	roomDeleteUi.updateConfirmState()
+end
+
+roomDeleteUi.showSuccess = function(returnedCount)
+	local returnedText = ""
+
+	if typeof(returnedCount) == "number" then
+		returnedText = returnedCount == 1
+			and "Returned 1 item to your Inventory."
+			or "Returned " .. tostring(returnedCount) .. " items to your Inventory."
+	end
+
+	ui.deletePromptTitle.Text = "Room Deleted"
+	ui.deletePromptWarning.Text = "Room deleted. Returned furniture has been moved to your Inventory."
+	ui.deletePromptWarning.Size = UDim2.new(1, -44, 0, 60)
+	ui.deletePromptStrongWarning.Text = returnedText
+	ui.deletePromptStrongWarning.TextColor3 = Color3.fromRGB(72, 110, 76)
+	ui.deletePromptStrongWarning.Visible = returnedText ~= ""
+	ui.deletePromptInstruction.Visible = false
+	ui.deletePromptNameBox.Visible = false
+	ui.deletePromptStatus.Visible = false
+	ui.deletePromptCancelButton.Visible = false
+	ui.deletePromptConfirmButton.Visible = false
+	ui.deletePromptOkButton.Visible = true
+	ui.deletePromptOverlay.Visible = true
+end
+
+roomDeleteUi.show = function(roomData)
+	if not roomDeleteUi.canDelete(roomData) then
+		showSettingsError("Primary room cannot be deleted.")
+		return
+	end
+
+	roomDeleteUi.roomId = roomDeleteUi.getRoomId(roomData)
+	roomDeleteUi.roomKey = getRoomKey(roomData)
+	roomDeleteUi.displayName = getRoomDisplayName(roomData)
+	roomDeleteUi.inFlight = false
+
+	ui.deletePromptTitle.Text = "Delete Room"
+	ui.deletePromptWarning.Text = "This room will be deleted. Placed furniture will be returned to your Inventory."
+	ui.deletePromptWarning.Size = UDim2.new(1, -44, 0, 48)
+	ui.deletePromptStrongWarning.Text = "This cannot be undone."
+	ui.deletePromptStrongWarning.TextColor3 = Color3.fromRGB(142, 52, 48)
+	ui.deletePromptStrongWarning.Visible = true
+	ui.deletePromptInstruction.Visible = true
+	ui.deletePromptNameBox.Visible = true
+	ui.deletePromptStatus.Visible = true
+	ui.deletePromptCancelButton.Visible = true
+	ui.deletePromptConfirmButton.Visible = true
+	ui.deletePromptOkButton.Visible = false
+	ui.deletePromptNameBox.Text = ""
+	ui.deletePromptNameBox.PlaceholderText = roomDeleteUi.displayName or ""
+	ui.deletePromptStatus.Text = ""
+	ui.deletePromptOverlay.Visible = true
+	roomDeleteUi.updateConfirmState()
+	ui.deletePromptNameBox:CaptureFocus()
+end
+
+roomDeleteUi.buildRoomKey = function(roomId)
+	if typeof(roomId) ~= "string" or roomId == "" then
+		return nil
+	end
+
+	return "PlayerRoom:" .. tostring(player.UserId) .. ":" .. roomId
+end
+
+roomDeleteUi.isDeleteMatch = function(roomData, roomId, roomKey)
+	if typeof(roomData) ~= "table" then
+		return false
+	end
+
+	if typeof(roomKey) == "string" then
+		local entryRoomKey = getRoomKey(roomData)
+
+		if entryRoomKey then
+			return entryRoomKey == roomKey
+		end
+	end
+
+	local entryRoomId = roomDeleteUi.getRoomId(roomData)
+
+	return roomData.IsOwner == true and typeof(roomId) == "string" and entryRoomId == roomId
+end
+
+roomDeleteUi.createEntryFromSnapshot = function(roomRecord, previousByRoomId)
+	if typeof(roomRecord) ~= "table" then
+		return nil
+	end
+
+	local roomId = roomDeleteUi.getRoomId(roomRecord)
+
+	if not roomId then
+		return nil
+	end
+
+	local previous = previousByRoomId and previousByRoomId[roomId] or nil
+	local entry = previous and table.clone(previous) or {}
+	local roomKey = roomDeleteUi.buildRoomKey(roomId)
+
+	entry.RoomType = "PlayerRoom"
+	entry.RoomId = roomId
+	entry.Id = roomId
+	entry.RoomKey = roomKey
+	entry.Name = entry.RoomName or roomKey
+	entry.Owner = player.Name
+	entry.OwnerName = player.Name
+	entry.OwnerUserId = player.UserId
+	entry.OwnerDisplayName = player.DisplayName
+	entry.DisplayName = roomRecord.DisplayName or entry.DisplayName
+	entry.RoomDisplayName = entry.DisplayName
+	entry.LayoutId = roomRecord.LayoutId or entry.LayoutId
+	entry.Category = roomRecord.Category or entry.Category or "Chat Rooms"
+	entry.Description = roomRecord.Description or ""
+	entry.Tags = copyStringArray(roomRecord.Tags)
+	entry.IsPublic = roomRecord.IsPublic ~= false
+	entry.MaxOccupancy = roomRecord.MaxOccupancy or entry.MaxOccupancy or 25
+	entry.PlayerCount = entry.PlayerCount or 0
+	entry.Occupancy = entry.Occupancy or entry.PlayerCount
+	entry.IsOwner = true
+	entry.IsPrimary = roomRecord.IsPrimary == true or roomId == "Primary"
+	entry.SortOrder = roomRecord.SortOrder or entry.SortOrder
+	entry.IsJoinable = entry.IsJoinable ~= false
+	entry.IsAvailable = entry.IsAvailable ~= false
+	entry.IsCurrentRoom = isEntryCurrentRoom(entry)
+	entry.Current = entry.IsCurrentRoom
+	entry.IsFavourite = roomKey and favouriteKeysByRoomKey[roomKey] == true or false
+
+	return entry
+end
+
+roomDeleteUi.replaceOwnedRoomsFromSnapshot = function(roomRecords)
+	local previousByRoomId = {}
+
+	for _, roomData in ipairs(pages.latestOwnedRooms) do
+		local roomId = roomDeleteUi.getRoomId(roomData)
+
+		if roomId then
+			previousByRoomId[roomId] = roomData
+		end
+	end
+
+	local nextOwnedRooms = {}
+	local nextOwnedRoomIds = {}
+
+	for _, roomRecord in ipairs(roomRecords) do
+		local roomEntry = roomDeleteUi.createEntryFromSnapshot(roomRecord, previousByRoomId)
+
+		if roomEntry then
+			table.insert(nextOwnedRooms, roomEntry)
+			nextOwnedRoomIds[roomEntry.RoomId] = true
+		end
+	end
+
+	local nextRoomList = {}
+
+	for _, roomData in ipairs(latestRoomList) do
+		if not pages.isOwnedRoomPayload(roomData) then
+			table.insert(nextRoomList, roomData)
+		end
+	end
+
+	for _, roomEntry in ipairs(nextOwnedRooms) do
+		table.insert(nextRoomList, roomEntry)
+	end
+
+	latestRoomList = nextRoomList
+	pages.latestOwnedRooms = nextOwnedRooms
+	pages.latestOwnedRoomIds = nextOwnedRoomIds
+	pages.latestOwnedRoomIdsAuthoritative = true
+end
+
+roomDeleteUi.removeFromLocalCaches = function(roomId, roomKey)
+	local nextRoomList = {}
+	local nextOwnedRooms = {}
+
+	for _, roomData in ipairs(latestRoomList) do
+		if not roomDeleteUi.isDeleteMatch(roomData, roomId, roomKey) then
+			table.insert(nextRoomList, roomData)
+		end
+	end
+
+	for _, roomData in ipairs(pages.latestOwnedRooms) do
+		if not roomDeleteUi.isDeleteMatch(roomData, roomId, roomKey) then
+			table.insert(nextOwnedRooms, roomData)
+		end
+	end
+
+	latestRoomList = nextRoomList
+	pages.latestOwnedRooms = nextOwnedRooms
+
+	if typeof(roomId) == "string" then
+		pages.latestOwnedRoomIds[roomId] = nil
+	end
+
+	if typeof(roomKey) == "string" then
+		favouriteKeysByRoomKey[roomKey] = nil
+		pendingFavouriteToggleByRoomKey[roomKey] = nil
+	end
+end
+
+roomDeleteUi.applySuccess = function(response)
+	local roomId = response.RoomId or roomDeleteUi.roomId
+	local roomKey = roomDeleteUi.roomKey or roomDeleteUi.buildRoomKey(roomId)
+
+	if typeof(roomId) == "string" then
+		roomDeleteUi.deletedRoomIds[roomId] = true
+	end
+
+	if typeof(roomKey) == "string" then
+		roomDeleteUi.deletedRoomKeys[roomKey] = true
+	end
+
+	if typeof(response.Rooms) == "table" then
+		roomDeleteUi.replaceOwnedRoomsFromSnapshot(response.Rooms)
+	else
+		roomDeleteUi.removeFromLocalCaches(roomId, roomKey)
+	end
+
+	roomDeleteUi.removeFromLocalCaches(roomId, roomKey)
+	pages.clearSelectedRoomState()
+	pages.ownRoomsStatusMessage = nil
+	roomPlannerOpen = false
+	favouritesLoaded = false
+	inventoryRefreshRequested:Fire({
+		Reason = "RoomDeleted",
+		Force = true,
+	})
+	requestFavourites(true)
+end
+
+roomDeleteUi.confirm = function()
+	if roomDeleteUi.inFlight then
+		return
+	end
+
+	if ui.deletePromptNameBox.Text ~= roomDeleteUi.displayName then
+		return
+	end
+
+	local requestRemote = getRoomNavigatorRequestRemote()
+
+	if not requestRemote or not getRoomNavigatorResultRemote() then
+		ui.deletePromptStatus.Text = "Room deletion is unavailable."
+		return
+	end
+
+	roomDeleteUi.inFlight = true
+	ui.deletePromptStatus.Text = "Deleting..."
+	roomDeleteUi.updateConfirmState()
+	requestRemote:FireServer("DeleteOwnedRoom", {
+		RoomId = roomDeleteUi.roomId,
+		ConfirmDisplayName = ui.deletePromptNameBox.Text,
+	})
 end
 
 local function getNavigatorRestoreState(overrides)
@@ -2622,6 +3118,10 @@ local function getRawDetailHeight()
 		return DETAIL_HEIGHT_GUEST_SELECTED
 	end
 
+	if roomDeleteUi.canDelete(selectedRoomData) then
+		return 226
+	end
+
 	return DETAIL_HEIGHT_SELECTED
 end
 
@@ -2661,6 +3161,7 @@ local function updateDetailControlsLayout()
 
 	local isSideRail = ui.detailPanel:GetAttribute("SideRailLayout") == true
 	local hasEditButton = isSettingsEditableRoom(selectedRoomData)
+	local hasDeleteButton = roomDeleteUi.canDelete(selectedRoomData)
 	local isGuestDetail = selectedTopTab == TOP_TAB_ROOMS
 		and selectedRoomSubtab == ROOM_SUBTAB_GUEST
 		and selectedRoomData ~= nil
@@ -2677,6 +3178,7 @@ local function updateDetailControlsLayout()
 		ui.settingsOpenButton.Size = UDim2.fromOffset(84, 36)
 		ui.favouriteButton.Size = UDim2.fromOffset(actionRowCompact and 108 or 102, 36)
 		ui.goButton.Size = UDim2.fromOffset(actionRowCompact and 76 or 70, 36)
+		ui.deleteRoomButton.Size = UDim2.fromOffset(82, 36)
 
 		if ui.favouriteButton.Text == "Add to Favourites" then
 			ui.favouriteButton.Text = "Favourite"
@@ -2687,6 +3189,7 @@ local function updateDetailControlsLayout()
 		ui.settingsOpenButton.Size = UDim2.fromOffset(94, 36)
 		ui.favouriteButton.Size = UDim2.fromOffset(hasActionRowDetail and 146 or 130, 36)
 		ui.goButton.Size = UDim2.fromOffset(hasActionRowDetail and 92 or 108, 36)
+		ui.deleteRoomButton.Size = UDim2.fromOffset(92, 36)
 
 		if ui.favouriteButton.Text == "Favourite" then
 			ui.favouriteButton.Text = "Add to Favourites"
@@ -2703,11 +3206,14 @@ local function updateDetailControlsLayout()
 		ui.settingsOpenButton.Position = UDim2.new(1, compactActions and -216 or -282, 0, 108)
 		ui.favouriteButton.Position = UDim2.new(1, compactActions and -102 or -140, 0, 108)
 		ui.goButton.Position = UDim2.new(1, -20, 0, 108)
-		ui.settingsFrame.Position = UDim2.fromOffset(14, 154)
+		ui.deleteRoomButton.Position = UDim2.new(1, -20, 0, 150)
+		ui.settingsFrame.Position = UDim2.fromOffset(14, hasDeleteButton and 194 or 154)
 	else
 		local textRightPadding = (hasEditButton or hasActionRowDetail) and 28 or 260
 		local buttonY = hasEditButton and 108 or (hasActionRowDetail and 108 or 40)
 		local goButtonWidth = ui.goButton.Size.X.Offset
+		local favouriteButtonWidth = ui.favouriteButton.Size.X.Offset
+		local deleteButtonWidth = ui.deleteRoomButton.Size.X.Offset
 		local actionGap = 10
 
 		ui.detailTitle.Size = selectedRoomData and UDim2.new(1, -textRightPadding, 0, 24) or UDim2.new(1, -28, 0, 24)
@@ -2715,13 +3221,35 @@ local function updateDetailControlsLayout()
 		ui.detailMeta.Size = UDim2.new(1, -textRightPadding, 0, 20)
 		ui.detailDescription.Size = UDim2.new(1, -textRightPadding, 0, 18)
 
-		ui.settingsOpenButton.Position = UDim2.new(1, compactActions and -216 or -282, 0, buttonY)
-		ui.favouriteButton.Position = UDim2.new(
-			1,
-			hasActionRowDetail and -(goButtonWidth + actionGap + 20) or (compactActions and -102 or -140),
-			0,
-			buttonY
-		)
+		if hasDeleteButton and compactActions then
+			ui.settingsOpenButton.Position = UDim2.new(1, -216, 0, buttonY)
+			ui.favouriteButton.Position = UDim2.new(1, -102, 0, buttonY)
+			ui.deleteRoomButton.Position = UDim2.new(1, -20, 0, buttonY + 40)
+		elseif hasDeleteButton then
+			ui.favouriteButton.Position = UDim2.new(1, -(goButtonWidth + actionGap + 20), 0, buttonY)
+			ui.deleteRoomButton.Position = UDim2.new(
+				1,
+				-(goButtonWidth + actionGap + favouriteButtonWidth + actionGap + 20),
+				0,
+				buttonY
+			)
+			ui.settingsOpenButton.Position = UDim2.new(
+				1,
+				-(goButtonWidth + actionGap + favouriteButtonWidth + actionGap + deleteButtonWidth + actionGap + 20),
+				0,
+				buttonY
+			)
+		else
+			ui.settingsOpenButton.Position = UDim2.new(1, compactActions and -216 or -282, 0, buttonY)
+			ui.favouriteButton.Position = UDim2.new(
+				1,
+				hasActionRowDetail and -(goButtonWidth + actionGap + 20) or (compactActions and -102 or -140),
+				0,
+				buttonY
+			)
+			ui.deleteRoomButton.Position = UDim2.new(1, -382, 0, buttonY)
+		end
+
 		ui.goButton.Position = UDim2.new(1, -20, 0, buttonY)
 		ui.settingsFrame.Position = UDim2.fromOffset(14, 108)
 	end
@@ -2737,7 +3265,7 @@ local function updateDetailControlsLayout()
 
 		if hasEditButton then
 			ui.detailStatus.Visible = false
-			ui.statusLabel.Position = UDim2.new(1, -20, 0, 148)
+			ui.statusLabel.Position = UDim2.new(1, -20, 0, hasDeleteButton and 188 or 148)
 			ui.statusLabel.Size = compactActions and UDim2.new(1, -28, 0, 28) or UDim2.fromOffset(300, 28)
 			ui.statusLabel.TextXAlignment = compactActions and Enum.TextXAlignment.Left or Enum.TextXAlignment.Right
 		else
@@ -2873,6 +3401,7 @@ local function updateDetailPanel()
 		ui.detailStatus.Visible = false
 		ui.favouriteButton.Visible = false
 		ui.settingsOpenButton.Visible = false
+		ui.deleteRoomButton.Visible = false
 		ui.goButton.Visible = false
 		ui.statusLabel.Visible = false
 		setSettingsEditorVisible(false)
@@ -2886,6 +3415,7 @@ local function updateDetailPanel()
 	ui.detailStatus.Visible = true
 	ui.favouriteButton.Visible = true
 	ui.settingsOpenButton.Visible = false
+	ui.deleteRoomButton.Visible = false
 	ui.goButton.Visible = true
 	ui.statusLabel.Visible = true
 
@@ -2918,6 +3448,7 @@ local function updateDetailPanel()
 	end
 	local isCurrentRoom = isEntryCurrentRoom(selectedRoomData)
 	local canEditSettings = isSettingsEditableRoom(selectedRoomData)
+	local canDeleteRoom = roomDeleteUi.canDelete(selectedRoomData)
 	local roomKey = getRoomKey(selectedRoomData)
 	local canFavourite = roomKey ~= nil
 	local isFavourite = isRoomFavourite(selectedRoomData)
@@ -2954,6 +3485,13 @@ local function updateDetailPanel()
 
 	if canEditSettings then
 		ui.settingsOpenButton.Visible = true
+		ui.deleteRoomButton.Visible = canDeleteRoom
+		ui.deleteRoomButton.Active = canDeleteRoom
+		ui.deleteRoomButton.AutoButtonColor = canDeleteRoom
+		ui.deleteRoomButton.BackgroundColor3 = isPaperLayout()
+			and Color3.fromRGB(142, 68, 58)
+			or Color3.fromRGB(148, 66, 66)
+		ui.deleteRoomButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 		setSettingsEditorVisible(false)
 		currentRoomEditors = {}
 		setRoomEditorControlsEnabled(false)
@@ -4557,6 +5095,10 @@ end)
 
 ui.goButton.MouseButton1Click:Connect(joinSelectedRoom)
 
+ui.deleteRoomButton.MouseButton1Click:Connect(function()
+	roomDeleteUi.show(selectedRoomData)
+end)
+
 ui.favouriteButton.MouseButton1Click:Connect(function()
 	pages.toggleSelectedRoomFavourite()
 end)
@@ -4564,6 +5106,11 @@ end)
 ui.settingsOpenButton.MouseButton1Click:Connect(function()
 	openSelectedRoomSettings()
 end)
+
+ui.deletePromptNameBox:GetPropertyChangedSignal("Text"):Connect(roomDeleteUi.updateConfirmState)
+ui.deletePromptCancelButton.MouseButton1Click:Connect(roomDeleteUi.hide)
+ui.deletePromptConfirmButton.MouseButton1Click:Connect(roomDeleteUi.confirm)
+ui.deletePromptOkButton.MouseButton1Click:Connect(roomDeleteUi.hide)
 
 ui.settingsBackButton.MouseButton1Click:Connect(function()
 	roomSettingsPageOpen = false
@@ -4890,6 +5437,12 @@ function handlers.roomNavigatorResult(response)
 			roomPlannerStatus = "Could not create room."
 		end
 
+		if roomDeleteUi.inFlight then
+			roomDeleteUi.inFlight = false
+			ui.deletePromptStatus.Text = "Could not delete room."
+			roomDeleteUi.updateConfirmState()
+		end
+
 		showSettingsError("Could not process room navigator response.")
 		return
 	end
@@ -4913,6 +5466,32 @@ function handlers.roomNavigatorResult(response)
 
 		if ui.panel.Visible and renderNavigator then
 			renderNavigator()
+		end
+
+		return
+	end
+
+	if response.Kind == "DeleteOwnedRoom" then
+		roomDeleteUi.inFlight = false
+
+		if response.Success == true then
+			roomDeleteUi.applySuccess(response)
+			roomDeleteUi.roomId = nil
+			roomDeleteUi.roomKey = nil
+			roomDeleteUi.displayName = nil
+			setStatusMessage("Room deleted.", "success")
+			roomDeleteUi.showSuccess(response.ReturnedCount)
+			pages.requestFreshRoomList(true)
+		else
+			ui.deletePromptStatus.Text = response.Message or "Could not delete room."
+			setStatusMessage(response.Message or "Could not delete room.", "error")
+			roomDeleteUi.updateConfirmState()
+		end
+
+		if ui.panel.Visible and renderNavigator then
+			renderNavigator()
+		else
+			updateDetailPanel()
 		end
 
 		return

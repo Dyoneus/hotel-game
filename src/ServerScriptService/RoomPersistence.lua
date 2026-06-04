@@ -2310,6 +2310,426 @@ local function waitForProfileSaveSlot(player, timeoutSeconds)
 	return saveRunning[player] ~= true
 end
 
+local function normalizeRequiredRoomId(roomId)
+	if typeof(roomId) ~= "string" then
+		return nil
+	end
+
+	local trimmedRoomId = trimString(roomId)
+
+	if trimmedRoomId == "" then
+		return nil
+	end
+
+	return normalizeRoomId(trimmedRoomId)
+end
+
+local function getActiveOwnedRoomName(player, roomId)
+	local normalizedRoomId = normalizeRoomId(roomId)
+	local numericUserId = player and tonumber(player.UserId)
+
+	if not normalizedRoomId
+		or not numericUserId
+		or numericUserId ~= numericUserId
+		or math.abs(numericUserId) >= math.huge
+		or numericUserId ~= math.floor(numericUserId) then
+
+		return nil
+	end
+
+	if normalizedRoomId == PRIMARY_ROOM_ID then
+		return "Room_" .. tostring(math.floor(numericUserId))
+	end
+
+	return "Room_" .. tostring(math.floor(numericUserId)) .. "_" .. normalizedRoomId
+end
+
+local function getActiveOwnedRoom(player, roomId)
+	local activeRooms = workspace:FindFirstChild("ActiveRooms")
+	local activeRoomName = getActiveOwnedRoomName(player, roomId)
+
+	if not activeRooms or not activeRoomName then
+		return nil, activeRoomName
+	end
+
+	return activeRooms:FindFirstChild(activeRoomName), activeRoomName
+end
+
+local function playerOccupiesRoomModel(player, roomModel)
+	if typeof(player) ~= "Instance"
+		or not player:IsA("Player")
+		or typeof(roomModel) ~= "Instance"
+		or not roomModel:IsA("Model") then
+
+		return false
+	end
+
+	if player:GetAttribute("CurrentRoomName") == roomModel.Name then
+		return true
+	end
+
+	if player:GetAttribute("CurrentRoomType") ~= "PlayerRoom" then
+		return false
+	end
+
+	local ownerUserId = roomModel:GetAttribute("OwnerUserId")
+
+	return player:GetAttribute("CurrentRoomId") == roomModel:GetAttribute("RoomId")
+		and typeof(ownerUserId) == "number"
+		and player:GetAttribute("CurrentRoomOwnerUserId") == ownerUserId
+end
+
+local function getRoomModelOccupantCount(roomModel)
+	local occupantCount = 0
+
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		if playerOccupiesRoomModel(otherPlayer, roomModel) then
+			occupantCount += 1
+		end
+	end
+
+	return occupantCount
+end
+
+local function clearDeletedRoomContextAttributes(roomModel)
+	for _, otherPlayer in ipairs(Players:GetPlayers()) do
+		if playerOccupiesRoomModel(otherPlayer, roomModel) then
+			otherPlayer:SetAttribute("CurrentRoomName", nil)
+			otherPlayer:SetAttribute("CurrentRoomId", nil)
+			otherPlayer:SetAttribute("CurrentRoomOwnerUserId", nil)
+			otherPlayer:SetAttribute("CurrentRoomType", nil)
+		end
+	end
+end
+
+local function isInventoryAcceptedFurnitureTemplateId(templateId)
+	if not isValidTemplateId(templateId) then
+		return false
+	end
+
+	local furnitureTemplates = ReplicatedStorage:FindFirstChild("FurnitureTemplates")
+
+	if furnitureTemplates then
+		local template = furnitureTemplates:FindFirstChild(templateId)
+
+		if template and template:IsA("Model") then
+			return true
+		end
+	end
+
+	-- AddInventoryItem is the existing source of truth for inventory keys.
+	return isValidTemplateId(templateId)
+end
+
+local function buildOwnedRoomFurnitureReturnAudit(roomRecord)
+	local roomState = roomRecord and roomRecord.RoomState
+	local furnitureRecords = typeof(roomState) == "table" and roomState.Furniture or nil
+	local groupedReturnsByKey = {}
+	local returnedCount = 0
+	local audit = {}
+
+	if typeof(furnitureRecords) ~= "table" then
+		return true, nil, {}, 0, audit
+	end
+
+	for index, furnitureRecord in ipairs(furnitureRecords) do
+		local auditEntry = {
+			Index = index,
+		}
+
+		if typeof(furnitureRecord) ~= "table" then
+			auditEntry.InvalidReason = "Invalid furniture record."
+			table.insert(audit, auditEntry)
+			return false, "Room contains furniture that cannot be returned to inventory.", nil, nil, audit
+		end
+
+		auditEntry.Id = furnitureRecord.Id
+		auditEntry.Name = furnitureRecord.Name
+		auditEntry.TemplateId = furnitureRecord.TemplateId
+
+		if not isInventoryAcceptedFurnitureTemplateId(furnitureRecord.TemplateId) then
+			auditEntry.InvalidReason = "Invalid TemplateId."
+			table.insert(audit, auditEntry)
+			return false, "Room contains furniture that cannot be returned to inventory.", nil, nil, audit
+		end
+
+		if furnitureRecord.Tradable ~= nil and typeof(furnitureRecord.Tradable) ~= "boolean" then
+			auditEntry.InvalidReason = "Invalid Tradable flag."
+			table.insert(audit, auditEntry)
+			return false, "Room contains furniture that cannot be returned to inventory.", nil, nil, audit
+		end
+
+		if furnitureRecord.Sellable ~= nil and typeof(furnitureRecord.Sellable) ~= "boolean" then
+			auditEntry.InvalidReason = "Invalid Sellable flag."
+			table.insert(audit, auditEntry)
+			return false, "Room contains furniture that cannot be returned to inventory.", nil, nil, audit
+		end
+
+		local returnedItem = {
+			TemplateId = furnitureRecord.TemplateId,
+			Tradable = furnitureRecord.Tradable == true,
+			Sellable = furnitureRecord.Sellable == true,
+		}
+
+		local groupKey = table.concat({
+			returnedItem.TemplateId,
+			tostring(returnedItem.Tradable),
+			tostring(returnedItem.Sellable),
+		}, "|")
+		local groupedReturn = groupedReturnsByKey[groupKey]
+
+		if not groupedReturn then
+			groupedReturn = {
+				TemplateId = returnedItem.TemplateId,
+				Quantity = 0,
+				Tradable = returnedItem.Tradable,
+				Sellable = returnedItem.Sellable,
+			}
+			groupedReturnsByKey[groupKey] = groupedReturn
+		end
+
+		groupedReturn.Quantity += 1
+		returnedCount += 1
+		auditEntry.ReturnedAs = deepCopy(groupedReturn)
+		table.insert(audit, auditEntry)
+	end
+
+	local returnedItems = {}
+
+	for _, returnedItem in pairs(groupedReturnsByKey) do
+		table.insert(returnedItems, returnedItem)
+	end
+
+	table.sort(returnedItems, function(a, b)
+		if a.TemplateId ~= b.TemplateId then
+			return tostring(a.TemplateId) < tostring(b.TemplateId)
+		end
+
+		if a.Tradable ~= b.Tradable then
+			return a.Tradable == false
+		end
+
+		return a.Sellable == false and b.Sellable == true
+	end)
+
+	return true, nil, returnedItems, returnedCount, audit
+end
+
+local function createDeleteOwnedRoomRollbackSnapshot(profile)
+	return {
+		Rooms = deepCopy(profile.Rooms),
+		RoomDirectory = deepCopy(profile.RoomDirectory),
+		Inventory = deepCopy(profile.Inventory),
+		InventoryDetails = deepCopy(profile.InventoryDetails),
+		InventoryUntradable = deepCopy(profile.InventoryUntradable),
+		InventoryUnsellable = deepCopy(profile.InventoryUnsellable),
+		FavouriteRooms = deepCopy(profile.FavouriteRooms),
+		Favourites = deepCopy(profile.Favourites),
+		UpdatedAt = profile.UpdatedAt,
+	}
+end
+
+local function restoreDeleteOwnedRoomRollbackSnapshot(profile, snapshot)
+	if typeof(profile) ~= "table" or typeof(snapshot) ~= "table" then
+		return
+	end
+
+	profile.Rooms = deepCopy(snapshot.Rooms)
+	profile.RoomDirectory = deepCopy(snapshot.RoomDirectory)
+	profile.Inventory = deepCopy(snapshot.Inventory)
+	profile.InventoryDetails = deepCopy(snapshot.InventoryDetails)
+	profile.InventoryUntradable = deepCopy(snapshot.InventoryUntradable)
+	profile.InventoryUnsellable = deepCopy(snapshot.InventoryUnsellable)
+	profile.FavouriteRooms = deepCopy(snapshot.FavouriteRooms)
+	profile.Favourites = deepCopy(snapshot.Favourites)
+	profile.UpdatedAt = snapshot.UpdatedAt
+
+	ensureInventory(profile)
+	ensureFavouriteRooms(profile)
+	ensureRoomsSchema(profile)
+end
+
+function RoomPersistence.DeleteOwnedRoom(player, roomId, options)
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return false, "Invalid player.", nil
+	end
+
+	local profile = RoomPersistence.GetProfile(player)
+
+	if not profile then
+		local loadedProfile, loaded = RoomPersistence.LoadProfile(player)
+
+		if not loaded or not loadedProfile then
+			return false, "Profile is not loaded.", nil
+		end
+
+		profile = loadedProfile
+	end
+
+	ensureRoomsSchema(profile)
+
+	local normalizedRoomId = normalizeRequiredRoomId(roomId)
+
+	if not normalizedRoomId then
+		return false, "Invalid room id.", nil
+	end
+
+	local roomRecord = profile.Rooms and profile.Rooms[normalizedRoomId]
+
+	if typeof(roomRecord) ~= "table" then
+		return false, "Room not found.", nil
+	end
+
+	if normalizedRoomId == PRIMARY_ROOM_ID or roomRecord.IsPrimary == true then
+		return false, "Primary room cannot be deleted.", nil
+	end
+
+	local deleteOptions = typeof(options) == "table" and options or {}
+
+	if deleteOptions.RequireDisplayNameConfirmation ~= false
+		and deleteOptions.ConfirmDisplayName ~= roomRecord.DisplayName then
+
+		return false, "Room name confirmation does not match.", nil
+	end
+
+	local activeRoom = getActiveOwnedRoom(player, normalizedRoomId)
+	local staleActiveRoom = nil
+
+	if activeRoom then
+		if not activeRoom:IsA("Model") or getRoomModelOccupantCount(activeRoom) > 0 then
+			return false, "Leave this room before deleting it.", {
+				RoomId = normalizedRoomId,
+				DisplayName = roomRecord.DisplayName,
+				Rooms = RoomPersistence.GetOwnedRoomsSnapshot(player),
+			}
+		end
+
+		local captureOk, capturedRoomState = pcall(function()
+			return RoomPersistence.CaptureRoomState(player, activeRoom)
+		end)
+
+		if not captureOk or typeof(capturedRoomState) ~= "table" then
+			return false, "Room could not be prepared for deletion.", {
+				RoomId = normalizedRoomId,
+				DisplayName = roomRecord.DisplayName,
+				Rooms = RoomPersistence.GetOwnedRoomsSnapshot(player),
+			}
+		end
+
+		staleActiveRoom = activeRoom
+		roomRecord = profile.Rooms and profile.Rooms[normalizedRoomId]
+
+		if typeof(roomRecord) ~= "table" then
+			return false, "Room not found.", nil
+		end
+	end
+
+	local auditOk, auditMessage, returnedItems, returnedCount, audit =
+		buildOwnedRoomFurnitureReturnAudit(roomRecord)
+
+	if not auditOk then
+		return false, auditMessage, {
+			RoomId = normalizedRoomId,
+			DisplayName = roomRecord.DisplayName,
+			Audit = audit,
+			Rooms = RoomPersistence.GetOwnedRoomsSnapshot(player),
+		}
+	end
+
+	local oldDisplayName = roomRecord.DisplayName
+	local rollbackSnapshot = createDeleteOwnedRoomRollbackSnapshot(profile)
+
+	for _, returnedItem in ipairs(returnedItems) do
+		local addOk, addMessage = RoomPersistence.AddInventoryItem(
+			player,
+			returnedItem.TemplateId,
+			returnedItem.Quantity,
+			{
+				Tradable = returnedItem.Tradable,
+				Sellable = returnedItem.Sellable,
+			}
+		)
+
+		if not addOk then
+			restoreDeleteOwnedRoomRollbackSnapshot(profile, rollbackSnapshot)
+			saveScheduled[player] = nil
+
+			return false, "Could not return furniture to inventory: " .. tostring(addMessage), {
+				RoomId = normalizedRoomId,
+				DisplayName = oldDisplayName,
+				ReturnedItems = deepCopy(returnedItems),
+				ReturnedCount = returnedCount,
+				Rooms = RoomPersistence.GetOwnedRoomsSnapshot(player),
+			}
+		end
+	end
+
+	profile.Rooms[normalizedRoomId] = nil
+
+	local roomDirectory = ensureRoomDirectory(profile)
+	removeRoomIdFromDirectory(roomDirectory, normalizedRoomId)
+	roomDirectory.RoomIds = normalizeRoomIdsForExistingRooms(roomDirectory.RoomIds, profile.Rooms)
+	roomDirectory.PrimaryRoomId = PRIMARY_ROOM_ID
+	roomDirectory.RoomId = PRIMARY_ROOM_ID
+
+	if normalizeRoomId(roomDirectory.SelectedRoomId) == normalizedRoomId
+		or not profile.Rooms[roomDirectory.SelectedRoomId] then
+
+		roomDirectory.SelectedRoomId = PRIMARY_ROOM_ID
+	end
+
+	profile.RoomDirectory = roomDirectory
+
+	local favouriteRooms = ensureFavouriteRooms(profile)
+	local ownerFavouriteKey = "PlayerRoom:" .. tostring(player.UserId) .. ":" .. normalizedRoomId
+	favouriteRooms[ownerFavouriteKey] = nil
+
+	profile.UpdatedAt = os.time()
+
+	if not waitForProfileSaveSlot(player, 6) then
+		restoreDeleteOwnedRoomRollbackSnapshot(profile, rollbackSnapshot)
+		saveScheduled[player] = nil
+
+		return false, "Could not delete room because a profile save is still running.", {
+			RoomId = normalizedRoomId,
+			DisplayName = oldDisplayName,
+			ReturnedItems = deepCopy(returnedItems),
+			ReturnedCount = returnedCount,
+			Rooms = RoomPersistence.GetOwnedRoomsSnapshot(player),
+		}
+	end
+
+	saveScheduled[player] = nil
+
+	local saveOk, saveMessage = RoomPersistence.SavePlayer(player)
+
+	if not saveOk then
+		restoreDeleteOwnedRoomRollbackSnapshot(profile, rollbackSnapshot)
+		saveScheduled[player] = nil
+
+		return false, "Could not save deleted room: " .. tostring(saveMessage), {
+			RoomId = normalizedRoomId,
+			DisplayName = oldDisplayName,
+			ReturnedItems = deepCopy(returnedItems),
+			ReturnedCount = returnedCount,
+			Rooms = RoomPersistence.GetOwnedRoomsSnapshot(player),
+		}
+	end
+
+	if staleActiveRoom and staleActiveRoom.Parent then
+		clearDeletedRoomContextAttributes(staleActiveRoom)
+		staleActiveRoom:Destroy()
+	end
+
+	return true, "Room deleted.", {
+		RoomId = normalizedRoomId,
+		DisplayName = oldDisplayName,
+		ReturnedItems = deepCopy(returnedItems),
+		ReturnedCount = returnedCount,
+		Rooms = RoomPersistence.GetOwnedRoomsSnapshot(player),
+	}
+end
+
 function RoomPersistence.DeleteOwnedRoomForDebug(player, roomId)
 	local profile = RoomPersistence.GetProfile(player)
 
