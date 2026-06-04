@@ -96,37 +96,6 @@ local DETAIL_HEIGHT_SETTINGS = 580
 local DETAIL_SIDE_MIN_PANEL_WIDTH = 900
 local ROOM_EDITOR_USER_INPUT_MAX_LENGTH = 20
 local DEBUG_ROOM_NAV_LAYOUT = false
-local ROOM_PLANNER_LAYOUTS = {
-	{
-		Id = "StarterStudio",
-		DisplayName = "Starter Studio",
-		LayoutId = "Free_036_A",
-		DefaultRoomName = "Starter Studio",
-		SizeText = "36 tiles",
-		Description = "A simple starter layout.",
-		GridColumns = 5,
-		GridRows = 7,
-		IsCreatable = true,
-	},
-	{
-		Id = "CozyCorner",
-		DisplayName = "Cozy Corner",
-		SizeText = "Coming Soon",
-		Description = "A compact social layout.",
-		GridColumns = 4,
-		GridRows = 5,
-		IsCreatable = false,
-	},
-	{
-		Id = "WideSuite",
-		DisplayName = "Wide Suite",
-		SizeText = "Coming Soon",
-		Description = "A larger room layout.",
-		GridColumns = 7,
-		GridRows = 5,
-		IsCreatable = false,
-	},
-}
 
 local gui = script.Parent
 gui.ResetOnSpawn = false
@@ -168,11 +137,8 @@ local joinRoomRequestInFlight = false
 local joinRoomRequestToken = 0
 local suppressSettingsTextChanged = false
 local statusShakeTween = nil
-local roomPlannerOpen = false
 local roomDetailsPageOpen = false
 local roomSettingsPageOpen = false
-local selectedPlannerLayoutId = "StarterStudio"
-local roomPlannerStatus = "Select Starter Studio to create a room."
 
 local function refreshOptionalRemote(name, currentRemote)
 	if currentRemote and currentRemote.Parent == remoteEvents and currentRemote:IsA("RemoteEvent") then
@@ -479,7 +445,6 @@ local function debugRoomNavLayout(eventName, detail)
 			"mode=" .. tostring(currentPanelLayout),
 			"topTab=" .. tostring(selectedTopTab),
 			"subtab=" .. tostring(selectedRoomSubtab),
-			"planner=" .. tostring(roomPlannerOpen),
 			"settings=" .. tostring(roomSettingsPageOpen),
 			"details=" .. tostring(roomDetailsPageOpen),
 			detail or ""
@@ -1517,7 +1482,6 @@ end
 local renderNavigator = nil
 local pages = {}
 local handlers = {}
-pages.createOwnedRoomRequestInFlight = false
 pages.ownRoomsStatusMessage = nil
 pages.DEBUG_ROOM_LIST_TRACE = false
 pages.DEBUG_ROOM_NAV_PAYLOAD = false
@@ -2638,7 +2602,6 @@ roomDeleteUi.applySuccess = function(response)
 	roomDeleteUi.removeFromLocalCaches(roomId, roomKey)
 	pages.clearSelectedRoomState()
 	pages.ownRoomsStatusMessage = nil
-	roomPlannerOpen = false
 	favouritesLoaded = false
 	inventoryRefreshRequested:Fire({
 		Reason = "RoomDeleted",
@@ -3298,11 +3261,10 @@ local function updateNavigationState()
 
 	local panelWidth = ui.panel.AbsoluteSize.X
 	local isOwnRoomsPage = selectedTopTab == TOP_TAB_ROOMS and selectedRoomSubtab == ROOM_SUBTAB_OWN
-	local hideDetailPanel = isOwnRoomsPage and (roomPlannerOpen == true or roomSettingsPageOpen == true)
+	local hideDetailPanel = isOwnRoomsPage and roomSettingsPageOpen == true
 	local useSideRail = hideDetailPanel ~= true
 		and selectedTopTab == TOP_TAB_ROOMS
 		and selectedRoomSubtab == ROOM_SUBTAB_OWN
-		and roomPlannerOpen ~= true
 		and roomSettingsPageOpen ~= true
 		and selectedRoomData ~= nil
 		and currentPanelLayout == PANEL_LAYOUT_NORMAL
@@ -4112,16 +4074,6 @@ local function createRoomRow(roomData, order)
 	return row
 end
 
-function pages.getPlannerLayoutById(layoutId)
-	for _, layoutInfo in ipairs(ROOM_PLANNER_LAYOUTS) do
-		if layoutInfo.Id == layoutId then
-			return layoutInfo
-		end
-	end
-
-	return ROOM_PLANNER_LAYOUTS[1]
-end
-
 function pages.createPlannerText(parent, name, text, position, size, options)
 	local label = Instance.new("TextLabel")
 	label.Name = name
@@ -4209,12 +4161,10 @@ function pages.createRoomPlannerCard(order)
 			RoomSubtab = ROOM_SUBTAB_OWN,
 		})
 
-		roomPlannerOpen = false
 		roomDetailsPageOpen = false
 		roomSettingsPageOpen = false
 		selectedRoomData = nil
 		selectedRow = nil
-		roomPlannerStatus = "Select Starter Studio to create a room."
 		pages.ownRoomsStatusMessage = nil
 		openRoomPlanner:Fire({
 			Source = "RoomNavigator",
@@ -4224,327 +4174,6 @@ function pages.createRoomPlannerCard(order)
 
 	row.MouseButton1Click:Connect(openPlanner)
 	openButton.MouseButton1Click:Connect(openPlanner)
-end
-
-function pages.drawRoomPlannerPreviewGrid(parent, layoutInfo)
-	local columns = layoutInfo.GridColumns or 5
-	local rows = layoutInfo.GridRows or 5
-	local cellSize = math.floor(math.min(116 / columns, 86 / rows))
-	local gridWidth = cellSize * columns
-	local gridHeight = cellSize * rows
-	local grid = Instance.new("Frame")
-	grid.Name = "LayoutGridPreview"
-	grid.Position = UDim2.new(0.5, -math.floor(gridWidth / 2), 0, 76)
-	grid.Size = UDim2.fromOffset(gridWidth, gridHeight)
-	grid.BackgroundColor3 = Color3.fromRGB(222, 218, 202)
-	grid.BorderSizePixel = 0
-	grid.Parent = parent
-
-	createCorner(grid, 4)
-	createStroke(grid, Color3.fromRGB(174, 161, 130), 1, 0)
-
-	for rowIndex = 1, rows do
-		for columnIndex = 1, columns do
-			local cell = Instance.new("Frame")
-			cell.Name = "Cell"
-			cell.Position = UDim2.fromOffset((columnIndex - 1) * cellSize + 1, (rowIndex - 1) * cellSize + 1)
-			cell.Size = UDim2.fromOffset(math.max(2, cellSize - 2), math.max(2, cellSize - 2))
-			cell.BackgroundColor3 = Color3.fromRGB(245, 239, 220)
-			cell.BorderSizePixel = 0
-			cell.Parent = grid
-		end
-	end
-end
-
-function pages.createOwnedRoomFromPlanner(layoutInfo)
-	if pages.createOwnedRoomRequestInFlight then
-		return
-	end
-
-	if typeof(layoutInfo) ~= "table" or layoutInfo.IsCreatable ~= true then
-		roomPlannerStatus = "This layout is coming soon."
-
-		if renderNavigator then
-			renderNavigator()
-		end
-
-		return
-	end
-
-	if typeof(layoutInfo.LayoutId) ~= "string" or layoutInfo.LayoutId == "" then
-		roomPlannerStatus = "This layout is not available yet."
-
-		if renderNavigator then
-			renderNavigator()
-		end
-
-		return
-	end
-
-	local requestRemote = getRoomNavigatorRequestRemote()
-
-	if not requestRemote or not getRoomNavigatorResultRemote() then
-		roomPlannerStatus = "Room creation is unavailable."
-
-		if renderNavigator then
-			renderNavigator()
-		end
-
-		return
-	end
-
-	pages.createOwnedRoomRequestInFlight = true
-	roomPlannerStatus = "Creating room..."
-
-	requestRemote:FireServer("CreateOwnedRoom", {
-		LayoutId = layoutInfo.LayoutId,
-		DisplayName = layoutInfo.DefaultRoomName or layoutInfo.DisplayName,
-		Category = "Chat Rooms",
-		Description = "",
-		IsPublic = true,
-	})
-
-	if renderNavigator then
-		renderNavigator()
-	end
-end
-
-function pages.renderRoomPlanner()
-	local paper = isPaperLayout()
-	local selectedLayout = pages.getPlannerLayoutById(selectedPlannerLayoutId)
-	local isCompactPlanner = ui.contentFrame.AbsoluteSize.X < 620
-	local planner = Instance.new("Frame")
-	planner.Name = "RoomPlanner"
-	planner.Size = UDim2.new(1, -4, 0, isCompactPlanner and 590 or 430)
-	planner.BackgroundTransparency = 1
-	planner.BorderSizePixel = 0
-	planner.Parent = ui.listFrame
-
-	local backButton = createTextButton("RoomPlannerBackButton", "Back", UDim2.fromOffset(74, 28), planner)
-	backButton.Position = UDim2.fromOffset(14, 12)
-	backButton.BackgroundColor3 = paper and Color3.fromRGB(222, 207, 173) or Color3.fromRGB(220, 226, 218)
-	backButton.TextColor3 = paper and Color3.fromRGB(64, 52, 39) or Color3.fromRGB(45, 48, 45)
-	backButton.TextSize = 12
-	backButton.MouseButton1Click:Connect(function()
-		roomPlannerOpen = false
-		roomPlannerStatus = "Select Starter Studio to create a room."
-
-		if renderNavigator then
-			renderNavigator()
-		end
-	end)
-
-	pages.createPlannerText(
-		planner,
-		"PlannerTitle",
-		"Room Planner",
-		UDim2.fromOffset(102, 11),
-		UDim2.new(1, -116, 0, 24),
-		{
-			TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(42, 48, 42),
-			TextSize = 18,
-			Font = Enum.Font.GothamBold,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-		}
-	)
-
-	pages.createPlannerText(
-		planner,
-		"PlannerNote",
-		"Choose a blueprint preview. More layouts coming soon.",
-		UDim2.fromOffset(14, 44),
-		UDim2.new(1, -28, 0, 20),
-		{
-			TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(82, 88, 82),
-			TextSize = 12,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-		}
-	)
-
-	local cardsFrame = Instance.new("Frame")
-	cardsFrame.Name = "LayoutCards"
-	cardsFrame.Position = UDim2.fromOffset(14, 76)
-	cardsFrame.Size = isCompactPlanner and UDim2.new(1, -28, 0, 232) or UDim2.new(0.58, -20, 1, -92)
-	cardsFrame.BackgroundTransparency = 1
-	cardsFrame.Parent = planner
-
-	local cardLayout = Instance.new("UIListLayout")
-	cardLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	cardLayout.Padding = UDim.new(0, 8)
-	cardLayout.Parent = cardsFrame
-
-	local previewPanel = Instance.new("Frame")
-	previewPanel.Name = "PreviewPanel"
-	previewPanel.Position = isCompactPlanner and UDim2.fromOffset(14, 326) or UDim2.new(0.58, 0, 0, 76)
-	previewPanel.Size = isCompactPlanner and UDim2.new(1, -28, 0, 242) or UDim2.new(0.42, -14, 1, -92)
-	previewPanel.BackgroundColor3 = paper and Color3.fromRGB(247, 237, 211) or Color3.fromRGB(240, 246, 240)
-	previewPanel.BorderSizePixel = 0
-	previewPanel.Parent = planner
-
-	createCorner(previewPanel, 8)
-	createStroke(previewPanel, paper and Color3.fromRGB(201, 179, 139) or Color3.fromRGB(204, 216, 202), 1, 0)
-
-	for index, layoutInfo in ipairs(ROOM_PLANNER_LAYOUTS) do
-		local isSelected = layoutInfo.Id == selectedPlannerLayoutId
-		local isCreatable = layoutInfo.IsCreatable == true
-		local card = Instance.new("Frame")
-		card.Name = layoutInfo.Id .. "Card"
-		card.LayoutOrder = index
-		card.Size = UDim2.new(1, 0, 0, 70)
-		card.BackgroundColor3 = isSelected
-			and (paper and Color3.fromRGB(248, 235, 200) or Color3.fromRGB(231, 243, 249))
-			or (paper and Color3.fromRGB(253, 246, 226) or Color3.fromRGB(250, 252, 250))
-		card.BorderSizePixel = 0
-		card.Parent = cardsFrame
-
-		createCorner(card, 7)
-		createStroke(
-			card,
-			isSelected and (paper and Color3.fromRGB(138, 102, 58) or Color3.fromRGB(68, 128, 166))
-				or (paper and Color3.fromRGB(201, 179, 139) or Color3.fromRGB(213, 220, 210)),
-			isSelected and 2 or 1,
-			0
-		)
-
-		pages.createPlannerText(
-			card,
-			"Name",
-			layoutInfo.DisplayName,
-			UDim2.fromOffset(12, 7),
-			UDim2.new(1, -112, 0, 18),
-			{
-				TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(38, 44, 38),
-				TextSize = 13,
-				Font = Enum.Font.GothamBold,
-				TextTruncate = Enum.TextTruncate.AtEnd,
-			}
-		)
-
-		pages.createPlannerText(
-			card,
-			"Meta",
-			"Size: " .. layoutInfo.SizeText,
-			UDim2.fromOffset(12, 27),
-			UDim2.new(1, -112, 0, 16),
-			{
-				TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(82, 88, 82),
-				TextSize = 11,
-				TextTruncate = Enum.TextTruncate.AtEnd,
-			}
-		)
-
-		pages.createPlannerText(
-			card,
-			"Description",
-			layoutInfo.Description,
-			UDim2.fromOffset(12, 46),
-			UDim2.new(1, -112, 0, 16),
-			{
-				TextColor3 = paper and Color3.fromRGB(105, 88, 64) or Color3.fromRGB(100, 106, 100),
-				TextSize = 10,
-				TextTruncate = Enum.TextTruncate.AtEnd,
-			}
-		)
-
-		local previewButton = createTextButton(
-			"PreviewButton",
-			isCreatable and "Select" or "Soon",
-			UDim2.fromOffset(78, 28),
-			card
-		)
-		previewButton.AnchorPoint = Vector2.new(1, 0.5)
-		previewButton.Position = UDim2.new(1, -10, 0.5, 0)
-		previewButton.BackgroundColor3 = isCreatable
-			and (paper and Color3.fromRGB(126, 100, 62) or Color3.fromRGB(86, 126, 151))
-			or (paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(150, 158, 148))
-		previewButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-		previewButton.TextSize = 11
-		previewButton.Active = isCreatable
-		previewButton.AutoButtonColor = isCreatable
-		previewButton.MouseButton1Click:Connect(function()
-			if not isCreatable then
-				roomPlannerStatus = layoutInfo.DisplayName .. " is coming soon."
-
-				if renderNavigator then
-					renderNavigator()
-				end
-
-				return
-			end
-
-			selectedPlannerLayoutId = layoutInfo.Id
-			roomPlannerStatus = "Ready to create " .. layoutInfo.DisplayName .. "."
-
-			if renderNavigator then
-				renderNavigator()
-			end
-		end)
-	end
-
-	pages.createPlannerText(
-		previewPanel,
-		"PreviewTitle",
-		selectedLayout.DisplayName,
-		UDim2.fromOffset(12, 10),
-		UDim2.new(1, -24, 0, 22),
-		{
-			TextColor3 = paper and Color3.fromRGB(61, 50, 38) or Color3.fromRGB(42, 48, 42),
-			TextSize = 15,
-			Font = Enum.Font.GothamBold,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-		}
-	)
-
-	pages.createPlannerText(
-		previewPanel,
-		"PreviewMeta",
-		"Tile size: " .. selectedLayout.SizeText,
-		UDim2.fromOffset(12, 36),
-		UDim2.new(1, -24, 0, 18),
-		{
-			TextColor3 = paper and Color3.fromRGB(93, 76, 55) or Color3.fromRGB(82, 88, 82),
-			TextSize = 12,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-		}
-	)
-
-	pages.drawRoomPlannerPreviewGrid(previewPanel, selectedLayout)
-
-	local statusLabel = pages.createPlannerText(
-		previewPanel,
-		"PlannerStatus",
-		roomPlannerStatus,
-		UDim2.fromOffset(12, isCompactPlanner and 162 or 190),
-		UDim2.new(1, -24, 0, 34),
-		{
-			TextColor3 = Color3.fromRGB(130, 84, 45),
-			TextSize = 11,
-			TextWrapped = true,
-			TextYAlignment = Enum.TextYAlignment.Top,
-		}
-	)
-	statusLabel.Font = Enum.Font.GothamMedium
-
-	local selectedLayoutIsCreatable = selectedLayout.IsCreatable == true
-	local createButton = createTextButton(
-		"CreateOwnedRoomButton",
-		pages.createOwnedRoomRequestInFlight and "Creating..."
-			or (selectedLayoutIsCreatable and "Create Room" or "Coming Soon"),
-		UDim2.new(1, -24, 0, 30),
-		previewPanel
-	)
-	createButton.AnchorPoint = Vector2.new(0, 1)
-	createButton.Position = UDim2.new(0, 12, 1, -12)
-	createButton.BackgroundColor3 = selectedLayoutIsCreatable and not pages.createOwnedRoomRequestInFlight
-		and (paper and Color3.fromRGB(118, 92, 56) or Color3.fromRGB(68, 143, 82))
-		or (paper and Color3.fromRGB(153, 142, 119) or Color3.fromRGB(150, 158, 148))
-	createButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	createButton.TextSize = 12
-	createButton.Active = selectedLayoutIsCreatable and not pages.createOwnedRoomRequestInFlight
-	createButton.AutoButtonColor = createButton.Active
-	createButton.MouseButton1Click:Connect(function()
-		pages.createOwnedRoomFromPlanner(selectedLayout)
-	end)
 end
 
 function pages.renderRoomSettingsPage()
@@ -4911,11 +4540,9 @@ function pages.renderRooms()
 		ui.listFrame.Size = UDim2.new(1, -28, 1, -58)
 
 		if roomSettingsPageOpen then
-			roomPlannerOpen = false
 			roomDetailsPageOpen = false
 			pages.renderRoomSettingsPage()
 		else
-			roomPlannerOpen = false
 			pages.renderOwnRooms()
 		end
 	elseif selectedRoomSubtab == ROOM_SUBTAB_FAVOURITES then
@@ -4991,8 +4618,7 @@ end
 
 renderNavigator = function()
 	debugRoomNavLayout("renderNavigator", "activePage="
-		.. (roomSettingsPageOpen and "RoomSettings"
-			or (roomPlannerOpen and "RoomPlanner" or "RoomList")))
+		.. (roomSettingsPageOpen and "RoomSettings" or "RoomList"))
 	updateNavigationState()
 	clearList()
 
@@ -5013,7 +4639,6 @@ ui.publicSpacesTab.MouseButton1Click:Connect(function()
 	selectedTopTab = TOP_TAB_PUBLIC
 	selectedRoomData = nil
 	selectedRow = nil
-	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	setStatusMessage("")
@@ -5024,7 +4649,6 @@ ui.roomsTab.MouseButton1Click:Connect(function()
 	selectedTopTab = TOP_TAB_ROOMS
 	selectedRoomData = nil
 	selectedRow = nil
-	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	setStatusMessage("")
@@ -5038,7 +4662,6 @@ ui.searchSubtabButton.MouseButton1Click:Connect(function()
 	selectedRoomSubtab = ROOM_SUBTAB_SEARCH
 	selectedRoomData = nil
 	selectedRow = nil
-	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	setStatusMessage("")
@@ -5049,7 +4672,6 @@ ui.ownSubtabButton.MouseButton1Click:Connect(function()
 	selectedRoomSubtab = ROOM_SUBTAB_OWN
 	selectedRoomData = nil
 	selectedRow = nil
-	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	setStatusMessage("")
@@ -5061,7 +4683,6 @@ ui.favouritesSubtabButton.MouseButton1Click:Connect(function()
 	selectedRoomSubtab = ROOM_SUBTAB_FAVOURITES
 	selectedRoomData = nil
 	selectedRow = nil
-	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	setStatusMessage("")
@@ -5072,7 +4693,6 @@ ui.guestSubtabButton.MouseButton1Click:Connect(function()
 	selectedRoomSubtab = ROOM_SUBTAB_GUEST
 	selectedRoomData = nil
 	selectedRow = nil
-	roomPlannerOpen = false
 	roomDetailsPageOpen = false
 	roomSettingsPageOpen = false
 	setStatusMessage("")
@@ -5432,11 +5052,6 @@ end)
 
 function handlers.roomNavigatorResult(response)
 	if typeof(response) ~= "table" then
-		if pages.createOwnedRoomRequestInFlight then
-			pages.createOwnedRoomRequestInFlight = false
-			roomPlannerStatus = "Could not create room."
-		end
-
 		if roomDeleteUi.inFlight then
 			roomDeleteUi.inFlight = false
 			ui.deletePromptStatus.Text = "Could not delete room."
@@ -5448,11 +5063,7 @@ function handlers.roomNavigatorResult(response)
 	end
 
 	if response.Kind == "CreateOwnedRoom" then
-		pages.createOwnedRoomRequestInFlight = false
-
 		if response.Success == true then
-			roomPlannerStatus = "Room created."
-			roomPlannerOpen = false
 			selectedRoomData = nil
 			selectedRow = nil
 			pages.ownRoomsStatusMessage = response.Message or "Room created."
@@ -5460,8 +5071,7 @@ function handlers.roomNavigatorResult(response)
 			pages.requestFreshRoomList(true)
 		else
 			pages.ownRoomsStatusMessage = nil
-			roomPlannerStatus = response.Message or "Could not create room."
-			showSettingsError(roomPlannerStatus)
+			showSettingsError(response.Message or "Could not create room.")
 		end
 
 		if ui.panel.Visible and renderNavigator then
