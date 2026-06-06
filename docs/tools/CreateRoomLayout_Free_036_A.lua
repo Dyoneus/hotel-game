@@ -15,6 +15,8 @@ local REPLACE_EXISTING = true
 local LAYOUT_ID = "Free_036_A"
 local TEMPLATE_NAME = "RoomLayout_Free_036_A"
 local DISPLAY_NAME = "Starter Studio"
+local ACCESS_TIER = "Free"
+local REQUIRES_VIP = false
 
 local TILE_SIZE = 4
 local GRID_WIDTH = 6
@@ -315,6 +317,8 @@ local function buildTemplate(templateFolder)
 	template:SetAttribute("TemplateName", TEMPLATE_NAME)
 	template:SetAttribute("DisplayName", DISPLAY_NAME)
 	template:SetAttribute("TileCount", TILE_COUNT)
+	template:SetAttribute("AccessTier", ACCESS_TIER)
+	template:SetAttribute("RequiresVip", REQUIRES_VIP)
 	setGridAttributes(template)
 
 	local roomAnchor = createMarker(template, "RoomAnchor", CFrame.new(0, 0, 0))
