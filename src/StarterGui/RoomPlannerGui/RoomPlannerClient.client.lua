@@ -53,6 +53,12 @@ local LAYOUT_FILTERS = {
 	{ Id = "VIP", Label = "VIP" },
 	{ Id = "All", Label = "All" },
 }
+local LAYOUT_CARD_HEIGHT = 154
+local LAYOUT_CARD_MIN_WIDTH = 260
+local LAYOUT_CARD_GAP = 10
+local PREVIEW_SIZE = 86
+local PREVIEW_PADDING = 7
+local PREVIEW_MAX_BLOCKS = 420
 
 local state = {
 	isOpen = false,
@@ -275,6 +281,175 @@ local function getVisibleLayouts()
 	return layouts
 end
 
+local function getPositiveInteger(value)
+	if typeof(value) ~= "number" or value ~= math.floor(value) or value < 1 then
+		return nil
+	end
+
+	return value
+end
+
+local function getPreviewGridSize(layoutInfo)
+	local gridWidth = getPositiveInteger(layoutInfo.GridWidth)
+	local gridDepth = getPositiveInteger(layoutInfo.GridDepth)
+
+	if gridWidth and gridDepth then
+		return gridWidth, gridDepth
+	end
+
+	local tileCount = getPositiveInteger(layoutInfo.TileCount) or 1
+	local approximateWidth = math.max(1, math.floor(math.sqrt(tileCount) + 0.5))
+	local approximateDepth = math.max(1, math.ceil(tileCount / approximateWidth))
+
+	return approximateWidth, approximateDepth
+end
+
+local function getFeatureText(layoutInfo)
+	local features = {}
+
+	if layoutInfo.HasStairs == true then
+		table.insert(features, "Stairs")
+	end
+
+	if layoutInfo.HasLevels == true then
+		table.insert(features, "Levels")
+	end
+
+	if layoutInfo.HasHiddenArea == true then
+		table.insert(features, "Hidden")
+	end
+
+	if #features == 0 then
+		return "Flat room"
+	end
+
+	return table.concat(features, " | ")
+end
+
+local function updateLayoutCanvas()
+	if not ui.layoutList or not ui.layoutListLayout then
+		return
+	end
+
+	ui.layoutList.CanvasSize = UDim2.fromOffset(0, ui.layoutListLayout.AbsoluteContentSize.Y + LAYOUT_CARD_GAP)
+end
+
+local function updateLayoutCardGrid()
+	if not ui.layoutList or not ui.layoutListLayout then
+		return
+	end
+
+	local listWidth = math.max(1, ui.layoutList.AbsoluteSize.X - ui.layoutList.ScrollBarThickness - 2)
+	local columns = math.max(1, math.floor((listWidth + LAYOUT_CARD_GAP) / (LAYOUT_CARD_MIN_WIDTH + LAYOUT_CARD_GAP)))
+	local cardWidth = math.max(1, math.floor((listWidth - LAYOUT_CARD_GAP * (columns - 1)) / columns))
+
+	ui.layoutListLayout.CellSize = UDim2.fromOffset(cardWidth, LAYOUT_CARD_HEIGHT)
+	ui.layoutListLayout.CellPadding = UDim2.fromOffset(LAYOUT_CARD_GAP, LAYOUT_CARD_GAP)
+	updateLayoutCanvas()
+end
+
+local function getPreviewTileColor(layoutInfo, x, y, columns, rows)
+	local isVip = layoutInfo.RequiresVip == true or layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_VIP
+	local colorA = isVip and Color3.fromRGB(230, 220, 200) or Color3.fromRGB(214, 199, 169)
+	local colorB = isVip and Color3.fromRGB(241, 233, 216) or Color3.fromRGB(229, 214, 183)
+
+	if layoutInfo.HasHiddenArea == true and x > columns - math.max(1, math.floor(columns * 0.18)) and y > rows - math.max(1, math.floor(rows * 0.25)) then
+		return isVip and Color3.fromRGB(128, 92, 116) or Color3.fromRGB(133, 106, 74)
+	end
+
+	if layoutInfo.HasLevels == true and y <= math.max(1, math.floor(rows * 0.18)) then
+		return isVip and Color3.fromRGB(217, 197, 158) or Color3.fromRGB(196, 175, 132)
+	end
+
+	if layoutInfo.HasStairs == true and math.abs((x / math.max(1, columns)) - (y / math.max(1, rows))) < 0.08 then
+		return isVip and Color3.fromRGB(203, 158, 64) or Color3.fromRGB(150, 112, 64)
+	end
+
+	return (x + y) % 2 == 0 and colorA or colorB
+end
+
+local function addPreviewBadge(parent, name, text, position, size, color)
+	local badge = createLabel(name, text, position, size, parent, {
+		TextColor3 = THEME.HeaderText,
+		TextSize = 10,
+		Font = Enum.Font.GothamBold,
+		TextXAlignment = Enum.TextXAlignment.Center,
+	})
+	badge.BackgroundColor3 = color
+	badge.BackgroundTransparency = 0
+	createCorner(badge, 4)
+
+	return badge
+end
+
+local function renderMiniPreview(card, layoutInfo)
+	local preview = Instance.new("Frame")
+	preview.Name = "MiniLayoutPreview"
+	preview.Position = UDim2.fromOffset(12, 12)
+	preview.Size = UDim2.fromOffset(PREVIEW_SIZE, PREVIEW_SIZE)
+	preview.BackgroundColor3 = layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_VIP
+		and Color3.fromRGB(238, 224, 196)
+		or Color3.fromRGB(236, 224, 194)
+	preview.BorderSizePixel = 0
+	preview.ClipsDescendants = true
+	preview.Parent = card
+
+	createCorner(preview, 6)
+	createStroke(preview, THEME.PanelStroke, 1, 0.2)
+
+	local gridWidth, gridDepth = getPreviewGridSize(layoutInfo)
+	local blockStep = math.max(1, math.ceil(math.sqrt((gridWidth * gridDepth) / PREVIEW_MAX_BLOCKS)))
+	local columns = math.max(1, math.ceil(gridWidth / blockStep))
+	local rows = math.max(1, math.ceil(gridDepth / blockStep))
+	local maxGridSize = PREVIEW_SIZE - PREVIEW_PADDING * 2
+	local blockSize = math.max(1, math.floor(math.min(maxGridSize / columns, maxGridSize / rows)))
+	local gap = blockSize >= 4 and 1 or 0
+	local tileSize = math.max(1, blockSize - gap)
+	local gridPixelWidth = columns * blockSize - gap
+	local gridPixelHeight = rows * blockSize - gap
+	local originX = math.floor((PREVIEW_SIZE - gridPixelWidth) / 2)
+	local originY = math.floor((PREVIEW_SIZE - gridPixelHeight) / 2)
+
+	for y = 1, rows do
+		for x = 1, columns do
+			local tile = Instance.new("Frame")
+			tile.Name = "Tile"
+			tile.Position = UDim2.fromOffset(originX + (x - 1) * blockSize, originY + (y - 1) * blockSize)
+			tile.Size = UDim2.fromOffset(tileSize, tileSize)
+			tile.BorderSizePixel = 0
+			tile.BackgroundColor3 = getPreviewTileColor(layoutInfo, x, y, columns, rows)
+			tile.Parent = preview
+		end
+	end
+
+	createLabel(
+		"PreviewGridSize",
+		tostring(gridWidth) .. " x " .. tostring(gridDepth),
+		UDim2.new(0, 4, 1, -17),
+		UDim2.new(1, -8, 0, 14),
+		preview,
+		{
+			TextColor3 = THEME.Text,
+			TextSize = 9,
+			Font = Enum.Font.GothamBold,
+			TextXAlignment = Enum.TextXAlignment.Center,
+		}
+	)
+
+	if layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_VIP or layoutInfo.RequiresVip == true then
+		addPreviewBadge(
+			preview,
+			"PreviewVipBadge",
+			"VIP",
+			UDim2.new(1, -34, 0, 5),
+			UDim2.fromOffset(28, 16),
+			Color3.fromRGB(126, 91, 143)
+		)
+	end
+
+	return preview
+end
+
 local function getLayoutById(layoutId)
 	if typeof(layoutId) ~= "string" or layoutId == "" then
 		return nil
@@ -290,23 +465,19 @@ local function getLayoutById(layoutId)
 end
 
 local function getFirstVisibleLayout()
-	local firstLayout = nil
-
 	for _, layoutInfo in ipairs(getVisibleLayouts()) do
-		firstLayout = firstLayout or layoutInfo
-
 		if layoutInfo.IsCreatable == true then
 			return layoutInfo
 		end
 	end
 
-	return firstLayout
+	return nil
 end
 
 local function ensureSelectedLayout()
 	local selectedLayout = getLayoutById(state.selectedLayoutId)
 
-	if selectedLayout and layoutMatchesFilter(selectedLayout) then
+	if selectedLayout and layoutMatchesFilter(selectedLayout) and selectedLayout.IsCreatable == true then
 		return selectedLayout
 	end
 
@@ -428,22 +599,34 @@ local function renderLayoutCards()
 		end
 	end
 
+	updateLayoutCardGrid()
+
 	local visibleLayouts = getVisibleLayouts()
 	local selectedLayout = ensureSelectedLayout()
 
 	for index, layoutInfo in ipairs(visibleLayouts) do
 		local isSelected = selectedLayout ~= nil and layoutInfo.LayoutId == selectedLayout.LayoutId
 		local isCreatable = layoutInfo.IsCreatable == true
-		local statusText = layoutInfo.IsVipTestMode and "VIP Test Mode"
-			or (isSelected and isCreatable and "Selected")
-			or (isCreatable and "Creatable")
+		local statusText = layoutInfo.TemplateExists ~= true and "Template missing"
+			or layoutInfo.IsVipTestMode and "VIP Test Mode"
+			or layoutInfo.IsVipLocked and "VIP Required"
+			or isCreatable and "Ready"
 			or layoutInfo.DisabledReason
 			or "Unavailable"
 		local accessText = tostring(layoutInfo.AccessTier or "Free")
+		local gridWidth, gridDepth = getPreviewGridSize(layoutInfo)
+		local tileSize = getPositiveInteger(layoutInfo.TileSize) or 4
 		local maxVisitorsText = typeof(layoutInfo.MaxVisitors) == "number"
 			and ("Max visitors: " .. tostring(layoutInfo.MaxVisitors))
 			or nil
-		local metaText = tostring(layoutInfo.TileCount or "?") .. " tiles | " .. accessText
+		local metaText = tostring(layoutInfo.TileCount or "?")
+			.. " tiles | "
+			.. tostring(gridWidth)
+			.. " x "
+			.. tostring(gridDepth)
+			.. " | "
+			.. tostring(tileSize)
+			.. "-stud"
 
 		if maxVisitorsText then
 			metaText = metaText .. " | " .. maxVisitorsText
@@ -452,12 +635,12 @@ local function renderLayoutCards()
 		local card = Instance.new("TextButton")
 		card.Name = layoutInfo.LayoutId .. "Card"
 		card.LayoutOrder = index
-		card.Size = UDim2.new(1, 0, 0, 112)
+		card.Size = UDim2.fromOffset(LAYOUT_CARD_MIN_WIDTH, LAYOUT_CARD_HEIGHT)
 		card.BackgroundColor3 = isSelected and Color3.fromRGB(248, 235, 200)
 			or (isCreatable and THEME.PanelAlt or Color3.fromRGB(239, 230, 207))
 		card.BorderSizePixel = 0
 		card.Text = ""
-		card.AutoButtonColor = true
+		card.AutoButtonColor = isCreatable
 		card.Parent = ui.layoutList
 
 		createCorner(card, 7)
@@ -468,6 +651,13 @@ local function renderLayoutCards()
 			isCreatable and 0 or 0.35
 		)
 		card.MouseButton1Click:Connect(function()
+			if not isCreatable then
+				local message, isError = getLayoutStatusMessage(layoutInfo)
+				setStatus(message, isError)
+				updateCreateButton()
+				return
+			end
+
 			local previousLayout = getLayoutById(state.selectedLayoutId)
 			local currentName = ui.nameInput.Text or ""
 			local previousDefaultName = state.lastDefaultRoomName or (previousLayout and previousLayout.DisplayName)
@@ -485,7 +675,9 @@ local function renderLayoutCards()
 			updateCreateButton()
 		end)
 
-		createLabel("Name", layoutInfo.DisplayName, UDim2.fromOffset(12, 8), UDim2.new(1, -128, 0, 18), card, {
+		renderMiniPreview(card, layoutInfo)
+
+		createLabel("Name", layoutInfo.DisplayName, UDim2.fromOffset(110, 9), UDim2.new(1, -122, 0, 18), card, {
 			Font = Enum.Font.GothamBold,
 			TextSize = 13,
 			TextTruncate = Enum.TextTruncate.AtEnd,
@@ -493,37 +685,45 @@ local function renderLayoutCards()
 		createLabel(
 			"LayoutId",
 			"ID: " .. tostring(layoutInfo.LayoutId),
-			UDim2.fromOffset(12, 30),
-			UDim2.new(1, -128, 0, 16),
+			UDim2.fromOffset(110, 30),
+			UDim2.new(1, -122, 0, 16),
 			card,
 			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd }
 		)
 		createLabel(
 			"Meta",
 			metaText,
-			UDim2.fromOffset(12, 50),
-			UDim2.new(1, -128, 0, 16),
+			UDim2.fromOffset(110, 50),
+			UDim2.new(1, -122, 0, 16),
+			card,
+			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd }
+		)
+		createLabel(
+			"Features",
+			getFeatureText(layoutInfo),
+			UDim2.fromOffset(110, 70),
+			UDim2.new(1, -122, 0, 16),
 			card,
 			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd }
 		)
 		createLabel(
 			"Notes",
 			tostring(layoutInfo.Notes or ""),
-			UDim2.fromOffset(12, 70),
-			UDim2.new(1, -128, 0, 34),
+			UDim2.fromOffset(110, 90),
+			UDim2.new(1, -122, 0, 30),
 			card,
 			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextWrapped = true }
 		)
 
 		local templateBadge = createLabel(
 			"TemplateStatus",
-			layoutInfo.TemplateStatusText,
-			UDim2.new(1, -116, 0, 12),
-			UDim2.fromOffset(104, 22),
+			layoutInfo.TemplateExists and "Ready" or "Missing",
+			UDim2.fromOffset(12, 122),
+			UDim2.fromOffset(84, 22),
 			card,
 			{
 				TextColor3 = layoutInfo.TemplateExists and THEME.HeaderText or THEME.SubtleText,
-				TextSize = 11,
+				TextSize = 10,
 				Font = Enum.Font.GothamBold,
 				TextXAlignment = Enum.TextXAlignment.Center,
 			}
@@ -535,12 +735,12 @@ local function renderLayoutCards()
 		local accessBadge = createLabel(
 			"AccessTier",
 			accessText,
-			UDim2.new(1, -116, 0, 40),
-			UDim2.fromOffset(104, 22),
+			UDim2.fromOffset(102, 122),
+			UDim2.fromOffset(44, 22),
 			card,
 			{
 				TextColor3 = THEME.HeaderText,
-				TextSize = 11,
+				TextSize = 10,
 				Font = Enum.Font.GothamBold,
 				TextXAlignment = Enum.TextXAlignment.Center,
 			}
@@ -554,14 +754,15 @@ local function renderLayoutCards()
 		local statusBadge = createLabel(
 			"SelectionStatus",
 			statusText,
-			UDim2.new(1, -116, 0, 68),
-			UDim2.fromOffset(104, 22),
+			UDim2.fromOffset(152, 122),
+			UDim2.new(1, -164, 0, 22),
 			card,
 			{
 				TextColor3 = isCreatable and THEME.HeaderText or THEME.SubtleText,
-				TextSize = 11,
+				TextSize = 10,
 				Font = Enum.Font.GothamBold,
 				TextXAlignment = Enum.TextXAlignment.Center,
+				TextTruncate = Enum.TextTruncate.AtEnd,
 			}
 		)
 		statusBadge.BackgroundColor3 = isSelected and THEME.ButtonSelected
@@ -582,7 +783,7 @@ local function renderLayoutCards()
 	end
 
 	if ui.layoutListLayout then
-		ui.layoutList.CanvasSize = UDim2.fromOffset(0, ui.layoutListLayout.AbsoluteContentSize.Y + 10)
+		updateLayoutCanvas()
 	end
 
 	renderFilterButtons()
@@ -765,12 +966,18 @@ ui.layoutList.ScrollingDirection = Enum.ScrollingDirection.Y
 ui.layoutList.CanvasSize = UDim2.fromOffset(0, 0)
 ui.layoutList.Parent = ui.rightPanel
 
-ui.layoutListLayout = Instance.new("UIListLayout")
+ui.layoutListLayout = Instance.new("UIGridLayout")
 ui.layoutListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-ui.layoutListLayout.Padding = UDim.new(0, 10)
+ui.layoutListLayout.CellSize = UDim2.fromOffset(LAYOUT_CARD_MIN_WIDTH, LAYOUT_CARD_HEIGHT)
+ui.layoutListLayout.CellPadding = UDim2.fromOffset(LAYOUT_CARD_GAP, LAYOUT_CARD_GAP)
+ui.layoutListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+ui.layoutListLayout.VerticalAlignment = Enum.VerticalAlignment.Top
 ui.layoutListLayout.Parent = ui.layoutList
 ui.layoutListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-	ui.layoutList.CanvasSize = UDim2.fromOffset(0, ui.layoutListLayout.AbsoluteContentSize.Y + 10)
+	updateLayoutCanvas()
+end)
+ui.layoutList:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+	updateLayoutCardGrid()
 end)
 
 ui.footer = Instance.new("Frame")
@@ -869,7 +1076,7 @@ local function applyWindowLayout()
 	local viewportSize = getViewportSize()
 	local availableWidth = math.max(360, viewportSize.X - 48)
 	local availableHeight = math.max(330, viewportSize.Y - 48)
-	local windowWidth = availableWidth >= 520 and math.min(availableWidth, 840) or availableWidth
+	local windowWidth = availableWidth >= 520 and math.min(availableWidth, 1040) or availableWidth
 	local windowHeight = availableHeight >= 430 and math.min(availableHeight, 620) or availableHeight
 	local isNarrow = windowWidth < 700
 	local bodyHeight = windowHeight - 142
@@ -895,6 +1102,8 @@ local function applyWindowLayout()
 		ui.rightPanel.Size = UDim2.new(0.58, -12, 0, panelHeight)
 		ui.body.CanvasSize = UDim2.fromOffset(0, panelHeight + 8)
 	end
+
+	updateLayoutCardGrid()
 end
 
 local function countOwnedRooms(roomList)
