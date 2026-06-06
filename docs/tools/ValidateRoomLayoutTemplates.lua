@@ -221,6 +221,18 @@ local function validateGrid(layout, templateModel, floor, issues)
 		if gridDepth ~= 10 then
 			appendIssue(issues.warnings, "Free_080_B should use GridDepth = 10.")
 		end
+	elseif layout.LayoutId == "Free_084_A" then
+		if tileSize ~= 4 then
+			appendIssue(issues.warnings, "Free_084_A should use TileSize = 4.")
+		end
+
+		if gridWidth ~= 7 then
+			appendIssue(issues.warnings, "Free_084_A should use GridWidth = 7.")
+		end
+
+		if gridDepth ~= 12 then
+			appendIssue(issues.warnings, "Free_084_A should use GridDepth = 12.")
+		end
 	end
 end
 
