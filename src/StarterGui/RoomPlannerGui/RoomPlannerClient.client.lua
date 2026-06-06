@@ -1,6 +1,7 @@
 -- StarterGui/RoomPlannerGui/RoomPlannerClient.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -203,6 +204,12 @@ local function templateExists(layoutInfo)
 	return roomTemplates ~= nil and roomTemplates:FindFirstChild(layoutInfo.TemplateName) ~= nil
 end
 
+local function canTestVipLayouts()
+	return RunService:IsStudio()
+		or player:GetAttribute("IsAdmin") == true
+		or player:GetAttribute("CanTestVipLayouts") == true
+end
+
 local function enrichLayoutInfo(layoutInfo)
 	local enriched = {}
 
@@ -212,19 +219,21 @@ local function enrichLayoutInfo(layoutInfo)
 
 	local hasTemplate = templateExists(enriched)
 	local isVip = enriched.RequiresVip == true or enriched.AccessTier == RoomLayoutConfig.ACCESS_VIP
+	local canUseVipForTesting = isVip and canTestVipLayouts()
 
 	enriched.TemplateExists = hasTemplate
 	enriched.TemplateStatusText = hasTemplate and "Ready" or "Template missing"
-	enriched.IsVipLocked = isVip
+	enriched.IsVipLocked = isVip and not canUseVipForTesting
+	enriched.IsVipTestMode = canUseVipForTesting and hasTemplate
 	enriched.IsCreatable = enriched.IsSelectable == true
 		and enriched.Status == RoomLayoutConfig.STATUS_AVAILABLE
-		and enriched.AccessTier == RoomLayoutConfig.ACCESS_FREE
+		and (enriched.AccessTier == RoomLayoutConfig.ACCESS_FREE or canUseVipForTesting)
 		and hasTemplate
 
-	if isVip then
-		enriched.DisabledReason = "VIP required"
-	elseif not hasTemplate then
+	if not hasTemplate then
 		enriched.DisabledReason = "Template missing"
+	elseif isVip and not canUseVipForTesting then
+		enriched.DisabledReason = "VIP required"
 	elseif enriched.IsSelectable ~= true or enriched.Status ~= RoomLayoutConfig.STATUS_AVAILABLE then
 		enriched.DisabledReason = "Unavailable"
 	else
@@ -316,6 +325,10 @@ local function getLayoutStatusMessage(layoutInfo)
 	if layoutInfo.IsCreatable == true then
 		if isMaxRoomLimitReached() then
 			return "Maximum room limit reached.", true
+		end
+
+		if layoutInfo.IsVipTestMode == true then
+			return "VIP Test Mode: ready to create " .. layoutInfo.DisplayName .. ".", false
 		end
 
 		return "Ready to create " .. layoutInfo.DisplayName .. ".", false
@@ -421,7 +434,11 @@ local function renderLayoutCards()
 	for index, layoutInfo in ipairs(visibleLayouts) do
 		local isSelected = selectedLayout ~= nil and layoutInfo.LayoutId == selectedLayout.LayoutId
 		local isCreatable = layoutInfo.IsCreatable == true
-		local statusText = isSelected and "Selected" or (isCreatable and "Creatable" or layoutInfo.DisabledReason or "Unavailable")
+		local statusText = layoutInfo.IsVipTestMode and "VIP Test Mode"
+			or (isSelected and isCreatable and "Selected")
+			or (isCreatable and "Creatable")
+			or layoutInfo.DisabledReason
+			or "Unavailable"
 		local accessText = tostring(layoutInfo.AccessTier or "Free")
 		local maxVisitorsText = typeof(layoutInfo.MaxVisitors) == "number"
 			and ("Max visitors: " .. tostring(layoutInfo.MaxVisitors))
@@ -528,7 +545,9 @@ local function renderLayoutCards()
 				TextXAlignment = Enum.TextXAlignment.Center,
 			}
 		)
-		accessBadge.BackgroundColor3 = layoutInfo.IsVipLocked and Color3.fromRGB(126, 91, 143) or THEME.Button
+		accessBadge.BackgroundColor3 = layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_VIP
+			and Color3.fromRGB(126, 91, 143)
+			or THEME.Button
 		accessBadge.BackgroundTransparency = 0
 		createCorner(accessBadge, 5)
 
@@ -1054,8 +1073,21 @@ local function closeForRoomChange()
 	end
 end
 
+local function refreshLayoutAccess()
+	if not state.isOpen then
+		return
+	end
+
+	ensureSelectedLayout()
+	renderLayoutCards()
+	refreshRoomLimitStatus()
+end
+
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(closeForRoomChange)
 player:GetAttributeChangedSignal("CurrentRoomType"):Connect(closeForRoomChange)
+player:GetAttributeChangedSignal("CanTestVipLayouts"):Connect(refreshLayoutAccess)
+player:GetAttributeChangedSignal("HasVip"):Connect(refreshLayoutAccess)
+player:GetAttributeChangedSignal("IsAdmin"):Connect(refreshLayoutAccess)
 
 gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
 	if state.isOpen then

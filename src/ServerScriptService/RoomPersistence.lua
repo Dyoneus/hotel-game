@@ -2185,7 +2185,7 @@ function RoomPersistence.CreateOwnedRoom(player, options)
 	end
 
 	local canUseLayout, layoutMessage = RoomLayoutConfig.CanUseLayout(layoutId, {
-		HasVip = player:GetAttribute("HasVip") == true,
+		HasVip = player:GetAttribute("HasVip") == true or options.AllowVipTesting == true,
 		IncludeUnavailable = false,
 	})
 

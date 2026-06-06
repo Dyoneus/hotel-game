@@ -1,10 +1,12 @@
 --Explorer/ServerScriptService/PlayerRoomServer.lua
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 local TextService = game:GetService("TextService")
 
 local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
+local AdminConfig = require(ServerScriptService:WaitForChild("AdminConfig"))
 local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistence"))
 local RoomPermissionService = require(ServerScriptService:WaitForChild("RoomPermissionService"))
 local PublicRoomConfig = require(sharedFolder:WaitForChild("PublicRoomConfig"))
@@ -180,11 +182,38 @@ local function parsePlayerRoomName(roomName)
 	return nil, nil
 end
 
+local function canTestVipLayouts(player)
+	if RunService:IsStudio() then
+		return true
+	end
+
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return false
+	end
+
+	if player:GetAttribute("CanTestVipLayouts") == true or player:GetAttribute("IsAdmin") == true then
+		return true
+	end
+
+	return AdminConfig.IsAdmin(player.UserId)
+end
+
+local function playerHasVipLayoutAccess(player)
+	if typeof(player) == "Instance"
+		and player:IsA("Player")
+		and player:GetAttribute("HasVip") == true then
+
+		return true
+	end
+
+	return canTestVipLayouts(player)
+end
+
 local function getRoomName(player)
 	return getPlayerRoomName(player.UserId, PRIMARY_ROOM_ID)
 end
 
-local function resolveOwnedRoomTemplate(layoutId, warnOnFallback)
+local function resolveOwnedRoomTemplate(layoutId, warnOnFallback, player)
 	if typeof(layoutId) ~= "string" or layoutId == "" then
 		return nil, ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE
 	end
@@ -193,7 +222,7 @@ local function resolveOwnedRoomTemplate(layoutId, warnOnFallback)
 
 	if typeof(layout) == "table" then
 		local canUseLayout, layoutMessage = RoomLayoutConfig.CanUseLayout(layoutId, {
-			HasVip = false,
+			HasVip = playerHasVipLayoutAccess(player),
 		})
 
 		if not canUseLayout then
@@ -237,18 +266,18 @@ local function resolveOwnedRoomTemplate(layoutId, warnOnFallback)
 	return nil, ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE
 end
 
-local function resolveTemplateNameForLayout(layoutId, warnOnFallback)
-	local _, errorMessage, templateName = resolveOwnedRoomTemplate(layoutId, warnOnFallback)
+local function resolveTemplateNameForLayout(layoutId, warnOnFallback, player)
+	local _, errorMessage, templateName = resolveOwnedRoomTemplate(layoutId, warnOnFallback, player)
 	return templateName, errorMessage
 end
 
-local function getOwnedLayoutJoinability(layoutId)
-	local template, errorMessage = resolveOwnedRoomTemplate(layoutId)
+local function getOwnedLayoutJoinability(layoutId, player)
+	local template, errorMessage = resolveOwnedRoomTemplate(layoutId, false, player)
 	return template ~= nil, errorMessage
 end
 
-local function isJoinableOwnedLayout(layoutId)
-	local isJoinable = getOwnedLayoutJoinability(layoutId)
+local function isJoinableOwnedLayout(layoutId, player)
+	local isJoinable = getOwnedLayoutJoinability(layoutId, player)
 	return isJoinable == true
 end
 
@@ -745,7 +774,7 @@ local function removeEditorHelpers(roomModel)
 end
 
 local function cloneRoomForPlayer(player, layoutId, roomId)
-	local template, templateError, templateName = resolveOwnedRoomTemplate(layoutId, true)
+	local template, templateError, templateName = resolveOwnedRoomTemplate(layoutId, true, player)
 
 	if not template then
 		warn("Invalid layout requested:", layoutId, templateError)
@@ -1370,7 +1399,7 @@ local function getOwnedRoomEntry(ownerPlayer, roomRecord, currentRoomName)
 		layoutId = "Unknown"
 	end
 
-	local isJoinable, joinDisabledReason = getOwnedLayoutJoinability(layoutId)
+	local isJoinable, joinDisabledReason = getOwnedLayoutJoinability(layoutId, ownerPlayer)
 
 	if activeRoom and activeRoom:IsA("Model") then
 		applyPlayerRoomMetadataAttributes(activeRoom, metadata, ownerPlayer.UserId, layoutId)
@@ -1577,7 +1606,7 @@ local function buildRoomList(viewerPlayer)
 			if metadata.IsPublic or isOwner then
 				local playerCount = getPlayerCountInRoom(roomModel.Name)
 				local roomKey = "PlayerRoom:" .. tostring(ownerUserId) .. ":" .. roomId
-				local isJoinable, joinDisabledReason = getOwnedLayoutJoinability(layoutId)
+				local isJoinable, joinDisabledReason = getOwnedLayoutJoinability(layoutId, viewerPlayer)
 
 				if not seenPlayerRoomKeys[roomKey] then
 					if DEBUG_ROOM_LIST_TRACE and not isOwner then
@@ -2199,7 +2228,7 @@ local function getSavedRoom(player, profile, roomId)
 	end
 
 	if normalizedRoomId == PRIMARY_ROOM_ID
-		and (typeof(layoutId) ~= "string" or not isJoinableOwnedLayout(layoutId))
+		and (typeof(layoutId) ~= "string" or not isJoinableOwnedLayout(layoutId, player))
 		and typeof(roomState) == "table"
 		and typeof(roomState.LayoutId) == "string" then
 
@@ -2255,7 +2284,7 @@ local function enterSavedRoomForPlayer(player, profile)
 	local roomState = savedRoom.RoomState
 	local layoutId = savedRoom.LayoutId
 
-	if typeof(layoutId) ~= "string" or not isJoinableOwnedLayout(layoutId) then
+	if typeof(layoutId) ~= "string" or not isJoinableOwnedLayout(layoutId, player) then
 		warn("Saved room has invalid layout:", layoutId)
 		return false
 	end
@@ -2323,7 +2352,7 @@ local function prepareSavedRoomForMainMenu(player, profile)
 	local roomState = savedRoom.RoomState
 	local layoutId = savedRoom.LayoutId
 
-	if typeof(layoutId) ~= "string" or not isJoinableOwnedLayout(layoutId) then
+	if typeof(layoutId) ~= "string" or not isJoinableOwnedLayout(layoutId, player) then
 		warn("Saved room has invalid layout:", layoutId)
 		return false
 	end
@@ -2637,7 +2666,7 @@ local function joinOwnedRoomById(player, roomId)
 	end
 
 	local layoutId = savedRoom.LayoutId
-	local isJoinable, joinDisabledReason = getOwnedLayoutJoinability(layoutId)
+	local isJoinable, joinDisabledReason = getOwnedLayoutJoinability(layoutId, player)
 
 	if typeof(layoutId) ~= "string" or not isJoinable then
 		joinRoomResult:FireClient(player, false, joinDisabledReason or ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE)
@@ -3589,12 +3618,29 @@ local function handleCreateOwnedRoomRequest(player, payload)
 		return
 	end
 
+	local requestedLayout = RoomLayoutConfig.GetLayout(payload.LayoutId)
+
+	if typeof(requestedLayout) == "table" and requestedLayout.RequiresVip == true then
+		if not playerHasVipLayoutAccess(player) then
+			sendCreateOwnedRoomResult(player, false, "This layout requires VIP.")
+			return
+		end
+
+		local template, templateError = resolveOwnedRoomTemplate(payload.LayoutId, false, player)
+
+		if not template then
+			sendCreateOwnedRoomResult(player, false, templateError or ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE)
+			return
+		end
+	end
+
 	local success, message, roomRecord = RoomPersistence.CreateOwnedRoom(player, {
 		LayoutId = payload.LayoutId,
 		DisplayName = filteredDisplayName,
 		Category = payload.Category,
 		Description = filteredDescription,
 		IsPublic = payload.IsPublic,
+		AllowVipTesting = canTestVipLayouts(player),
 	})
 
 	sendCreateOwnedRoomResult(player, success, message, roomRecord)
