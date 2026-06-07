@@ -12,6 +12,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TOOL_PREFIX = "[RoomLayoutTemplateValidator]"
 local DEFAULT_TILE_SIZE = 4
 local FLOOR_SIZE_TOLERANCE = 0.15
+local TILE_MARKER_SIZE_TOLERANCE = 0.25
 
 local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
 local roomLayoutConfigModule = sharedFolder and sharedFolder:FindFirstChild("RoomLayoutConfig")
@@ -73,6 +74,30 @@ local function appendIssue(issues, message)
 	table.insert(issues, message)
 end
 
+local function appendSummary(issues, message)
+	table.insert(issues.summaries, message)
+end
+
+local function isPositiveInteger(value)
+	return typeof(value) == "number"
+		and value == value
+		and value > 0
+		and value < math.huge
+		and math.floor(value) == value
+end
+
+local function isInteger(value)
+	return typeof(value) == "number"
+		and value == value
+		and value > -math.huge
+		and value < math.huge
+		and math.floor(value) == value
+end
+
+local function cellKey(tileX, tileZ)
+	return tostring(tileX) .. "," .. tostring(tileZ)
+end
+
 local function getBooleanAttribute(model, floor, attributeName)
 	local value = model:GetAttribute(attributeName)
 
@@ -115,6 +140,29 @@ local function getPositiveIntegerAttribute(model, floor, attributeName)
 	return math.max(1, math.floor(value + 0.5))
 end
 
+local function getExpectedTileCount(layout, templateModel, floor)
+	if isPositiveInteger(layout.TileCount) then
+		return layout.TileCount
+	end
+
+	local templateTileCount = getPositiveIntegerAttribute(templateModel, floor, "TileCount")
+	if templateTileCount then
+		return templateTileCount
+	end
+
+	return nil
+end
+
+local function findTileMaskFolder(roomFolder)
+	local tileMaskFolder = roomFolder and roomFolder:FindFirstChild("TileMask")
+
+	if tileMaskFolder and tileMaskFolder:IsA("Folder") then
+		return tileMaskFolder
+	end
+
+	return nil
+end
+
 local function validateInvisibleMarker(part, markerName, issues, expectedCanQuery)
 	if not part then
 		return
@@ -141,12 +189,237 @@ local function validateInvisibleMarker(part, markerName, issues, expectedCanQuer
 	end
 end
 
+local function validateTileMaskMarkerProperties(marker, tileSize, issues)
+	if marker.Anchored ~= true then
+		appendIssue(issues.warnings, marker.Name .. " should be Anchored = true.")
+	end
+
+	if marker.CanCollide ~= false then
+		appendIssue(issues.warnings, marker.Name .. " should be CanCollide = false.")
+	end
+
+	if marker.CanTouch ~= false then
+		appendIssue(issues.warnings, marker.Name .. " should be CanTouch = false.")
+	end
+
+	if marker.CanQuery ~= true then
+		appendIssue(issues.warnings, marker.Name .. " should be CanQuery = true.")
+	end
+
+	if marker.Transparency < 1 then
+		appendIssue(issues.warnings, marker.Name .. " should use Transparency = 1.")
+	end
+
+	if tileSize then
+		if math.abs(marker.Size.X - tileSize) > TILE_MARKER_SIZE_TOLERANCE then
+			appendIssue(
+				issues.warnings,
+				string.format("%s Size.X is %.2f, expected about TileSize %.2f.", marker.Name, marker.Size.X, tileSize)
+			)
+		end
+
+		if math.abs(marker.Size.Z - tileSize) > TILE_MARKER_SIZE_TOLERANCE then
+			appendIssue(
+				issues.warnings,
+				string.format("%s Size.Z is %.2f, expected about TileSize %.2f.", marker.Name, marker.Size.Z, tileSize)
+			)
+		end
+	end
+end
+
+local function getEntryWalkTargetCell(floor, entryWalkTarget, tileSize, gridWidth, gridDepth)
+	if not floor or not entryWalkTarget or not tileSize or not gridWidth or not gridDepth then
+		return nil, nil
+	end
+
+	local localPosition = floor.CFrame:PointToObjectSpace(entryWalkTarget.Position)
+	local minCenterX = -(gridWidth * tileSize) / 2 + tileSize / 2
+	local minCenterZ = -(gridDepth * tileSize) / 2 + tileSize / 2
+	local tileX = math.floor(((localPosition.X - minCenterX) / tileSize) + 0.5) + 1
+	local tileZ = math.floor(((localPosition.Z - minCenterZ) / tileSize) + 0.5) + 1
+
+	return tileX, tileZ
+end
+
+local function validateEntryWalkTargetMaskCell(entryWalkTarget, floor, gridInfo, cells, issues)
+	if not entryWalkTarget then
+		return
+	end
+
+	local tileX, tileZ = getEntryWalkTargetCell(
+		floor,
+		entryWalkTarget,
+		gridInfo.TileSize,
+		gridInfo.GridWidth,
+		gridInfo.GridDepth
+	)
+
+	if not tileX or not tileZ then
+		appendIssue(issues.warnings, "Could not map EntryWalkTarget to a TileMask cell.")
+		return
+	end
+
+	if tileX < 1 or tileX > gridInfo.GridWidth or tileZ < 1 or tileZ > gridInfo.GridDepth then
+		appendIssue(
+			issues.warnings,
+			string.format("EntryWalkTarget maps outside TileMask grid at TileX=%d TileZ=%d.", tileX, tileZ)
+		)
+		return
+	end
+
+	if cells[cellKey(tileX, tileZ)] ~= true then
+		appendIssue(
+			issues.warnings,
+			string.format("EntryWalkTarget maps to non-walkable TileMask cell TileX=%d TileZ=%d.", tileX, tileZ)
+		)
+	end
+end
+
+local function validateTileMaskMarker(marker, gridInfo, cells, stats, issues)
+	if not marker:IsA("BasePart") then
+		stats.invalidMarkers += 1
+		appendIssue(issues.errors, marker.Name .. " in Room/TileMask must be a BasePart.")
+		return
+	end
+
+	local rawTileX = marker:GetAttribute("TileX")
+	local rawTileZ = marker:GetAttribute("TileZ")
+	local hasValidTileX = isInteger(rawTileX)
+	local hasValidTileZ = isInteger(rawTileZ)
+	local isWalkableTile = marker:GetAttribute("IsWalkableTile") == true
+	local hasCoordinateError = false
+
+	if not hasValidTileX then
+		hasCoordinateError = true
+		appendIssue(issues.errors, marker.Name .. " has missing or non-integer TileX.")
+	end
+
+	if not hasValidTileZ then
+		hasCoordinateError = true
+		appendIssue(issues.errors, marker.Name .. " has missing or non-integer TileZ.")
+	end
+
+	if not isWalkableTile then
+		if hasValidTileX and hasValidTileZ then
+			appendIssue(issues.warnings, marker.Name .. " has TileX/TileZ but missing IsWalkableTile = true.")
+		else
+			appendIssue(issues.errors, marker.Name .. " is missing IsWalkableTile = true.")
+		end
+	end
+
+	if hasCoordinateError or not isWalkableTile then
+		stats.invalidMarkers += 1
+		return
+	end
+
+	if rawTileX < 1 or rawTileX > gridInfo.GridWidth then
+		stats.invalidMarkers += 1
+		appendIssue(
+			issues.errors,
+			string.format("%s TileX=%d is outside GridWidth 1..%d.", marker.Name, rawTileX, gridInfo.GridWidth)
+		)
+		return
+	end
+
+	if rawTileZ < 1 or rawTileZ > gridInfo.GridDepth then
+		stats.invalidMarkers += 1
+		appendIssue(
+			issues.errors,
+			string.format("%s TileZ=%d is outside GridDepth 1..%d.", marker.Name, rawTileZ, gridInfo.GridDepth)
+		)
+		return
+	end
+
+	local key = cellKey(rawTileX, rawTileZ)
+
+	if cells[key] == true then
+		stats.duplicates += 1
+		appendIssue(issues.errors, string.format("Duplicate TileMask cell TileX=%d TileZ=%d.", rawTileX, rawTileZ))
+		return
+	end
+
+	cells[key] = true
+	stats.validCells += 1
+	validateTileMaskMarkerProperties(marker, gridInfo.TileSize, issues)
+end
+
+local function validateTileMask(layout, templateModel, roomFolder, floor, entryWalkTarget, gridInfo, issues)
+	local expectedTileCount = getExpectedTileCount(layout, templateModel, floor)
+	local tileMaskFolder = findTileMaskFolder(roomFolder)
+	local stats = {
+		validCells = 0,
+		duplicates = 0,
+		invalidMarkers = 0,
+	}
+
+	if not tileMaskFolder then
+		appendIssue(issues.errors, "UsesTileMask = true requires Room/TileMask folder.")
+		appendSummary(issues, "TileMask: cells=0 expected=" .. tostring(expectedTileCount or "unknown") .. " duplicates=0 invalid=0")
+		return
+	end
+
+	if not gridInfo.TileSize then
+		appendIssue(issues.errors, "UsesTileMask = true requires positive TileSize.")
+	end
+
+	if not gridInfo.GridWidth then
+		appendIssue(issues.errors, "UsesTileMask = true requires positive GridWidth.")
+	end
+
+	if not gridInfo.GridDepth then
+		appendIssue(issues.errors, "UsesTileMask = true requires positive GridDepth.")
+	end
+
+	if not expectedTileCount then
+		appendIssue(issues.errors, "UsesTileMask = true requires positive TileCount.")
+	end
+
+	if not gridInfo.TileSize or not gridInfo.GridWidth or not gridInfo.GridDepth then
+		appendSummary(
+			issues,
+			"TileMask: cells=0 expected=" .. tostring(expectedTileCount or "unknown") .. " duplicates=0 invalid=0"
+		)
+		return
+	end
+
+	local cells = {}
+
+	for _, marker in ipairs(tileMaskFolder:GetChildren()) do
+		validateTileMaskMarker(marker, gridInfo, cells, stats, issues)
+	end
+
+	if expectedTileCount and stats.validCells ~= expectedTileCount then
+		appendIssue(
+			issues.errors,
+			string.format("TileMask has %d unique walkable cell(s), expected TileCount %d.", stats.validCells, expectedTileCount)
+		)
+	end
+
+	validateEntryWalkTargetMaskCell(entryWalkTarget, floor, gridInfo, cells, issues)
+	appendSummary(
+		issues,
+		string.format(
+			"TileMask: cells=%d expected=%s duplicates=%d invalid=%d",
+			stats.validCells,
+			tostring(expectedTileCount or "unknown"),
+			stats.duplicates,
+			stats.invalidMarkers
+		)
+	)
+end
+
 local function validateGrid(layout, templateModel, floor, issues)
 	local usesTileGrid = getBooleanAttribute(templateModel, floor, "UsesTileGrid")
+	local usesTileMask = getBooleanAttribute(templateModel, floor, "UsesTileMask") == true
 
 	if usesTileGrid == false then
 		appendIssue(issues.warnings, "UsesTileGrid = false; current owned-room movement is grid-oriented.")
-		return
+		return {
+			TileSize = nil,
+			GridWidth = nil,
+			GridDepth = nil,
+			UsesTileMask = false,
+		}
 	end
 
 	if usesTileGrid == nil then
@@ -170,7 +443,7 @@ local function validateGrid(layout, templateModel, floor, issues)
 		appendIssue(issues.warnings, "Missing positive GridDepth attribute.")
 	end
 
-	if tileSize and gridWidth and gridDepth then
+	if tileSize and gridWidth and gridDepth and usesTileMask ~= true then
 		local expectedX = gridWidth * tileSize
 		local expectedZ = gridDepth * tileSize
 
@@ -342,12 +615,20 @@ local function validateGrid(layout, templateModel, floor, issues)
 			appendIssue(issues.warnings, "Free_416_A should use GridDepth = 16.")
 		end
 	end
+
+	return {
+		TileSize = tileSize,
+		GridWidth = gridWidth,
+		GridDepth = gridDepth,
+		UsesTileMask = usesTileMask,
+	}
 end
 
 local function validateTemplate(layout, templateModel)
 	local issues = {
 		errors = {},
 		warnings = {},
+		summaries = {},
 	}
 
 	if not templateModel:IsA("Model") then
@@ -419,7 +700,11 @@ local function validateTemplate(layout, templateModel)
 			appendIssue(issues.warnings, "WalkableFloor should be CanQuery = true.")
 		end
 
-		validateGrid(layout, templateModel, walkableFloor, issues)
+		local gridInfo = validateGrid(layout, templateModel, walkableFloor, issues)
+
+		if gridInfo and gridInfo.UsesTileMask == true then
+			validateTileMask(layout, templateModel, roomFolder, walkableFloor, entryWalkTarget, gridInfo, issues)
+		end
 	end
 
 	return issues
@@ -490,6 +775,10 @@ for _, layout in ipairs(availableLayouts) do
 					warn("  - " .. message)
 				end
 			end
+		end
+
+		for _, message in ipairs(issues.summaries) do
+			print("  - " .. message)
 		end
 	end
 end
