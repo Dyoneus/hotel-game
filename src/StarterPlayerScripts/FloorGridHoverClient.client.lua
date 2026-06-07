@@ -238,6 +238,62 @@ local function isWalkableSurfacePart(part, roomModel, floor)
 		)
 end
 
+local function getTileMaskFolder(roomModel)
+	local roomFolder = roomModel and roomModel:FindFirstChild("Room")
+	local tileMaskFolder = roomFolder and roomFolder:FindFirstChild("TileMask")
+
+	if tileMaskFolder and tileMaskFolder:IsA("Folder") then
+		return tileMaskFolder
+	end
+
+	return nil
+end
+
+local function isTileMaskMarkerPart(part, tileMaskFolder)
+	if typeof(part) ~= "Instance" or not part:IsA("BasePart") then
+		return false
+	end
+
+	if part:GetAttribute("IsWalkableTile") ~= true then
+		return false
+	end
+
+	return tileMaskFolder == nil or part:IsDescendantOf(tileMaskFolder)
+end
+
+local function getIntegerAttribute(instance, attributeName)
+	if typeof(instance) ~= "Instance" then
+		return nil
+	end
+
+	local value = instance:GetAttribute(attributeName)
+
+	if typeof(value) == "number" and value == value and value > 0 and value < math.huge and math.floor(value) == value then
+		return value
+	end
+
+	return nil
+end
+
+local function getTileMaskMarkerCell(part, context, tileMaskFolder)
+	if not context or not isTileMaskMarkerPart(part, tileMaskFolder) then
+		return nil, nil
+	end
+
+	local tileX = getIntegerAttribute(part, "TileX")
+	local tileZ = getIntegerAttribute(part, "TileZ")
+
+	if not tileX or not tileZ then
+		return nil, nil
+	end
+
+	if tileX < 1 or tileX > context.GridWidth or tileZ < 1 or tileZ > context.GridDepth then
+		return nil, nil
+	end
+
+	return tileX, tileZ
+end
+
 local function shouldIgnoreHoverRaycastPart(part, roomModel, floor)
 	if part == floor or isWalkableSurfacePart(part, roomModel, floor) then
 		return false
@@ -246,7 +302,7 @@ local function shouldIgnoreHoverRaycastPart(part, roomModel, floor)
 	return part.Transparency >= 1 and part.CanCollide == false
 end
 
-local function getHoverRaycastParts(roomModel, floor)
+local function getHoverRaycastParts(roomModel, floor, context, tileMaskFolder)
 	local parts = {}
 
 	if floor and floor:IsA("BasePart") then
@@ -257,27 +313,33 @@ local function getHoverRaycastParts(roomModel, floor)
 		return parts
 	end
 
-	for _, descendant in ipairs(roomModel:GetDescendants()) do
-		if descendant:IsA("BasePart")
-			and descendant ~= floor
-			and descendant.CanQuery
-			and not shouldIgnoreHoverRaycastPart(descendant, roomModel, floor) then
+	local activeTileMaskFolder = tileMaskFolder
 
-			table.insert(parts, descendant)
+	if not activeTileMaskFolder and context and context.UsesTileMask == true then
+		activeTileMaskFolder = getTileMaskFolder(roomModel)
+	end
+
+	for _, descendant in ipairs(roomModel:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant ~= floor and descendant.CanQuery then
+			if activeTileMaskFolder and isTileMaskMarkerPart(descendant, activeTileMaskFolder) then
+				table.insert(parts, descendant)
+			elseif not shouldIgnoreHoverRaycastPart(descendant, roomModel, floor) then
+				table.insert(parts, descendant)
+			end
 		end
 	end
 
 	return parts
 end
 
-local function getMouseFloorHit(roomModel, floor)
+local function getMouseFloorHit(roomModel, floor, context, tileMaskFolder)
 	local camera = Workspace.CurrentCamera
 
 	if not camera then
 		return nil
 	end
 
-	local raycastParts = getHoverRaycastParts(roomModel, floor)
+	local raycastParts = getHoverRaycastParts(roomModel, floor, context, tileMaskFolder)
 
 	if #raycastParts == 0 then
 		return nil
@@ -293,15 +355,23 @@ local function getMouseFloorHit(roomModel, floor)
 
 	local result = Workspace:Raycast(ray.Origin, ray.Direction * RAYCAST_DISTANCE, raycastParams)
 
-	if result and isWalkableSurfacePart(result.Instance, roomModel, floor) then
+	if result
+		and (
+			isWalkableSurfacePart(result.Instance, roomModel, floor)
+			or (tileMaskFolder ~= nil and isTileMaskMarkerPart(result.Instance, tileMaskFolder))
+		) then
+
 		return result
 	end
 
 	return nil
 end
 
-local function getHoverCenterY(floorTopY, hitResult, floor)
-	if not hitResult or hitResult.Instance == floor then
+local function getHoverCenterY(floorTopY, hitResult, floor, tileMaskFolder)
+	if not hitResult
+		or hitResult.Instance == floor
+		or (tileMaskFolder ~= nil and isTileMaskMarkerPart(hitResult.Instance, tileMaskFolder)) then
+
 		return floorTopY + FLOOR_HOVER_CENTER_OFFSET
 	end
 
@@ -313,6 +383,16 @@ local function getHoverCenterY(floorTopY, hitResult, floor)
 	end
 
 	return surfaceY + DECORATION_HOVER_CENTER_OFFSET
+end
+
+local function getMaskedHoverCell(hitResult, context, tileMaskFolder)
+	local markerCellX, markerCellZ = getTileMaskMarkerCell(hitResult.Instance, context, tileMaskFolder)
+
+	if markerCellX and markerCellZ then
+		return markerCellX, markerCellZ
+	end
+
+	return GridConfig.WorldToCell(context, hitResult.Position)
 end
 
 updateHover = function()
@@ -340,6 +420,13 @@ updateHover = function()
 		return
 	end
 
+	local context = GridConfig.GetGridContext(roomModel)
+
+	if not context then
+		hideHover()
+		return
+	end
+
 	local floorTopY = GridConfig.GetFloorTopY(floor)
 
 	if not floorTopY then
@@ -347,33 +434,54 @@ updateHover = function()
 		return
 	end
 
-	local hitResult = getMouseFloorHit(roomModel, floor)
+	local tileMaskFolder = context.UsesTileMask == true and getTileMaskFolder(roomModel) or nil
+	local hitResult = getMouseFloorHit(roomModel, floor, context, tileMaskFolder)
 
 	if not hitResult then
 		hideHover()
 		return
 	end
 
-	local tileSize = GridConfig.GetTileSize(roomModel, floor)
-	local _, snappedLocalPosition = GridConfig.SnapWorldToTileCenter(floor, hitResult.Position, tileSize)
+	local tileSize = context.TileSize or GridConfig.GetTileSize(roomModel, floor)
+	local worldPosition = nil
 
-	if not snappedLocalPosition then
-		hideHover()
-		return
+	if context.UsesTileMask == true then
+		local cellX, cellZ = getMaskedHoverCell(hitResult, context, tileMaskFolder)
+
+		if not cellX or not cellZ or not GridConfig.CellIsWalkable(context, cellX, cellZ) then
+			hideHover()
+			return
+		end
+
+		local cellWorldPosition = GridConfig.CellToWorld(context, cellX, cellZ)
+
+		if not cellWorldPosition then
+			hideHover()
+			return
+		end
+
+		worldPosition = cellWorldPosition
+	else
+		local _, snappedLocalPosition = GridConfig.SnapWorldToTileCenter(floor, hitResult.Position, tileSize)
+
+		if not snappedLocalPosition then
+			hideHover()
+			return
+		end
+
+		local localY = floor.Size.Y / 2 + FLOOR_HOVER_CENTER_OFFSET
+		worldPosition = GridConfig.FloorLocalToWorld(
+			floor,
+			Vector3.new(snappedLocalPosition.X, localY, snappedLocalPosition.Z)
+		)
 	end
-
-	local localY = floor.Size.Y / 2 + FLOOR_HOVER_CENTER_OFFSET
-	local worldPosition = GridConfig.FloorLocalToWorld(
-		floor,
-		Vector3.new(snappedLocalPosition.X, localY, snappedLocalPosition.Z)
-	)
 
 	if not worldPosition then
 		hideHover()
 		return
 	end
 
-	worldPosition = Vector3.new(worldPosition.X, getHoverCenterY(floorTopY, hitResult, floor), worldPosition.Z)
+	worldPosition = Vector3.new(worldPosition.X, getHoverCenterY(floorTopY, hitResult, floor, tileMaskFolder), worldPosition.Z)
 
 	local floorRotation = floor.CFrame - floor.CFrame.Position
 
