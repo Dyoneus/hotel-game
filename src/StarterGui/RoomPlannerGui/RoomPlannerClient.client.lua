@@ -216,6 +216,10 @@ local function canTestVipLayouts()
 		or player:GetAttribute("CanTestVipLayouts") == true
 end
 
+local function canTestDevLayouts()
+	return canTestVipLayouts()
+end
+
 local function enrichLayoutInfo(layoutInfo)
 	local enriched = {}
 
@@ -225,19 +229,25 @@ local function enrichLayoutInfo(layoutInfo)
 
 	local hasTemplate = templateExists(enriched)
 	local isVip = enriched.RequiresVip == true or enriched.AccessTier == RoomLayoutConfig.ACCESS_VIP
+	local isDev = enriched.IsDevOnly == true or enriched.AccessTier == RoomLayoutConfig.ACCESS_DEV
 	local canUseVipForTesting = isVip and canTestVipLayouts()
+	local canUseDevForTesting = isDev and canTestDevLayouts()
 
 	enriched.TemplateExists = hasTemplate
 	enriched.TemplateStatusText = hasTemplate and "Ready" or "Template missing"
 	enriched.IsVipLocked = isVip and not canUseVipForTesting
 	enriched.IsVipTestMode = canUseVipForTesting and hasTemplate
+	enriched.IsDevLocked = isDev and not canUseDevForTesting
+	enriched.IsDevTestMode = canUseDevForTesting and hasTemplate
 	enriched.IsCreatable = enriched.IsSelectable == true
 		and enriched.Status == RoomLayoutConfig.STATUS_AVAILABLE
-		and (enriched.AccessTier == RoomLayoutConfig.ACCESS_FREE or canUseVipForTesting)
+		and (enriched.AccessTier == RoomLayoutConfig.ACCESS_FREE or canUseVipForTesting or canUseDevForTesting)
 		and hasTemplate
 
 	if not hasTemplate then
 		enriched.DisabledReason = "Template missing"
+	elseif isDev and not canUseDevForTesting then
+		enriched.DisabledReason = "Studio/admin only"
 	elseif isVip and not canUseVipForTesting then
 		enriched.DisabledReason = "VIP required"
 	elseif enriched.IsSelectable ~= true or enriched.Status ~= RoomLayoutConfig.STATUS_AVAILABLE then
@@ -251,8 +261,13 @@ end
 
 local function getPlannerLayouts()
 	local layouts = {}
+	local options = {}
 
-	for _, layoutInfo in ipairs(RoomLayoutConfig.GetSelectableLayouts()) do
+	if canTestDevLayouts() then
+		options.IncludeDevOnly = true
+	end
+
+	for _, layoutInfo in ipairs(RoomLayoutConfig.GetSelectableLayouts(options)) do
 		table.insert(layouts, enrichLayoutInfo(layoutInfo))
 	end
 
@@ -387,9 +402,13 @@ local function renderMiniPreview(card, layoutInfo)
 	preview.Name = "MiniLayoutPreview"
 	preview.Position = UDim2.fromOffset(12, 12)
 	preview.Size = UDim2.fromOffset(PREVIEW_SIZE, PREVIEW_SIZE)
-	preview.BackgroundColor3 = layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_VIP
-		and Color3.fromRGB(238, 224, 196)
-		or Color3.fromRGB(236, 224, 194)
+	if layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_DEV then
+		preview.BackgroundColor3 = Color3.fromRGB(229, 218, 194)
+	elseif layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_VIP then
+		preview.BackgroundColor3 = Color3.fromRGB(238, 224, 196)
+	else
+		preview.BackgroundColor3 = Color3.fromRGB(236, 224, 194)
+	end
 	preview.BorderSizePixel = 0
 	preview.ClipsDescendants = true
 	preview.Parent = card
@@ -444,6 +463,15 @@ local function renderMiniPreview(card, layoutInfo)
 			UDim2.new(1, -34, 0, 5),
 			UDim2.fromOffset(28, 16),
 			Color3.fromRGB(126, 91, 143)
+		)
+	elseif layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_DEV or layoutInfo.IsDevOnly == true then
+		addPreviewBadge(
+			preview,
+			"PreviewDevBadge",
+			"DEV",
+			UDim2.new(1, -36, 0, 5),
+			UDim2.fromOffset(30, 16),
+			Color3.fromRGB(112, 91, 63)
 		)
 	end
 
@@ -502,7 +530,15 @@ local function getLayoutStatusMessage(layoutInfo)
 			return "VIP Test Mode: ready to create " .. layoutInfo.DisplayName .. ".", false
 		end
 
+		if layoutInfo.IsDevTestMode == true then
+			return "Studio Test: ready to create " .. layoutInfo.DisplayName .. ".", false
+		end
+
 		return "Ready to create " .. layoutInfo.DisplayName .. ".", false
+	end
+
+	if layoutInfo.IsDevLocked == true then
+		return layoutInfo.DisplayName .. " is available only in Studio/admin test mode.", true
 	end
 
 	if layoutInfo.IsVipLocked == true then
@@ -608,6 +644,8 @@ local function renderLayoutCards()
 		local isSelected = selectedLayout ~= nil and layoutInfo.LayoutId == selectedLayout.LayoutId
 		local isCreatable = layoutInfo.IsCreatable == true
 		local statusText = layoutInfo.TemplateExists ~= true and "Template missing"
+			or layoutInfo.IsDevTestMode and "Studio Test"
+			or layoutInfo.IsDevLocked and "Studio/Admin Only"
 			or layoutInfo.IsVipTestMode and "VIP Test Mode"
 			or layoutInfo.IsVipLocked and "VIP Required"
 			or isCreatable and "Ready"
@@ -745,9 +783,13 @@ local function renderLayoutCards()
 				TextXAlignment = Enum.TextXAlignment.Center,
 			}
 		)
-		accessBadge.BackgroundColor3 = layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_VIP
-			and Color3.fromRGB(126, 91, 143)
-			or THEME.Button
+		if layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_VIP then
+			accessBadge.BackgroundColor3 = Color3.fromRGB(126, 91, 143)
+		elseif layoutInfo.AccessTier == RoomLayoutConfig.ACCESS_DEV then
+			accessBadge.BackgroundColor3 = Color3.fromRGB(112, 91, 63)
+		else
+			accessBadge.BackgroundColor3 = THEME.Button
+		end
 		accessBadge.BackgroundTransparency = 0
 		createCorner(accessBadge, 5)
 

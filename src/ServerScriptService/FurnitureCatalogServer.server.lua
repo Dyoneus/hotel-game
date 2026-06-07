@@ -432,6 +432,129 @@ local function modelWouldOverlapCharacter(roomModel, model)
 	return false
 end
 
+local function getPositiveIntegerAttribute(instance, attributeName)
+	if not instance then
+		return nil
+	end
+
+	local value = instance:GetAttribute(attributeName)
+
+	if typeof(value) == "number"
+		and value == value
+		and value > 0
+		and value < math.huge
+		and math.floor(value) == value then
+
+		return value
+	end
+
+	return nil
+end
+
+local function getExplicitFurnitureFootprint(model)
+	if getPositiveIntegerAttribute(model, "FootprintWidth")
+		or getPositiveIntegerAttribute(model, "FootprintDepth") then
+
+		return GridConfig.GetFurnitureFootprint(model)
+	end
+
+	return nil, nil
+end
+
+local function getDerivedCurrentFootprint(model, floor, tileSize)
+	local minX = math.huge
+	local maxX = -math.huge
+	local minZ = math.huge
+	local maxZ = -math.huge
+	local foundPart = false
+
+	for _, descendant in ipairs(getPlacementCheckParts(model)) do
+		foundPart = true
+		local halfSize = descendant.Size / 2
+		local localCorners = {
+			Vector3.new(-halfSize.X, 0, -halfSize.Z),
+			Vector3.new(-halfSize.X, 0, halfSize.Z),
+			Vector3.new(halfSize.X, 0, -halfSize.Z),
+			Vector3.new(halfSize.X, 0, halfSize.Z),
+		}
+
+		for _, localCorner in ipairs(localCorners) do
+			local worldCorner = descendant.CFrame:PointToWorldSpace(localCorner)
+			local floorLocalCorner = floor.CFrame:PointToObjectSpace(worldCorner)
+
+			minX = math.min(minX, floorLocalCorner.X)
+			maxX = math.max(maxX, floorLocalCorner.X)
+			minZ = math.min(minZ, floorLocalCorner.Z)
+			maxZ = math.max(maxZ, floorLocalCorner.Z)
+		end
+	end
+
+	if not foundPart then
+		return 1, 1
+	end
+
+	local widthStuds = math.max(maxX - minX, tileSize)
+	local depthStuds = math.max(maxZ - minZ, tileSize)
+	local widthTiles = math.max(1, math.ceil((widthStuds - PLACEMENT_CONTAINMENT_EPSILON) / tileSize))
+	local depthTiles = math.max(1, math.ceil((depthStuds - PLACEMENT_CONTAINMENT_EPSILON) / tileSize))
+
+	return widthTiles, depthTiles
+end
+
+local function getCurrentFootprintForMask(model, floor, gridContext)
+	local footprintWidth, footprintDepth = getExplicitFurnitureFootprint(model)
+
+	if footprintWidth and footprintDepth then
+		if footprintWidth ~= footprintDepth then
+			local localLookVector = floor.CFrame:VectorToObjectSpace(model:GetPivot().LookVector)
+
+			if math.abs(localLookVector.X) > math.abs(localLookVector.Z) then
+				footprintWidth, footprintDepth = footprintDepth, footprintWidth
+			end
+		end
+
+		return footprintWidth, footprintDepth
+	end
+
+	return getDerivedCurrentFootprint(model, floor, gridContext.TileSize or GridConfig.TILE_SIZE)
+end
+
+local function modelFitsTileMask(roomModel, model)
+	local floor = getWalkableFloor(roomModel)
+
+	if not floor then
+		return false
+	end
+
+	local gridContext = GridConfig.GetGridContext(roomModel)
+
+	if not gridContext or gridContext.UsesTileMask ~= true then
+		return true
+	end
+
+	local cellX, cellZ = GridConfig.WorldToCell(gridContext, model:GetPivot().Position)
+
+	if not cellX or not cellZ then
+		return false
+	end
+
+	if not GridConfig.CellIsWalkable(gridContext, cellX, cellZ) then
+		return false
+	end
+
+	local footprintWidth, footprintDepth = getCurrentFootprintForMask(model, floor, gridContext)
+	local footprintWalkable = GridConfig.FootprintCellsAreWalkable(
+		gridContext,
+		cellX,
+		cellZ,
+		footprintWidth,
+		footprintDepth,
+		0
+	)
+
+	return footprintWalkable == true
+end
+
 local function countCatalogItemInRoom(furnitureFolder, templateName)
 	local count = 0
 
@@ -465,8 +588,9 @@ local function findPlacementCFrame(roomModel, furnitureModel)
 	local floorTopY = GridConfig.GetFloorTopY(floor)
 	local pivotYOffsetFromBottom = originalPivot.Position.Y - bottomY
 	local tileBounds = GridConfig.GetTileBounds(roomModel, floor)
+	local gridContext = GridConfig.GetGridContext(roomModel)
 
-	if not floorTopY or not tileBounds then
+	if not floorTopY or not tileBounds or not gridContext then
 		return nil
 	end
 
@@ -474,13 +598,23 @@ local function findPlacementCFrame(roomModel, furnitureModel)
 	local centerZ = (tileBounds.GridDepth - 1) / 2
 	local candidates = {}
 
-	for xIndex = 0, tileBounds.GridWidth - 1 do
-		for zIndex = 0, tileBounds.GridDepth - 1 do
+	if gridContext.UsesTileMask == true then
+		for _, cell in ipairs(GridConfig.GetWalkableCells(gridContext)) do
 			table.insert(candidates, {
-				xIndex = xIndex,
-				zIndex = zIndex,
-				distance = math.abs(xIndex - centerX) + math.abs(zIndex - centerZ),
+				cellX = cell.X,
+				cellZ = cell.Z,
+				distance = math.abs((cell.X - 1) - centerX) + math.abs((cell.Z - 1) - centerZ),
 			})
+		end
+	else
+		for xIndex = 0, tileBounds.GridWidth - 1 do
+			for zIndex = 0, tileBounds.GridDepth - 1 do
+				table.insert(candidates, {
+					xIndex = xIndex,
+					zIndex = zIndex,
+					distance = math.abs(xIndex - centerX) + math.abs(zIndex - centerZ),
+				})
+			end
 		end
 	end
 
@@ -489,13 +623,19 @@ local function findPlacementCFrame(roomModel, furnitureModel)
 	end)
 
 	for _, candidate in ipairs(candidates) do
-		local localFloorPosition = Vector3.new(
-			-tileBounds.HalfWidthStuds + tileBounds.TileSize / 2 + candidate.xIndex * tileBounds.TileSize,
-			0,
-			-tileBounds.HalfDepthStuds + tileBounds.TileSize / 2 + candidate.zIndex * tileBounds.TileSize
-		)
+		local worldPosition = nil
 
-		local worldPosition = GridConfig.FloorLocalToWorld(floor, localFloorPosition)
+		if gridContext.UsesTileMask == true then
+			worldPosition = GridConfig.CellToWorld(gridContext, candidate.cellX, candidate.cellZ)
+		else
+			local localFloorPosition = Vector3.new(
+				-tileBounds.HalfWidthStuds + tileBounds.TileSize / 2 + candidate.xIndex * tileBounds.TileSize,
+				0,
+				-tileBounds.HalfDepthStuds + tileBounds.TileSize / 2 + candidate.zIndex * tileBounds.TileSize
+			)
+
+			worldPosition = GridConfig.FloorLocalToWorld(floor, localFloorPosition)
+		end
 
 		if worldPosition then
 			local candidateCFrame =
@@ -509,6 +649,7 @@ local function findPlacementCFrame(roomModel, furnitureModel)
 			furnitureModel:PivotTo(candidateCFrame)
 
 			if modelFitsInsideRoom(furnitureModel, floor)
+				and modelFitsTileMask(roomModel, furnitureModel)
 				and not modelBlockedAtCurrentCFrame(roomModel, furnitureModel)
 				and not modelWouldOverlapCharacter(roomModel, furnitureModel) then
 
@@ -546,8 +687,22 @@ local function getRequestedPlacementCFrame(roomModel, furnitureModel, targetPosi
 		return nil, "Furniture can only be placed in grid rooms."
 	end
 
-	local tileSize = GridConfig.GetTileSize(roomModel, floor)
-	local snappedWorldPosition = GridConfig.SnapWorldToTileCenter(floor, targetPosition, tileSize)
+	local gridContext = GridConfig.GetGridContext(roomModel)
+	local snappedWorldPosition = nil
+
+	if gridContext and gridContext.UsesTileMask == true then
+		local cellX, cellZ = GridConfig.WorldToCell(gridContext, targetPosition)
+
+		if not cellX or not cellZ or not GridConfig.CellIsWalkable(gridContext, cellX, cellZ) then
+			return nil, "Invalid placement position."
+		end
+
+		snappedWorldPosition = GridConfig.CellToWorld(gridContext, cellX, cellZ)
+	else
+		local tileSize = GridConfig.GetTileSize(roomModel, floor)
+		snappedWorldPosition = GridConfig.SnapWorldToTileCenter(floor, targetPosition, tileSize)
+	end
+
 	local floorTopY = GridConfig.GetFloorTopY(floor)
 
 	if not snappedWorldPosition or not floorTopY then
@@ -1001,6 +1156,12 @@ local function handlePlaceItem(player, payload, options)
 	local floor = getWalkableFloor(roomModel)
 
 	if not floor or not modelFitsInsideRoom(furnitureClone, floor) then
+		furnitureClone:Destroy()
+		sendResult(player, resultKind, false, "Furniture must stay inside the room.")
+		return
+	end
+
+	if not modelFitsTileMask(roomModel, furnitureClone) then
 		furnitureClone:Destroy()
 		sendResult(player, resultKind, false, "Furniture must stay inside the room.")
 		return

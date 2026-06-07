@@ -535,6 +535,21 @@ local function instanceHasWalkableSurfaceAttribute(instance)
 		or instance:GetAttribute("IsWalkableDecoration") == true
 end
 
+local function isTileMaskWalkableMarkerPart(part)
+	if typeof(part) ~= "Instance" or not part:IsA("BasePart") then
+		return false
+	end
+
+	local tileX = part:GetAttribute(GridConfig.TILE_X_ATTRIBUTE)
+	local tileZ = part:GetAttribute(GridConfig.TILE_Z_ATTRIBUTE)
+
+	return part:GetAttribute(GridConfig.WALKABLE_TILE_ATTRIBUTE) == true
+		and typeof(tileX) == "number"
+		and typeof(tileZ) == "number"
+		and tileX == math.floor(tileX)
+		and tileZ == math.floor(tileZ)
+end
+
 local function isWalkableSurfacePart(part)
 	return typeof(part) == "Instance"
 		and part:IsA("BasePart")
@@ -545,7 +560,7 @@ local function isWalkableSurfacePart(part)
 end
 
 local function getWalkableSurfaceFloor(part)
-	if not isWalkableSurfacePart(part) then
+	if not isWalkableSurfacePart(part) and not isTileMaskWalkableMarkerPart(part) then
 		return nil
 	end
 
@@ -566,6 +581,14 @@ local function getWalkableSurfaceFloor(part)
 	end
 
 	return nil
+end
+
+local function isLocalCharacterDescendant(instance)
+	local character = player.Character
+
+	return typeof(instance) == "Instance"
+		and character ~= nil
+		and (instance == character or instance:IsDescendantOf(character))
 end
 
 local function furnitureModelIsWalkableDecoration(furnitureModel)
@@ -1353,9 +1376,6 @@ function permissionUi.handleResult(response)
 	end
 end
 
-local currentMoveId = 0
-local lastMoveTime = 0
-
 local CLICK_MOVE_COOLDOWN = 0.2
 local SNAP_CHARACTER_FACING_TO_GRID = true
 local HOTEL_GRID_WALK_SPEED = 12
@@ -1365,20 +1385,36 @@ local EXIT_DIRECT_MOVE_TIMEOUT_SECONDS = 4
 local EXIT_ENTRY_MOVE_TIMEOUT_SECONDS = 8
 local STAND_UP_TIMEOUT_SECONDS = 2
 local STAND_SETTLE_CHECK_SECONDS = 0.05
+local DEBUG_TILE_MASK_MOVE = false
+local DEBUG_TILE_MASK_PLACEMENT = false
 
-local warnedTileGridDisabled = false
-local activeGridFacingMoveId = nil
-local activeGridFacingHumanoid = nil
-local activeGridFacingPreviousAutoRotate = nil
-local activeGridFacingPreviousWalkSpeed = nil
-local activeGridFacingRootPart = nil
-local activeGridFacingDirection = nil
-local entranceBridgeDiagnosticsLogged = {}
-local lastSeatedStandCompletedAt = 0
 local roomMovementState = {
 	caveTransitionActive = false,
 	lastEntranceReachWarningAt = 0,
+	currentMoveId = 0,
+	lastMoveTime = 0,
+	warnedTileGridDisabled = false,
+	activeGridFacingMoveId = nil,
+	activeGridFacingHumanoid = nil,
+	activeGridFacingPreviousAutoRotate = nil,
+	activeGridFacingPreviousWalkSpeed = nil,
+	activeGridFacingRootPart = nil,
+	activeGridFacingDirection = nil,
+	entranceBridgeDiagnosticsLogged = {},
+	lastSeatedStandCompletedAt = 0,
 }
+
+local function debugTileMaskMove(...)
+	if DEBUG_TILE_MASK_MOVE == true then
+		warn("[ClickToMoveController.TileMaskMove]", ...)
+	end
+end
+
+function movePreviewState.debugTileMaskPlacement(...)
+	if DEBUG_TILE_MASK_PLACEMENT == true then
+		warn("[ClickToMoveController.TileMaskPlacement]", ...)
+	end
+end
 
 local function getMovementGridContext()
 	local roomModel = getCurrentRoomModel()
@@ -1396,15 +1432,17 @@ local function getMovementGridContext()
 	local tileBounds = GridConfig.GetTileBounds(roomModel, floor)
 	local floorTopY = GridConfig.GetFloorTopY(floor)
 
-	if not gridContext or not tileBounds or not floorTopY then
+	if not tileBounds or not floorTopY then
 		return nil
 	end
+
+	local usesTileMask = gridContext ~= nil and gridContext.UsesTileMask == true
 
 	return {
 		roomModel = roomModel,
 		floor = floor,
 		gridContext = gridContext,
-		usesTileMask = gridContext.UsesTileMask == true,
+		usesTileMask = usesTileMask,
 		tileSize = tileBounds.TileSize,
 		gridWidth = tileBounds.GridWidth,
 		gridDepth = tileBounds.GridDepth,
@@ -1701,7 +1739,7 @@ local function waitForRootNearPosition(rootPart, position, distance, maxSeconds,
 	local startTime = os.clock()
 
 	while os.clock() - startTime < maxSeconds do
-		if moveId and moveId ~= currentMoveId then
+		if moveId and moveId ~= roomMovementState.currentMoveId then
 			return false
 		end
 
@@ -1749,7 +1787,7 @@ local function moveHumanoidDirectToPosition(humanoid, rootPart, targetPosition, 
 	local startTime = os.clock()
 
 	while os.clock() - startTime < timeoutSeconds do
-		if moveId and moveId ~= currentMoveId then
+		if moveId and moveId ~= roomMovementState.currentMoveId then
 			return false
 		end
 
@@ -1867,36 +1905,36 @@ local function beginGridFacingControl(humanoid, moveId)
 		return
 	end
 
-	if activeGridFacingHumanoid and activeGridFacingHumanoid ~= humanoid then
-		if activeGridFacingPreviousAutoRotate ~= nil then
-			activeGridFacingHumanoid.AutoRotate = activeGridFacingPreviousAutoRotate
+	if roomMovementState.activeGridFacingHumanoid and roomMovementState.activeGridFacingHumanoid ~= humanoid then
+		if roomMovementState.activeGridFacingPreviousAutoRotate ~= nil then
+			roomMovementState.activeGridFacingHumanoid.AutoRotate = roomMovementState.activeGridFacingPreviousAutoRotate
 		end
 
-		if activeGridFacingPreviousWalkSpeed ~= nil then
-			activeGridFacingHumanoid.WalkSpeed = activeGridFacingPreviousWalkSpeed
+		if roomMovementState.activeGridFacingPreviousWalkSpeed ~= nil then
+			roomMovementState.activeGridFacingHumanoid.WalkSpeed = roomMovementState.activeGridFacingPreviousWalkSpeed
 		end
 
-		activeGridFacingHumanoid = nil
-		activeGridFacingPreviousAutoRotate = nil
-		activeGridFacingPreviousWalkSpeed = nil
-		activeGridFacingRootPart = nil
-		activeGridFacingDirection = nil
-		activeGridFacingMoveId = nil
+		roomMovementState.activeGridFacingHumanoid = nil
+		roomMovementState.activeGridFacingPreviousAutoRotate = nil
+		roomMovementState.activeGridFacingPreviousWalkSpeed = nil
+		roomMovementState.activeGridFacingRootPart = nil
+		roomMovementState.activeGridFacingDirection = nil
+		roomMovementState.activeGridFacingMoveId = nil
 	end
 
-	if activeGridFacingHumanoid ~= humanoid then
-		activeGridFacingHumanoid = humanoid
-		activeGridFacingPreviousAutoRotate = humanoid.AutoRotate
-		activeGridFacingPreviousWalkSpeed = humanoid.WalkSpeed
+	if roomMovementState.activeGridFacingHumanoid ~= humanoid then
+		roomMovementState.activeGridFacingHumanoid = humanoid
+		roomMovementState.activeGridFacingPreviousAutoRotate = humanoid.AutoRotate
+		roomMovementState.activeGridFacingPreviousWalkSpeed = humanoid.WalkSpeed
 	end
 
-	activeGridFacingMoveId = moveId
+	roomMovementState.activeGridFacingMoveId = moveId
 	humanoid.AutoRotate = false
 	humanoid.WalkSpeed = HOTEL_GRID_WALK_SPEED
 end
 
 local function setActiveGridFacingSegment(moveId, rootPart, worldDirection)
-	if activeGridFacingMoveId ~= moveId
+	if roomMovementState.activeGridFacingMoveId ~= moveId
 		or not rootPart
 		or not rootPart:IsA("BasePart")
 		or typeof(worldDirection) ~= "Vector3" then
@@ -1910,15 +1948,15 @@ local function setActiveGridFacingSegment(moveId, rootPart, worldDirection)
 		return
 	end
 
-	activeGridFacingRootPart = rootPart
-	activeGridFacingDirection = flatDirection.Unit
+	roomMovementState.activeGridFacingRootPart = rootPart
+	roomMovementState.activeGridFacingDirection = flatDirection.Unit
 	rootPart.AssemblyAngularVelocity = Vector3.zero
-	snapCharacterToGridFacing(rootPart, rootPart.Position, activeGridFacingDirection)
+	snapCharacterToGridFacing(rootPart, rootPart.Position, roomMovementState.activeGridFacingDirection)
 end
 
 local function clearActiveGridFacingSegment()
-	activeGridFacingRootPart = nil
-	activeGridFacingDirection = nil
+	roomMovementState.activeGridFacingRootPart = nil
+	roomMovementState.activeGridFacingDirection = nil
 end
 
 local function finishGridFacingControl(moveId)
@@ -1926,43 +1964,43 @@ local function finishGridFacingControl(moveId)
 		return
 	end
 
-	if activeGridFacingMoveId ~= moveId then
+	if roomMovementState.activeGridFacingMoveId ~= moveId then
 		return
 	end
 
-	if activeGridFacingHumanoid and activeGridFacingPreviousAutoRotate ~= nil then
-		activeGridFacingHumanoid.AutoRotate = activeGridFacingPreviousAutoRotate
+	if roomMovementState.activeGridFacingHumanoid and roomMovementState.activeGridFacingPreviousAutoRotate ~= nil then
+		roomMovementState.activeGridFacingHumanoid.AutoRotate = roomMovementState.activeGridFacingPreviousAutoRotate
 	end
 
-	if activeGridFacingHumanoid and activeGridFacingPreviousWalkSpeed ~= nil then
-		activeGridFacingHumanoid.WalkSpeed = activeGridFacingPreviousWalkSpeed
+	if roomMovementState.activeGridFacingHumanoid and roomMovementState.activeGridFacingPreviousWalkSpeed ~= nil then
+		roomMovementState.activeGridFacingHumanoid.WalkSpeed = roomMovementState.activeGridFacingPreviousWalkSpeed
 	end
 
-	activeGridFacingMoveId = nil
-	activeGridFacingHumanoid = nil
-	activeGridFacingPreviousAutoRotate = nil
-	activeGridFacingPreviousWalkSpeed = nil
+	roomMovementState.activeGridFacingMoveId = nil
+	roomMovementState.activeGridFacingHumanoid = nil
+	roomMovementState.activeGridFacingPreviousAutoRotate = nil
+	roomMovementState.activeGridFacingPreviousWalkSpeed = nil
 	clearActiveGridFacingSegment()
 end
 
 local function maintainActiveGridFacing()
-	if not activeGridFacingRootPart
-		or not activeGridFacingRootPart.Parent
-		or not activeGridFacingDirection then
+	if not roomMovementState.activeGridFacingRootPart
+		or not roomMovementState.activeGridFacingRootPart.Parent
+		or not roomMovementState.activeGridFacingDirection then
 
 		return
 	end
 
-	if activeGridFacingMoveId ~= currentMoveId then
+	if roomMovementState.activeGridFacingMoveId ~= roomMovementState.currentMoveId then
 		clearActiveGridFacingSegment()
 		return
 	end
 
-	activeGridFacingRootPart.AssemblyAngularVelocity = Vector3.zero
+	roomMovementState.activeGridFacingRootPart.AssemblyAngularVelocity = Vector3.zero
 	snapCharacterToGridFacing(
-		activeGridFacingRootPart,
-		activeGridFacingRootPart.Position,
-		activeGridFacingDirection
+		roomMovementState.activeGridFacingRootPart,
+		roomMovementState.activeGridFacingRootPart.Position,
+		roomMovementState.activeGridFacingDirection
 	)
 end
 
@@ -1975,7 +2013,7 @@ local function clampToRoom(position, context)
 		return position
 	end
 
-	if not isCellInsideRoom(cell, context) then
+	if context.usesTileMask == true and not isCellInsideRoom(cell, context) then
 		return nil
 	end
 
@@ -2295,7 +2333,7 @@ function worldPositionIsInsideCell(worldPosition, cell, context)
 end
 
 local function isCellBlocked(cell, context)
-	if not isCellInsideRoom(cell, context) then
+	if context.usesTileMask == true and not isCellInsideRoom(cell, context) then
 		return true
 	end
 
@@ -2430,11 +2468,11 @@ local function logEntranceBridgeBlocked(reason, context, entryWalkTarget, bridge
 	local roomName = player:GetAttribute("CurrentRoomName") or "UnknownRoom"
 	local key = tostring(roomName) .. ":" .. tostring(reason)
 
-	if entranceBridgeDiagnosticsLogged[key] then
+	if roomMovementState.entranceBridgeDiagnosticsLogged[key] then
 		return
 	end
 
-	entranceBridgeDiagnosticsLogged[key] = true
+	roomMovementState.entranceBridgeDiagnosticsLogged[key] = true
 
 	local entryPosition = getMarkerWorldPosition(entryWalkTarget)
 	local blockingNames = {}
@@ -2631,14 +2669,14 @@ local function moveCharacterTo(destination, options)
 
 	local now = os.clock()
 
-	if now - lastMoveTime < CLICK_MOVE_COOLDOWN then
+	if now - roomMovementState.lastMoveTime < CLICK_MOVE_COOLDOWN then
 		return false
 	end
 
-	lastMoveTime = now
+	roomMovementState.lastMoveTime = now
 
-	currentMoveId += 1
-	local moveId = currentMoveId
+	roomMovementState.currentMoveId += 1
+	local moveId = roomMovementState.currentMoveId
 	local expectedRoomName = player:GetAttribute("CurrentRoomName")
 
 	local character = player.Character or player.CharacterAdded:Wait()
@@ -2648,9 +2686,9 @@ local function moveCharacterTo(destination, options)
 	local context, contextMessage = getMovementGridContext()
 
 	if not context then
-		if contextMessage and not warnedTileGridDisabled then
+		if contextMessage and not roomMovementState.warnedTileGridDisabled then
 			warn(contextMessage)
-			warnedTileGridDisabled = true
+			roomMovementState.warnedTileGridDisabled = true
 		end
 
 		return false
@@ -2667,6 +2705,7 @@ local function moveCharacterTo(destination, options)
 	local clampedDestination = clampToRoom(destination, context)
 
 	if not clampedDestination then
+		debugTileMaskMove("reject", "Destination is outside mask or room bounds", "room", tostring(requestedRoomName))
 		return false
 	end
 
@@ -2675,6 +2714,18 @@ local function moveCharacterTo(destination, options)
 	local bridgeCell, bridgeWorldPosition, bridgeMessage = getBridgeStartCellIfNeeded(rootPart.Position, context)
 
 	if not goalCell or not isCellInsideRoom(goalCell, context) then
+		local maskCellX, maskCellZ = toGridConfigCell(goalCell)
+
+		debugTileMaskMove(
+			"reject",
+			"Goal cell is not walkable",
+			"room",
+			tostring(requestedRoomName),
+			"movementCell",
+			goalCell and (tostring(goalCell.x) .. "," .. tostring(goalCell.z)) or "nil",
+			"maskCell",
+			tostring(maskCellX) .. "," .. tostring(maskCellZ)
+		)
 		return false
 	end
 
@@ -2685,7 +2736,7 @@ local function moveCharacterTo(destination, options)
 
 	if bridgeCell then
 		startCell = bridgeCell
-	elseif startCell and not isCellInsideRoom(startCell, context) then
+	elseif context.usesTileMask == true and startCell and not isCellInsideRoom(startCell, context) then
 		local adjustedStartCell = getNearestValidStartCellFromPosition(rootPart.Position, context)
 
 		if adjustedStartCell then
@@ -2695,7 +2746,7 @@ local function moveCharacterTo(destination, options)
 		end
 	elseif startCell
 		and isCellBlocked(startCell, context)
-		and os.clock() - lastSeatedStandCompletedAt <= 2.5 then
+		and os.clock() - roomMovementState.lastSeatedStandCompletedAt <= 2.5 then
 
 		local adjustedStartCell = getNearestValidStartCellFromPosition(rootPart.Position, context)
 
@@ -2723,6 +2774,7 @@ local function moveCharacterTo(destination, options)
 	end
 
 	if context.usesTileMask == true and not reachedGoal then
+		debugTileMaskMove("reject", "Masked target is unreachable", "room", tostring(requestedRoomName))
 		return false
 	end
 
@@ -2739,7 +2791,7 @@ local function moveCharacterTo(destination, options)
 			ownsCaveTransition = true
 		end
 
-		if moveId ~= currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
+		if moveId ~= roomMovementState.currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
 			if ownsCaveTransition then
 				roomMovementState.setCaveTransitionActive(false)
 			end
@@ -2767,7 +2819,7 @@ local function moveCharacterTo(destination, options)
 			)
 		end
 
-		if moveId ~= currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
+		if moveId ~= roomMovementState.currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
 			if ownsCaveTransition then
 				roomMovementState.setCaveTransitionActive(false)
 			end
@@ -2805,7 +2857,7 @@ local function moveCharacterTo(destination, options)
 	beginGridFacingControl(humanoid, moveId)
 
 	for index, cell in ipairs(movementPath) do
-		if moveId ~= currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
+		if moveId ~= roomMovementState.currentMoveId or player:GetAttribute("CurrentRoomName") ~= expectedRoomName then
 			finishGridFacingControl(moveId)
 			if ownsCaveTransition then
 				roomMovementState.setCaveTransitionActive(false)
@@ -2832,7 +2884,7 @@ local function moveCharacterTo(destination, options)
 
 		local reached = humanoid.MoveToFinished:Wait()
 
-		if moveId ~= currentMoveId then
+		if moveId ~= roomMovementState.currentMoveId then
 			finishGridFacingControl(moveId)
 			if ownsCaveTransition then
 				roomMovementState.setCaveTransitionActive(false)
@@ -2974,16 +3026,6 @@ local function getMouseFloorRaycastResult()
 	return workspace:Raycast(ray.Origin, ray.Direction * 1000, raycastParams)
 end
 
-local function getMouseFloorPosition()
-	local floorRaycastResult = getMouseFloorRaycastResult()
-
-	if not floorRaycastResult then
-		return nil
-	end
-
-	return floorRaycastResult.Position
-end
-
 local function getGridSnappedFloorPosition(floorPosition)
 	local roomModel = getCurrentRoomModel()
 	local floor = getCurrentFloor()
@@ -3006,7 +3048,8 @@ local function getGridSnappedFloorPosition(floorPosition)
 			return nil
 		end
 
-		return Vector3.new(cellWorldPosition.X, floorPosition.Y, cellWorldPosition.Z)
+		return Vector3.new(cellWorldPosition.X, floorPosition.Y, cellWorldPosition.Z),
+			GridConfig.CellIsWalkable(gridContext, cellX, cellZ)
 	end
 
 	local tileSize = GridConfig.GetTileSize(roomModel, floor)
@@ -3016,7 +3059,7 @@ local function getGridSnappedFloorPosition(floorPosition)
 		return nil
 	end
 
-	return Vector3.new(snappedWorldPosition.X, floorPosition.Y, snappedWorldPosition.Z)
+	return Vector3.new(snappedWorldPosition.X, floorPosition.Y, snappedWorldPosition.Z), true
 end
 
 local function getFloorPlacementBounds()
@@ -3050,6 +3093,121 @@ local function getPlacementGridContext()
 	end
 
 	return GridConfig.GetGridContext(roomModel)
+end
+
+function movePreviewState.resolvePlacementMaskTarget(floorRaycastResult)
+	local gridContext = getPlacementGridContext()
+
+	if not gridContext or gridContext.UsesTileMask ~= true then
+		return nil
+	end
+
+	local raycastPart = floorRaycastResult and floorRaycastResult.Instance or nil
+	local hitPosition = floorRaycastResult and floorRaycastResult.Position or nil
+	local markerPart = nil
+
+	if isTileMaskWalkableMarkerPart(mouse.Target) and getWalkableSurfaceFloor(mouse.Target) then
+		markerPart = mouse.Target
+	elseif isTileMaskWalkableMarkerPart(raycastPart) and getWalkableSurfaceFloor(raycastPart) then
+		markerPart = raycastPart
+	end
+
+	local cellX = nil
+	local cellZ = nil
+
+	if markerPart then
+		cellX = markerPart:GetAttribute(GridConfig.TILE_X_ATTRIBUTE)
+		cellZ = markerPart:GetAttribute(GridConfig.TILE_Z_ATTRIBUTE)
+		hitPosition = hitPosition or markerPart.Position
+	elseif hitPosition then
+		cellX, cellZ = GridConfig.WorldToCell(gridContext, hitPosition)
+	end
+
+	if not cellX or not cellZ then
+		return nil
+	end
+
+	local cellWorldPosition = GridConfig.CellToWorld(gridContext, cellX, cellZ)
+
+	if not cellWorldPosition then
+		return nil
+	end
+
+	local y = hitPosition and hitPosition.Y or cellWorldPosition.Y
+
+	return {
+		Context = gridContext,
+		HitPart = markerPart or raycastPart,
+		MarkerPart = markerPart,
+		HitPosition = hitPosition,
+		MovementCell = fromGridConfigCell(cellX, cellZ),
+		CellX = cellX,
+		CellZ = cellZ,
+		CellWalkable = GridConfig.CellIsWalkable(gridContext, cellX, cellZ),
+		Position = Vector3.new(cellWorldPosition.X, y, cellWorldPosition.Z),
+	}
+end
+
+function movePreviewState.isPlacementMaskFootprintWalkable(previewModel, maskTarget)
+	if not maskTarget or not maskTarget.Context then
+		return true
+	end
+
+	if not previewModel then
+		return false
+	end
+
+	if maskTarget.CellWalkable ~= true then
+		return false
+	end
+
+	local movementContext = {
+		floor = maskTarget.Context.Floor,
+		tileSize = maskTarget.Context.TileSize,
+	}
+	local footprintWidth, footprintDepth = getRotatedFurnitureFootprint(previewModel, movementContext)
+	local footprintWalkable = GridConfig.FootprintCellsAreWalkable(
+		maskTarget.Context,
+		maskTarget.CellX,
+		maskTarget.CellZ,
+		footprintWidth,
+		footprintDepth,
+		0
+	)
+
+	return footprintWalkable == true
+end
+
+function movePreviewState.debugPlacementMaskState(maskTarget, footprintWalkable, finalPreviewValid)
+	if DEBUG_TILE_MASK_PLACEMENT ~= true or not maskTarget then
+		return
+	end
+
+	local hitPart = maskTarget.HitPart
+	local movementCell = maskTarget.MovementCell
+
+	movePreviewState.debugTileMaskPlacement(
+		"hitPart",
+		hitPart and hitPart.Name or "nil",
+		"IsWalkableTile",
+		tostring(hitPart and hitPart:GetAttribute(GridConfig.WALKABLE_TILE_ATTRIBUTE)),
+		"hitPosition",
+		tostring(maskTarget.HitPosition),
+		"oldCell",
+		movementCell and (tostring(movementCell.x) .. "," .. tostring(movementCell.z)) or "nil",
+		"maskCell",
+		tostring(maskTarget.CellX) .. "," .. tostring(maskTarget.CellZ),
+		"UsesTileMask",
+		tostring(maskTarget.Context and maskTarget.Context.UsesTileMask),
+		"CellIsWalkable",
+		tostring(maskTarget.CellWalkable),
+		"FootprintCellsAreWalkable",
+		tostring(footprintWalkable),
+		"finalPreviewValidity",
+		tostring(finalPreviewValid),
+		"previewState",
+		finalPreviewValid and "valid-blue" or "invalid-red"
+	)
 end
 
 local helperPartNames = {
@@ -3248,20 +3406,34 @@ local function clampFurnitureCFrameInsideRoom(model, targetCFrame)
 end
 
 local function getSnappedPlacementPosition()
-	local floorPosition = getMouseFloorPosition()
+	local floorRaycastResult = getMouseFloorRaycastResult()
+	local maskTarget = movePreviewState.resolvePlacementMaskTarget(floorRaycastResult)
+	local floorPosition = floorRaycastResult and floorRaycastResult.Position
+
+	if not floorPosition and maskTarget then
+		floorPosition = maskTarget.Position
+	end
 
 	if not floorPosition then
 		return nil
 	end
 
-	local snappedFloorPosition = getGridSnappedFloorPosition(floorPosition)
+	local snappedFloorPosition = nil
+	local targetCellWalkable = true
+
+	if maskTarget then
+		snappedFloorPosition = maskTarget.Position
+		targetCellWalkable = maskTarget.CellWalkable
+	else
+		snappedFloorPosition, targetCellWalkable = getGridSnappedFloorPosition(floorPosition)
+	end
 
 	if not snappedFloorPosition then
 		return nil
 	end
 
 	if not movingFurniture then
-		return snappedFloorPosition
+		return snappedFloorPosition, targetCellWalkable, maskTarget
 	end
 
 	local currentPivot = movingFurniture:GetPivot()
@@ -3279,7 +3451,7 @@ local function getSnappedPlacementPosition()
 		targetCFrame.Position.X,
 		floorPosition.Y,
 		targetCFrame.Position.Z
-	)
+	), targetCellWalkable, maskTarget
 end
 
 local function getPartWorldCorners(part)
@@ -3495,11 +3667,12 @@ local function isPreviewBlockedByPlayer(previewModel)
 	return false
 end
 
-local function setPlacementPreviewValidity(isValid)
-	placementIsValid = isValid
-
+function movePreviewState.setPlacementPreviewVisualState(isValid, reason)
 	local fillColor
 	local outlineColor
+	local tintedParts = 0
+	local tintedHighlights = 0
+	local tintedSelectionBoxes = 0
 
 	if isValid then
 		-- Bright cyan/blue is easier to see against green walls.
@@ -3517,6 +3690,7 @@ local function setPlacementPreviewValidity(isValid)
 		placementPreviewHighlight.FillTransparency = 0.35
 		placementPreviewHighlight.OutlineTransparency = 0
 		placementPreviewHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		tintedHighlights += 1
 	end
 
 	if placementPreview then
@@ -3531,10 +3705,57 @@ local function setPlacementPreviewValidity(isValid)
 					descendant.Color = fillColor
 					descendant.Transparency = 0.35
 					descendant.Material = Enum.Material.Neon
+					tintedParts += 1
 				end
+			elseif descendant:IsA("Highlight") then
+				if not descendant.Adornee or not descendant.Adornee:IsDescendantOf(placementPreview) then
+					descendant.Adornee = placementPreview
+				end
+
+				descendant.Enabled = true
+				descendant.FillColor = fillColor
+				descendant.OutlineColor = outlineColor
+				descendant.FillTransparency = 0.35
+				descendant.OutlineTransparency = 0
+				descendant.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				tintedHighlights += 1
+			elseif descendant:IsA("SelectionBox") then
+				descendant.Color3 = fillColor
+				descendant.SurfaceColor3 = fillColor
+				descendant.SurfaceTransparency = 0.65
+				descendant.Transparency = 0
+				tintedSelectionBoxes += 1
+			elseif descendant:IsA("BoxHandleAdornment") then
+				descendant.Color3 = fillColor
+				descendant.Transparency = 0.35
+				tintedSelectionBoxes += 1
 			end
 		end
 	end
+
+	if DEBUG_TILE_MASK_PLACEMENT == true then
+		movePreviewState.debugTileMaskPlacement(
+			"visualState",
+			isValid and "valid-blue" or "invalid-red",
+			"reason",
+			tostring(reason),
+			"previewModel",
+			placementPreview and placementPreview.Name or "nil",
+			"highlightColor",
+			tostring(placementPreviewHighlight and placementPreviewHighlight.FillColor),
+			"previewPartsTinted",
+			tostring(tintedParts),
+			"highlightsTinted",
+			tostring(tintedHighlights),
+			"selectionBoxesTinted",
+			tostring(tintedSelectionBoxes)
+		)
+	end
+end
+
+local function setPlacementPreviewValidity(isValid, reason)
+	placementIsValid = isValid
+	movePreviewState.setPlacementPreviewVisualState(isValid, reason)
 end
 
 local function checkPlacementPreviewValidity()
@@ -3713,10 +3934,10 @@ local function updatePlacementPreview()
 		return
 	end
 
-	local placementPosition = getSnappedPlacementPosition()
+	local placementPosition, targetCellWalkable, maskTarget = getSnappedPlacementPosition()
 
 	if not placementPosition then
-		setPlacementPreviewValidity(false)
+		setPlacementPreviewValidity(false, "NoPlacementTarget")
 		return
 	end
 
@@ -3733,8 +3954,25 @@ local function updatePlacementPreview()
 
 	placementPreview:PivotTo(CFrame.new(previewPosition) * previewRotation)
 
-	local isValid = checkPlacementPreviewValidity()
-	setPlacementPreviewValidity(isValid)
+	local maskFootprintWalkable = movePreviewState.isPlacementMaskFootprintWalkable(placementPreview, maskTarget)
+	local invalidReason = nil
+
+	if maskTarget and targetCellWalkable == false then
+		invalidReason = "TileMaskTargetNotWalkable"
+	elseif maskTarget and maskFootprintWalkable ~= true then
+		invalidReason = "TileMaskFootprintNotWalkable"
+	end
+
+	local isValid = targetCellWalkable ~= false
+		and maskFootprintWalkable == true
+		and checkPlacementPreviewValidity()
+
+	if not isValid and not invalidReason then
+		invalidReason = "BlockedPlacement"
+	end
+
+	setPlacementPreviewValidity(isValid, invalidReason)
+	movePreviewState.debugPlacementMaskState(maskTarget, maskFootprintWalkable, isValid)
 end
 
 local function updateMenuPosition()
@@ -3930,9 +4168,14 @@ function movePreviewState.confirmActive()
 		return
 	end
 
-	local placementPosition = getSnappedPlacementPosition()
+	local placementPosition, targetCellWalkable, maskTarget = getSnappedPlacementPosition()
+	local maskFootprintWalkable = movePreviewState.isPlacementMaskFootprintWalkable(placementPreview, maskTarget)
 
-	if placementPosition and placementIsValid then
+	if placementPosition
+		and targetCellWalkable ~= false
+		and maskFootprintWalkable == true
+		and placementIsValid then
+
 		local furnitureModel = movingFurniture
 
 		suppressFurnitureMenuUntil = os.clock() + 0.25
@@ -3946,6 +4189,7 @@ function movePreviewState.confirmActive()
 		destroyPlacementPreview()
 		closeFurnitureMenu()
 	else
+		movePreviewState.debugPlacementMaskState(maskTarget, maskFootprintWalkable, false)
 		warn("Invalid furniture placement")
 	end
 end
@@ -4016,8 +4260,73 @@ local function clickIsOnPlayerGui()
 	return false
 end
 
+local function getTileMaskMarkerClickDestination(marker, floorRaycastResult)
+	if not isTileMaskWalkableMarkerPart(marker) then
+		return nil
+	end
+
+	local context = getMovementGridContext()
+	local maskCellX = marker:GetAttribute(GridConfig.TILE_X_ATTRIBUTE)
+	local maskCellZ = marker:GetAttribute(GridConfig.TILE_Z_ATTRIBUTE)
+	local movementCell = fromGridConfigCell(maskCellX, maskCellZ)
+	local walkable = context ~= nil
+		and context.usesTileMask == true
+		and context.gridContext ~= nil
+		and GridConfig.CellIsWalkable(context.gridContext, maskCellX, maskCellZ)
+
+	debugTileMaskMove(
+		"marker hit",
+		marker.Name,
+		"IsWalkableTile",
+		tostring(marker:GetAttribute(GridConfig.WALKABLE_TILE_ATTRIBUTE)),
+		"movementCell",
+		movementCell and (tostring(movementCell.x) .. "," .. tostring(movementCell.z)) or "nil",
+		"maskCell",
+		tostring(maskCellX) .. "," .. tostring(maskCellZ),
+		"walkable",
+		tostring(walkable)
+	)
+
+	if not walkable then
+		return nil
+	end
+
+	local worldPosition = GridConfig.CellToWorld(context.gridContext, maskCellX, maskCellZ)
+
+	if not worldPosition then
+		debugTileMaskMove("reject", "CellToWorld failed for marker", marker.Name)
+		return nil
+	end
+
+	local y = floorRaycastResult and floorRaycastResult.Position.Y or worldPosition.Y
+	return Vector3.new(worldPosition.X, y, worldPosition.Z)
+end
+
+local function getClickMoveDestination(target, floorRaycastResult)
+	local markerDestination = getTileMaskMarkerClickDestination(target, floorRaycastResult)
+
+	if markerDestination then
+		return markerDestination
+	end
+
+	if floorRaycastResult and floorRaycastResult.Instance ~= target then
+		markerDestination = getTileMaskMarkerClickDestination(floorRaycastResult.Instance, floorRaycastResult)
+
+		if markerDestination then
+			return markerDestination
+		end
+	end
+
+	return floorRaycastResult and floorRaycastResult.Position or nil
+end
+
 local function clickTargetsWalkableSurface(target, floorRaycastResult)
-	if not floorRaycastResult or not isWalkableSurfacePart(floorRaycastResult.Instance) then
+	if not floorRaycastResult
+		or (
+			not isWalkableSurfacePart(floorRaycastResult.Instance)
+			and not isTileMaskWalkableMarkerPart(floorRaycastResult.Instance)
+		) then
+
 		return false
 	end
 
@@ -4029,8 +4338,13 @@ local function clickTargetsWalkableSurface(target, floorRaycastResult)
 		return true
 	end
 
+	if isLocalCharacterDescendant(target) then
+		return true
+	end
+
 	return target == floorRaycastResult.Instance
 		or isWalkableSurfacePart(target)
+		or isTileMaskWalkableMarkerPart(target)
 end
 
 local function getCurrentlySeatedFurniture()
@@ -4132,14 +4446,14 @@ local function standUpIfSeated()
 			local context = getMovementGridContext()
 
 			if not context then
-				lastSeatedStandCompletedAt = os.clock()
+				roomMovementState.lastSeatedStandCompletedAt = os.clock()
 				return true
 			end
 
 			local rootCell = worldToCell(rootPart.Position, context)
 
 			if rootCell and isCellInsideRoom(rootCell, context) and not isCellBlocked(rootCell, context) then
-				lastSeatedStandCompletedAt = os.clock()
+				roomMovementState.lastSeatedStandCompletedAt = os.clock()
 				return true
 			end
 
@@ -4149,7 +4463,7 @@ local function standUpIfSeated()
 				and (rootPart.Position - originalRootPosition).Magnitude > 0.25
 				and hasNearbyStartCell then
 
-				lastSeatedStandCompletedAt = os.clock()
+				roomMovementState.lastSeatedStandCompletedAt = os.clock()
 				return true
 			end
 
@@ -4161,7 +4475,7 @@ local function standUpIfSeated()
 			and rootPart
 			and (rootPart.Position - originalRootPosition).Magnitude > 0.25 then
 
-			lastSeatedStandCompletedAt = os.clock()
+			roomMovementState.lastSeatedStandCompletedAt = os.clock()
 			return true
 		end
 
@@ -4460,8 +4774,8 @@ local function moveToRoomExit()
 		end
 	end
 
-	currentMoveId += 1
-	local exitMoveId = currentMoveId
+	roomMovementState.currentMoveId += 1
+	local exitMoveId = roomMovementState.currentMoveId
 
 	local reachedDoorSpawn = roomMovementState.moveHumanoidToMarker(doorSpawn, {
 		Distance = EXIT_TARGET_REACHED_DISTANCE,
@@ -4648,6 +4962,7 @@ mouse.Button1Down:Connect(function()
 	local target = mouse.Target
 	local floorRaycastResult = getMouseFloorRaycastResult()
 	local walkableSurfaceClicked = clickTargetsWalkableSurface(target, floorRaycastResult)
+	local clickMoveDestination = walkableSurfaceClicked and getClickMoveDestination(target, floorRaycastResult) or nil
 
 	-- IMPORTANT:
 	-- If we are moving furniture, handle placement before checking furniture clicks.
@@ -4668,13 +4983,18 @@ mouse.Button1Down:Connect(function()
 	end
 
 	if walkableSurfaceClicked then
+		if not clickMoveDestination then
+			debugTileMaskMove("reject", "No click movement destination")
+			return
+		end
+
 		if not standUpIfSeated() then
 			return
 		end
 
 		closeFurnitureMenu()
 
-		moveCharacterTo(floorRaycastResult.Position)
+		moveCharacterTo(clickMoveDestination)
 		return
 	end
 
@@ -4710,30 +5030,30 @@ player:GetAttributeChangedSignal("RoomMode"):Connect(function()
 end)
 
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
-	if activeGridFacingMoveId then
-		finishGridFacingControl(activeGridFacingMoveId)
+	if roomMovementState.activeGridFacingMoveId then
+		finishGridFacingControl(roomMovementState.activeGridFacingMoveId)
 	end
 
-	if activeGridFacingHumanoid then
-		if activeGridFacingPreviousAutoRotate ~= nil then
-			activeGridFacingHumanoid.AutoRotate = activeGridFacingPreviousAutoRotate
+	if roomMovementState.activeGridFacingHumanoid then
+		if roomMovementState.activeGridFacingPreviousAutoRotate ~= nil then
+			roomMovementState.activeGridFacingHumanoid.AutoRotate = roomMovementState.activeGridFacingPreviousAutoRotate
 		end
 
-		if activeGridFacingPreviousWalkSpeed ~= nil then
-			activeGridFacingHumanoid.WalkSpeed = activeGridFacingPreviousWalkSpeed
+		if roomMovementState.activeGridFacingPreviousWalkSpeed ~= nil then
+			roomMovementState.activeGridFacingHumanoid.WalkSpeed = roomMovementState.activeGridFacingPreviousWalkSpeed
 		end
 	end
 
-	activeGridFacingMoveId = nil
-	activeGridFacingHumanoid = nil
-	activeGridFacingPreviousAutoRotate = nil
-	activeGridFacingPreviousWalkSpeed = nil
+	roomMovementState.activeGridFacingMoveId = nil
+	roomMovementState.activeGridFacingHumanoid = nil
+	roomMovementState.activeGridFacingPreviousAutoRotate = nil
+	roomMovementState.activeGridFacingPreviousWalkSpeed = nil
 	clearActiveGridFacingSegment()
 
-	currentMoveId += 1
-	lastMoveTime = 0
-	lastSeatedStandCompletedAt = 0
-	entranceBridgeDiagnosticsLogged = {}
+	roomMovementState.currentMoveId += 1
+	roomMovementState.lastMoveTime = 0
+	roomMovementState.lastSeatedStandCompletedAt = 0
+	roomMovementState.entranceBridgeDiagnosticsLogged = {}
 	roomMovementState.setCaveTransitionActive(false)
 	roomMovementState.lastEntranceReachWarningAt = 0
 	mouse.TargetFilter = nil

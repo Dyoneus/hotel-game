@@ -2,12 +2,14 @@ local RoomLayoutConfig = {}
 
 RoomLayoutConfig.ACCESS_FREE = "Free"
 RoomLayoutConfig.ACCESS_VIP = "VIP"
+RoomLayoutConfig.ACCESS_DEV = "Dev"
 
 RoomLayoutConfig.STATUS_AVAILABLE = "Available"
 RoomLayoutConfig.STATUS_UNAVAILABLE = "Unavailable"
 
 local ACCESS_FREE = RoomLayoutConfig.ACCESS_FREE
 local ACCESS_VIP = RoomLayoutConfig.ACCESS_VIP
+local ACCESS_DEV = RoomLayoutConfig.ACCESS_DEV
 local STATUS_AVAILABLE = RoomLayoutConfig.STATUS_AVAILABLE
 local STATUS_UNAVAILABLE = RoomLayoutConfig.STATUS_UNAVAILABLE
 
@@ -73,6 +75,29 @@ local LAYOUTS = {
 		HasLevels = false,
 		HasHiddenArea = false,
 		Notes = "Free minimal layout for focused decoration.",
+	},
+	{
+		LayoutId = "MaskTest_Hole_036",
+		DisplayName = "DEV Mask Test Hole",
+		TileCount = 35,
+		TileSize = 4,
+		GridWidth = 6,
+		GridDepth = 6,
+		AccessTier = ACCESS_DEV,
+		RequiresVip = false,
+		Status = STATUS_AVAILABLE,
+		IsSelectable = true,
+		IsDevOnly = true,
+		TemplateName = "RoomLayout_MaskTest_Hole_036",
+		PreviewKey = "mask_test_hole_036",
+		SizeClass = "Dev",
+		MaxVisitors = 25,
+		OwnerExtraSlot = true,
+		HasStairs = false,
+		HasLevels = false,
+		HasHiddenArea = false,
+		UsesTileMask = true,
+		Notes = "Studio/admin-only TileMask test layout with one hole.",
 	},
 	{
 		LayoutId = "Free_084_A",
@@ -695,11 +720,27 @@ local function shouldIncludeLayout(layout, options)
 		return false
 	end
 
+	if layout.IsDevOnly == true and options.IncludeDevOnly ~= true then
+		return false
+	end
+
 	if typeof(options.AccessTier) == "string" and options.AccessTier ~= "" then
 		return layout.AccessTier == options.AccessTier
 	end
 
 	return true
+end
+
+local function getAccessSortOrder(accessTier)
+	if accessTier == ACCESS_FREE then
+		return 1
+	elseif accessTier == ACCESS_VIP then
+		return 2
+	elseif accessTier == ACCESS_DEV then
+		return 3
+	end
+
+	return 4
 end
 
 local function sortLayouts(layouts)
@@ -711,8 +752,8 @@ local function sortLayouts(layouts)
 			return aSelectable
 		end
 
-		local aAccessOrder = a.AccessTier == ACCESS_FREE and 1 or 2
-		local bAccessOrder = b.AccessTier == ACCESS_FREE and 1 or 2
+		local aAccessOrder = getAccessSortOrder(a.AccessTier)
+		local bAccessOrder = getAccessSortOrder(b.AccessTier)
 
 		if aAccessOrder ~= bAccessOrder then
 			return aAccessOrder < bAccessOrder
@@ -804,6 +845,10 @@ function RoomLayoutConfig.CanUseLayout(layoutId, context)
 
 	if layout.Status == STATUS_UNAVAILABLE and context.IncludeUnavailable ~= true then
 		return false, "This layout is currently unavailable."
+	end
+
+	if layout.IsDevOnly == true and context.CanUseDevOnly ~= true and context.HasVip ~= true then
+		return false, "This layout is only available for testing."
 	end
 
 	if layout.RequiresVip == true and context.HasVip ~= true then

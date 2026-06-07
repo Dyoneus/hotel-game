@@ -852,7 +852,41 @@ local function setCurrentPublicRoomContext(player, publicRoomId)
 	setCurrentRoomContextAttributes(player, "PublicSpace", nil, publicRoomId)
 end
 
+local function forceStandPlayer(player)
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return
+	end
+
+	local character = player.Character
+
+	if not character then
+		return
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if not humanoid then
+		return
+	end
+
+	if humanoid.Sit ~= true and humanoid.SeatPart == nil then
+		return
+	end
+
+	humanoid.Sit = false
+	humanoid.PlatformStand = false
+	humanoid.Jump = true
+
+	pcall(function()
+		humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end)
+
+	task.wait()
+end
+
 local function movePlayerToRoom(player, roomModel)
+	forceStandPlayer(player)
+
 	local character = player.Character or player.CharacterAdded:Wait()
 
 	local doorSpawn = roomModel:FindFirstChild("DoorSpawn", true)
@@ -968,6 +1002,8 @@ local function clearCharacterVelocities(character)
 end
 
 local function parkCharacterInMainMenu(player)
+	forceStandPlayer(player)
+
 	local _, holdingSpawn = getOrCreateMainMenuHoldingArea()
 
 	if not holdingSpawn then
@@ -1066,6 +1102,8 @@ local function setPlayerInHotelMainMenu(player, isInMainMenu)
 end
 
 local function enterMainMenuForPlayer(player, introVariant, pendingOnboardingAfterIntro)
+	forceStandPlayer(player)
+
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
 	player:SetAttribute("CurrentRoomName", nil)
@@ -2616,6 +2654,8 @@ local function joinRoom(player, roomName)
 		roomModel:GetAttribute("LayoutId")
 	)
 
+	forceStandPlayer(player)
+
 	player:SetAttribute("CurrentRoomName", roomModel.Name)
 	player:SetAttribute("RoomMode", "Play")
 	player:SetAttribute("ControlMode", "Hotel")
@@ -2678,6 +2718,7 @@ local function joinOwnedRoomById(player, roomId)
 	local currentOwnedRoom = playerRooms[player]
 
 	if currentOwnedRoom and currentOwnedRoom.Parent and currentOwnedRoom.Name ~= activeRoomName then
+		forceStandPlayer(player)
 		capturePlayerRoomState(player, currentOwnedRoom)
 		currentOwnedRoom:Destroy()
 		playerRooms[player] = nil

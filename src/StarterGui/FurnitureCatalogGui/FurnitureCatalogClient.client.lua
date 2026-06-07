@@ -226,6 +226,7 @@ local placementSource = nil
 
 local OVERLAP_SHRINK = 0.08
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
+local DEBUG_TILE_MASK_PLACEMENT = false
 
 local CATALOG_ROTATE_ACTION = "CatalogRotatePreview"
 local CATALOG_CANCEL_ACTION = "CatalogCancelPlacement"
@@ -502,6 +503,21 @@ local function getCurrentPlacementGrid()
 	end
 
 	return roomModel, floor, nil
+end
+
+local function isTileMaskWalkableMarkerPart(part)
+	if typeof(part) ~= "Instance" or not part:IsA("BasePart") then
+		return false
+	end
+
+	local tileX = part:GetAttribute(GridConfig.TILE_X_ATTRIBUTE)
+	local tileZ = part:GetAttribute(GridConfig.TILE_Z_ATTRIBUTE)
+
+	return part:GetAttribute(GridConfig.WALKABLE_TILE_ATTRIBUTE) == true
+		and typeof(tileX) == "number"
+		and typeof(tileZ) == "number"
+		and tileX == math.floor(tileX)
+		and tileZ == math.floor(tileZ)
 end
 
 local function isCurrentRoomOwner()
@@ -1644,6 +1660,56 @@ local function getMouseFloorPosition()
 	return nil
 end
 
+local function getCatalogPlacementMaskTarget(roomModel, floor, floorPosition)
+	if not roomModel or not floor then
+		return nil
+	end
+
+	local gridContext = GridConfig.GetGridContext(roomModel)
+
+	if not gridContext or gridContext.UsesTileMask ~= true then
+		return nil
+	end
+
+	local markerPart = nil
+
+	if isTileMaskWalkableMarkerPart(mouse.Target)
+		and mouse.Target:IsDescendantOf(roomModel) then
+
+		markerPart = mouse.Target
+	end
+
+	local cellX = nil
+	local cellZ = nil
+
+	if markerPart then
+		cellX = markerPart:GetAttribute(GridConfig.TILE_X_ATTRIBUTE)
+		cellZ = markerPart:GetAttribute(GridConfig.TILE_Z_ATTRIBUTE)
+	elseif floorPosition then
+		cellX, cellZ = GridConfig.WorldToCell(gridContext, floorPosition)
+	end
+
+	if not cellX or not cellZ then
+		return nil
+	end
+
+	local cellWorldPosition = GridConfig.CellToWorld(gridContext, cellX, cellZ)
+
+	if not cellWorldPosition then
+		return nil
+	end
+
+	return {
+		Context = gridContext,
+		HitPart = markerPart or floor,
+		HitPosition = floorPosition,
+		CellX = cellX,
+		CellZ = cellZ,
+		CellWalkable = GridConfig.CellIsWalkable(gridContext, cellX, cellZ),
+		Position = cellWorldPosition,
+	}
+end
+
 local function getPreviewPlacementCFrame(model)
 	local floorPosition = getMouseFloorPosition()
 	local roomModel, floor = getCurrentPlacementGrid()
@@ -1652,8 +1718,10 @@ local function getPreviewPlacementCFrame(model)
 		return nil
 	end
 
+	local maskTarget = getCatalogPlacementMaskTarget(roomModel, floor, floorPosition)
 	local tileSize = GridConfig.GetTileSize(roomModel, floor)
-	local snappedWorldPosition = GridConfig.SnapWorldToTileCenter(floor, floorPosition, tileSize)
+	local snappedWorldPosition = maskTarget and maskTarget.Position
+		or GridConfig.SnapWorldToTileCenter(floor, floorPosition, tileSize)
 	local floorTopY = GridConfig.GetFloorTopY(floor)
 
 	if not snappedWorldPosition or not floorTopY then
@@ -1673,7 +1741,43 @@ local function getPreviewPlacementCFrame(model)
 		* CFrame.Angles(0, math.rad(placementRotationY), 0)
 		* placementBaseRotation
 
-	return targetCFrame
+	return targetCFrame, maskTarget
+end
+
+local function getRotatedPreviewFootprint(model, gridContext)
+	local footprintWidth, footprintDepth = GridConfig.GetFurnitureFootprint(model)
+
+	if footprintWidth ~= footprintDepth and gridContext and gridContext.Floor then
+		local localLookVector = gridContext.Floor.CFrame:VectorToObjectSpace(model:GetPivot().LookVector)
+
+		if math.abs(localLookVector.X) > math.abs(localLookVector.Z) then
+			footprintWidth, footprintDepth = footprintDepth, footprintWidth
+		end
+	end
+
+	return footprintWidth, footprintDepth
+end
+
+local function isCatalogPlacementMaskFootprintWalkable(model, maskTarget)
+	if not maskTarget or not maskTarget.Context then
+		return true
+	end
+
+	if maskTarget.CellWalkable ~= true then
+		return false
+	end
+
+	local footprintWidth, footprintDepth = getRotatedPreviewFootprint(model, maskTarget.Context)
+	local footprintWalkable = GridConfig.FootprintCellsAreWalkable(
+		maskTarget.Context,
+		maskTarget.CellX,
+		maskTarget.CellZ,
+		footprintWidth,
+		footprintDepth,
+		0
+	)
+
+	return footprintWalkable == true
 end
 
 local function isPreviewInsideRoom(model)
@@ -1791,10 +1895,11 @@ local function isPreviewBlockedByPlayer(model)
 	return false
 end
 
-local function setPlacementPreviewValidity(isValid)
-	placementIsValid = isValid
-
+local function setPlacementPreviewVisualState(isValid, reason)
 	local fillColor
+	local tintedParts = 0
+	local tintedHighlights = 0
+	local tintedSelectionBoxes = 0
 
 	if isValid then
 		fillColor = Color3.fromRGB(0, 190, 255)
@@ -1809,19 +1914,71 @@ local function setPlacementPreviewValidity(isValid)
 		placementPreviewHighlight.FillTransparency = 0.35
 		placementPreviewHighlight.OutlineTransparency = 0
 		placementPreviewHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		tintedHighlights += 1
 	end
 
 	if placementPreview then
 		for _, descendant in ipairs(placementPreview:GetDescendants()) do
-			if descendant:IsA("BasePart")
-				and not isHelperPart(descendant)
-				and descendant.Name ~= PLACEMENT_BOUNDS_PART_NAME then
-				descendant.Color = fillColor
+			if descendant:IsA("BasePart") and not isHelperPart(descendant) then
+				local shouldTintPart = descendant.Name ~= PLACEMENT_BOUNDS_PART_NAME
+					or descendant.Transparency < 1
+
+				if shouldTintPart then
+					descendant.Color = fillColor
+					descendant.Transparency = 0.35
+					descendant.Material = Enum.Material.Neon
+					tintedParts += 1
+				end
+			elseif descendant:IsA("Highlight") then
+				if not descendant.Adornee or not descendant.Adornee:IsDescendantOf(placementPreview) then
+					descendant.Adornee = placementPreview
+				end
+
+				descendant.Enabled = true
+				descendant.FillColor = fillColor
+				descendant.OutlineColor = Color3.fromRGB(255, 255, 255)
+				descendant.FillTransparency = 0.35
+				descendant.OutlineTransparency = 0
+				descendant.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+				tintedHighlights += 1
+			elseif descendant:IsA("SelectionBox") then
+				descendant.Color3 = fillColor
+				descendant.SurfaceColor3 = fillColor
+				descendant.SurfaceTransparency = 0.65
+				descendant.Transparency = 0
+				tintedSelectionBoxes += 1
+			elseif descendant:IsA("BoxHandleAdornment") then
+				descendant.Color3 = fillColor
 				descendant.Transparency = 0.35
-				descendant.Material = Enum.Material.Neon
+				tintedSelectionBoxes += 1
 			end
 		end
 	end
+
+	if DEBUG_TILE_MASK_PLACEMENT == true then
+		warn(
+			"[FurnitureCatalog.TileMaskPlacement]",
+			"visualState",
+			isValid and "valid-blue" or "invalid-red",
+			"reason",
+			tostring(reason),
+			"previewModel",
+			placementPreview and placementPreview.Name or "nil",
+			"highlightColor",
+			tostring(placementPreviewHighlight and placementPreviewHighlight.FillColor),
+			"previewPartsTinted",
+			tostring(tintedParts),
+			"highlightsTinted",
+			tostring(tintedHighlights),
+			"selectionBoxesTinted",
+			tostring(tintedSelectionBoxes)
+		)
+	end
+end
+
+local function setPlacementPreviewValidity(isValid, reason)
+	placementIsValid = isValid
+	setPlacementPreviewVisualState(isValid, reason)
 end
 
 local function unbindCatalogPlacementControls()
@@ -1990,20 +2147,56 @@ local function updateCatalogPlacementPreview()
 		return
 	end
 
-	local targetCFrame = getPreviewPlacementCFrame(placementPreview)
+	local targetCFrame, maskTarget = getPreviewPlacementCFrame(placementPreview)
 
 	if not targetCFrame then
-		setPlacementPreviewValidity(false)
+		setPlacementPreviewValidity(false, "NoPlacementTarget")
 		return
 	end
 
 	placementPreview:PivotTo(targetCFrame)
 
-	local isValid = isPreviewInsideRoom(placementPreview)
+	local maskFootprintWalkable = isCatalogPlacementMaskFootprintWalkable(placementPreview, maskTarget)
+	local invalidReason = nil
+
+	if maskTarget and maskTarget.CellWalkable == false then
+		invalidReason = "TileMaskTargetNotWalkable"
+	elseif maskTarget and maskFootprintWalkable ~= true then
+		invalidReason = "TileMaskFootprintNotWalkable"
+	end
+
+	local isValid = maskFootprintWalkable == true
+		and isPreviewInsideRoom(placementPreview)
 		and not isPreviewBlocked(placementPreview)
 		and not isPreviewBlockedByPlayer(placementPreview)
 
-	setPlacementPreviewValidity(isValid)
+	if not isValid and not invalidReason then
+		invalidReason = "BlockedPlacement"
+	end
+
+	if DEBUG_TILE_MASK_PLACEMENT == true and maskTarget then
+		warn(
+			"[FurnitureCatalog.TileMaskPlacement]",
+			"hitPart",
+			maskTarget.HitPart and maskTarget.HitPart.Name or "nil",
+			"hitPosition",
+			tostring(maskTarget.HitPosition),
+			"maskCell",
+			tostring(maskTarget.CellX) .. "," .. tostring(maskTarget.CellZ),
+			"UsesTileMask",
+			tostring(maskTarget.Context and maskTarget.Context.UsesTileMask),
+			"CellIsWalkable",
+			tostring(maskTarget.CellWalkable),
+			"FootprintCellsAreWalkable",
+			tostring(maskFootprintWalkable),
+			"finalCanPlace",
+			tostring(isValid),
+			"invalidReason",
+			tostring(invalidReason)
+		)
+	end
+
+	setPlacementPreviewValidity(isValid, invalidReason)
 end
 
 local function confirmCatalogPlacement()
