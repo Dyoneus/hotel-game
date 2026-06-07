@@ -2996,6 +2996,19 @@ local function getGridSnappedFloorPosition(floorPosition)
 		return nil
 	end
 
+	local gridContext = GridConfig.GetGridContext(roomModel)
+
+	if gridContext and gridContext.UsesTileMask == true then
+		local cellX, cellZ = GridConfig.WorldToCell(gridContext, floorPosition)
+		local cellWorldPosition = GridConfig.CellToWorld(gridContext, cellX, cellZ)
+
+		if not cellWorldPosition then
+			return nil
+		end
+
+		return Vector3.new(cellWorldPosition.X, floorPosition.Y, cellWorldPosition.Z)
+	end
+
 	local tileSize = GridConfig.GetTileSize(roomModel, floor)
 	local snappedWorldPosition = GridConfig.SnapWorldToTileCenter(floor, floorPosition, tileSize)
 
@@ -3022,6 +3035,21 @@ local function getFloorPlacementBounds()
 		minZ = floor.Position.Z - halfZ,
 		maxZ = floor.Position.Z + halfZ,
 	}
+end
+
+local function getPlacementGridContext()
+	local roomModel = getCurrentRoomModel()
+	local floor = getCurrentFloor()
+
+	if not roomModel or not floor or not floor:IsA("BasePart") then
+		return nil
+	end
+
+	if not GridConfig.UsesTileGrid(roomModel, floor) then
+		return nil
+	end
+
+	return GridConfig.GetGridContext(roomModel)
 end
 
 local helperPartNames = {
@@ -3322,6 +3350,41 @@ local function isPreviewInsideRoom(previewModel)
 		and previewBounds.maxZ <= floorBounds.maxZ + PLACEMENT_CONTAINMENT_EPSILON
 end
 
+local function isPreviewFootprintWalkable(previewModel)
+	local gridContext = getPlacementGridContext()
+
+	if not gridContext or gridContext.UsesTileMask ~= true then
+		return true
+	end
+
+	local pivotPosition = previewModel:GetPivot().Position
+	local cellX, cellZ = GridConfig.WorldToCell(gridContext, pivotPosition)
+
+	if not cellX or not cellZ then
+		return false
+	end
+
+	if not GridConfig.CellIsWalkable(gridContext, cellX, cellZ) then
+		return false
+	end
+
+	local movementContext = {
+		floor = gridContext.Floor,
+		tileSize = gridContext.TileSize,
+	}
+	local footprintWidth, footprintDepth = getRotatedFurnitureFootprint(previewModel, movementContext)
+	local footprintWalkable = GridConfig.FootprintCellsAreWalkable(
+		gridContext,
+		cellX,
+		cellZ,
+		footprintWidth,
+		footprintDepth,
+		0
+	)
+
+	return footprintWalkable == true
+end
+
 local function isPreviewBlocked(previewModel)
 	local roomFolder = getCurrentRoomFolder()
 	local furnitureFolder = getCurrentFurnitureFolder()
@@ -3480,6 +3543,10 @@ local function checkPlacementPreviewValidity()
 	end
 
 	if not isPreviewInsideRoom(placementPreview) then
+		return false
+	end
+
+	if not isPreviewFootprintWalkable(placementPreview) then
 		return false
 	end
 
@@ -3649,6 +3716,7 @@ local function updatePlacementPreview()
 	local placementPosition = getSnappedPlacementPosition()
 
 	if not placementPosition then
+		setPlacementPreviewValidity(false)
 		return
 	end
 
