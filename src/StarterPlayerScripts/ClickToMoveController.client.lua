@@ -1392,16 +1392,19 @@ local function getMovementGridContext()
 		return nil, "Tile grid movement is disabled for this room."
 	end
 
+	local gridContext = GridConfig.GetGridContext(roomModel)
 	local tileBounds = GridConfig.GetTileBounds(roomModel, floor)
 	local floorTopY = GridConfig.GetFloorTopY(floor)
 
-	if not tileBounds or not floorTopY then
+	if not gridContext or not tileBounds or not floorTopY then
 		return nil
 	end
 
 	return {
 		roomModel = roomModel,
 		floor = floor,
+		gridContext = gridContext,
+		usesTileMask = gridContext.UsesTileMask == true,
 		tileSize = tileBounds.TileSize,
 		gridWidth = tileBounds.GridWidth,
 		gridDepth = tileBounds.GridDepth,
@@ -1424,7 +1427,32 @@ local function cellIndexToLocalAxis(index, tileSize, halfStuds)
 	return -halfStuds + tileSize / 2 + index * tileSize
 end
 
+local function toGridConfigCell(cell)
+	if not cell then
+		return nil, nil
+	end
+
+	return cell.x + 1, cell.z + 1
+end
+
+local function fromGridConfigCell(cellX, cellZ)
+	if typeof(cellX) ~= "number" or typeof(cellZ) ~= "number" then
+		return nil
+	end
+
+	return {
+		x = cellX - 1,
+		z = cellZ - 1,
+	}
+end
+
 local function worldToCell(position, context)
+	if context.usesTileMask == true and context.gridContext then
+		local cellX, cellZ = GridConfig.WorldToCell(context.gridContext, position)
+
+		return fromGridConfigCell(cellX, cellZ)
+	end
+
 	local localPosition = GridConfig.WorldToFloorLocal(context.floor, position)
 
 	if not localPosition then
@@ -1438,6 +1466,15 @@ local function worldToCell(position, context)
 end
 
 local function cellToWorld(cell, context)
+	if context.usesTileMask == true and context.gridContext then
+		local cellX, cellZ = toGridConfigCell(cell)
+		local worldPosition = GridConfig.CellToWorld(context.gridContext, cellX, cellZ)
+
+		if worldPosition then
+			return Vector3.new(worldPosition.X, context.moveY, worldPosition.Z)
+		end
+	end
+
 	local localX = cellIndexToLocalAxis(cell.x, context.tileSize, context.halfWidthStuds)
 	local localZ = cellIndexToLocalAxis(cell.z, context.tileSize, context.halfDepthStuds)
 	local localPosition = Vector3.new(localX, context.floor.Size.Y / 2 + 0.5, localZ)
@@ -1929,6 +1966,8 @@ local function maintainActiveGridFacing()
 	)
 end
 
+local isCellInsideRoom = nil
+
 local function clampToRoom(position, context)
 	local cell = worldToCell(position, context)
 
@@ -1936,10 +1975,40 @@ local function clampToRoom(position, context)
 		return position
 	end
 
+	if not isCellInsideRoom(cell, context) then
+		return nil
+	end
+
 	return cellToWorld(cell, context)
 end
 
-local function isCellInsideRoom(cell, context)
+isCellInsideRoom = function(cell, context)
+	if not cell or not context then
+		return false
+	end
+
+	if cell.x < 0
+		or cell.x >= context.gridWidth
+		or cell.z < 0
+		or cell.z >= context.gridDepth then
+
+		return false
+	end
+
+	if context.usesTileMask == true and context.gridContext then
+		local cellX, cellZ = toGridConfigCell(cell)
+
+		return GridConfig.CellIsWalkable(context.gridContext, cellX, cellZ)
+	end
+
+	return true
+end
+
+local function isCellInsideRectangularRoomBounds(cell, context)
+	if not cell or not context then
+		return false
+	end
+
 	return cell.x >= 0
 		and cell.x < context.gridWidth
 		and cell.z >= 0
@@ -2226,6 +2295,10 @@ function worldPositionIsInsideCell(worldPosition, cell, context)
 end
 
 local function isCellBlocked(cell, context)
+	if not isCellInsideRoom(cell, context) then
+		return true
+	end
+
 	local roomFolder = getCurrentRoomFolder()
 	local furnitureFolder = getCurrentFurnitureFolder()
 
@@ -2304,7 +2377,7 @@ local function getNearestValidStartCellFromPosition(rootPosition, context)
 		return currentCell
 	end
 
-	if not currentCell or not isCellInsideRoom(currentCell, context) then
+	if not currentCell or not isCellInsideRectangularRoomBounds(currentCell, context) then
 		return nil
 	end
 
@@ -2593,11 +2666,15 @@ local function moveCharacterTo(destination, options)
 
 	local clampedDestination = clampToRoom(destination, context)
 
+	if not clampedDestination then
+		return false
+	end
+
 	local startCell = worldToCell(rootPart.Position, context)
 	local goalCell = worldToCell(clampedDestination, context)
 	local bridgeCell, bridgeWorldPosition, bridgeMessage = getBridgeStartCellIfNeeded(rootPart.Position, context)
 
-	if not goalCell then
+	if not goalCell or not isCellInsideRoom(goalCell, context) then
 		return false
 	end
 
@@ -2608,6 +2685,14 @@ local function moveCharacterTo(destination, options)
 
 	if bridgeCell then
 		startCell = bridgeCell
+	elseif startCell and not isCellInsideRoom(startCell, context) then
+		local adjustedStartCell = getNearestValidStartCellFromPosition(rootPart.Position, context)
+
+		if adjustedStartCell then
+			startCell = adjustedStartCell
+		else
+			return false
+		end
 	elseif startCell
 		and isCellBlocked(startCell, context)
 		and os.clock() - lastSeatedStandCompletedAt <= 2.5 then
@@ -2634,6 +2719,10 @@ local function moveCharacterTo(destination, options)
 
 	if not path or #path == 0 then
 		warn("No grid path found")
+		return false
+	end
+
+	if context.usesTileMask == true and not reachedGoal then
 		return false
 	end
 
@@ -4100,10 +4189,23 @@ local function getGridPathToPosition(targetPosition)
 	end
 
 	local clampedDestination = clampToRoom(targetPosition, context)
+
+	if not clampedDestination then
+		return {
+			Success = false,
+			Path = {},
+			Message = "No grid path found.",
+		}
+	end
+
 	local startCell = worldToCell(rootPart.Position, context)
 	local goalCell = worldToCell(clampedDestination, context)
 
-	if not startCell or not goalCell then
+	if not startCell
+		or not goalCell
+		or not isCellInsideRoom(startCell, context)
+		or not isCellInsideRoom(goalCell, context) then
+
 		return {
 			Success = false,
 			Path = {},
