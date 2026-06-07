@@ -26,6 +26,7 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 160
 
 local ui = {}
+ui.placementMask = {}
 
 for _, child in ipairs(gui:GetChildren()) do
 	if child ~= script then
@@ -505,7 +506,7 @@ local function getCurrentPlacementGrid()
 	return roomModel, floor, nil
 end
 
-local function isTileMaskWalkableMarkerPart(part)
+function ui.placementMask.isWalkableMarkerPart(part)
 	if typeof(part) ~= "Instance" or not part:IsA("BasePart") then
 		return false
 	end
@@ -1607,32 +1608,6 @@ local function getFloorPlacementBounds()
 	}
 end
 
-local function clampPreviewCFrameInsideRoom(model, targetCFrame)
-	local floorBounds = getFloorPlacementBounds()
-	local modelBounds = getModelXZBoundsAtCFrame(model, targetCFrame)
-
-	if not floorBounds or not modelBounds then
-		return targetCFrame
-	end
-
-	local offsetX = 0
-	local offsetZ = 0
-
-	if modelBounds.minX < floorBounds.minX then
-		offsetX = floorBounds.minX - modelBounds.minX
-	elseif modelBounds.maxX > floorBounds.maxX then
-		offsetX = floorBounds.maxX - modelBounds.maxX
-	end
-
-	if modelBounds.minZ < floorBounds.minZ then
-		offsetZ = floorBounds.minZ - modelBounds.minZ
-	elseif modelBounds.maxZ > floorBounds.maxZ then
-		offsetZ = floorBounds.maxZ - modelBounds.maxZ
-	end
-
-	return targetCFrame + Vector3.new(offsetX, 0, offsetZ)
-end
-
 local function getMouseFloorPosition()
 	local floor = getCurrentFloor()
 	local camera = workspace.CurrentCamera
@@ -1660,7 +1635,7 @@ local function getMouseFloorPosition()
 	return nil
 end
 
-local function getCatalogPlacementMaskTarget(roomModel, floor, floorPosition)
+function ui.placementMask.getTarget(roomModel, floor, floorPosition)
 	if not roomModel or not floor then
 		return nil
 	end
@@ -1673,7 +1648,7 @@ local function getCatalogPlacementMaskTarget(roomModel, floor, floorPosition)
 
 	local markerPart = nil
 
-	if isTileMaskWalkableMarkerPart(mouse.Target)
+	if ui.placementMask.isWalkableMarkerPart(mouse.Target)
 		and mouse.Target:IsDescendantOf(roomModel) then
 
 		markerPart = mouse.Target
@@ -1718,7 +1693,7 @@ local function getPreviewPlacementCFrame(model)
 		return nil
 	end
 
-	local maskTarget = getCatalogPlacementMaskTarget(roomModel, floor, floorPosition)
+	local maskTarget = ui.placementMask.getTarget(roomModel, floor, floorPosition)
 	local tileSize = GridConfig.GetTileSize(roomModel, floor)
 	local snappedWorldPosition = maskTarget and maskTarget.Position
 		or GridConfig.SnapWorldToTileCenter(floor, floorPosition, tileSize)
@@ -1744,8 +1719,99 @@ local function getPreviewPlacementCFrame(model)
 	return targetCFrame, maskTarget
 end
 
-local function getRotatedPreviewFootprint(model, gridContext)
-	local footprintWidth, footprintDepth = GridConfig.GetFurnitureFootprint(model)
+function ui.placementMask.getPositiveIntegerAttribute(instance, attributeName)
+	if not instance then
+		return nil
+	end
+
+	local value = instance:GetAttribute(attributeName)
+
+	if typeof(value) == "number"
+		and value == value
+		and value > 0
+		and value < math.huge
+		and math.floor(value) == value then
+
+		return value
+	end
+
+	return nil
+end
+
+function ui.placementMask.getExplicitFootprint(model)
+	if ui.placementMask.getPositiveIntegerAttribute(model, "FootprintWidth")
+		or ui.placementMask.getPositiveIntegerAttribute(model, "FootprintDepth") then
+
+		return GridConfig.GetFurnitureFootprint(model)
+	end
+
+	return nil, nil
+end
+
+function ui.placementMask.getDerivedFootprint(model, floor, tileSize)
+	local minX = math.huge
+	local maxX = -math.huge
+	local minZ = math.huge
+	local maxZ = -math.huge
+	local foundPart = false
+
+	for _, descendant in ipairs(getPlacementCheckParts(model)) do
+		foundPart = true
+
+		local halfSize = descendant.Size / 2
+		local localCorners = {
+			Vector3.new(-halfSize.X, 0, -halfSize.Z),
+			Vector3.new(-halfSize.X, 0, halfSize.Z),
+			Vector3.new(halfSize.X, 0, -halfSize.Z),
+			Vector3.new(halfSize.X, 0, halfSize.Z),
+		}
+
+		for _, localCorner in ipairs(localCorners) do
+			local worldCorner = descendant.CFrame:PointToWorldSpace(localCorner)
+			local floorLocalCorner = floor.CFrame:PointToObjectSpace(worldCorner)
+
+			minX = math.min(minX, floorLocalCorner.X)
+			maxX = math.max(maxX, floorLocalCorner.X)
+			minZ = math.min(minZ, floorLocalCorner.Z)
+			maxZ = math.max(maxZ, floorLocalCorner.Z)
+		end
+	end
+
+	if not foundPart then
+		return 1, 1
+	end
+
+	local resolvedTileSize = tileSize or GridConfig.TILE_SIZE
+	local widthStuds = math.max(maxX - minX, resolvedTileSize)
+	local depthStuds = math.max(maxZ - minZ, resolvedTileSize)
+	local widthTiles = math.max(1, math.ceil((widthStuds - GridConfig.GRID_VALIDATION_TOLERANCE) / resolvedTileSize))
+	local depthTiles = math.max(1, math.ceil((depthStuds - GridConfig.GRID_VALIDATION_TOLERANCE) / resolvedTileSize))
+
+	return widthTiles, depthTiles
+end
+
+function ui.placementMask.getRotatedFootprint(model, gridContext)
+	local footprintWidth, footprintDepth = ui.placementMask.getExplicitFootprint(model)
+	local source = "Attributes"
+
+	if not footprintWidth or not footprintDepth then
+		source = "PlacementBounds"
+
+		if not gridContext or not gridContext.Floor then
+			return 1, 1, 1, 1, source
+		end
+
+		footprintWidth, footprintDepth = ui.placementMask.getDerivedFootprint(
+			model,
+			gridContext.Floor,
+			gridContext.TileSize or GridConfig.TILE_SIZE
+		)
+
+		return footprintWidth, footprintDepth, footprintWidth, footprintDepth, source
+	end
+
+	local originalFootprintWidth = footprintWidth
+	local originalFootprintDepth = footprintDepth
 
 	if footprintWidth ~= footprintDepth and gridContext and gridContext.Floor then
 		local localLookVector = gridContext.Floor.CFrame:VectorToObjectSpace(model:GetPivot().LookVector)
@@ -1755,20 +1821,32 @@ local function getRotatedPreviewFootprint(model, gridContext)
 		end
 	end
 
-	return footprintWidth, footprintDepth
+	return footprintWidth, footprintDepth, originalFootprintWidth, originalFootprintDepth, source
 end
 
-local function isCatalogPlacementMaskFootprintWalkable(model, maskTarget)
+function ui.placementMask.isFootprintWalkable(model, maskTarget)
 	if not maskTarget or not maskTarget.Context then
-		return true
+		return true, nil
 	end
 
 	if maskTarget.CellWalkable ~= true then
-		return false
+		return false, {
+			FootprintWidth = 0,
+			FootprintDepth = 0,
+			OriginalFootprintWidth = 0,
+			OriginalFootprintDepth = 0,
+			FootprintSource = "TargetCell",
+			OccupiedCells = {},
+			FirstFailedCell = {
+				X = maskTarget.CellX,
+				Z = maskTarget.CellZ,
+			},
+		}
 	end
 
-	local footprintWidth, footprintDepth = getRotatedPreviewFootprint(model, maskTarget.Context)
-	local footprintWalkable = GridConfig.FootprintCellsAreWalkable(
+	local footprintWidth, footprintDepth, originalFootprintWidth, originalFootprintDepth, source =
+		ui.placementMask.getRotatedFootprint(model, maskTarget.Context)
+	local footprintWalkable, occupiedCells = GridConfig.FootprintCellsAreWalkable(
 		maskTarget.Context,
 		maskTarget.CellX,
 		maskTarget.CellZ,
@@ -1776,8 +1854,26 @@ local function isCatalogPlacementMaskFootprintWalkable(model, maskTarget)
 		footprintDepth,
 		0
 	)
+	local firstFailedCell = nil
 
-	return footprintWalkable == true
+	if footprintWalkable ~= true then
+		for _, cell in ipairs(occupiedCells) do
+			if not GridConfig.CellIsWalkable(maskTarget.Context, cell.X, cell.Z) then
+				firstFailedCell = cell
+				break
+			end
+		end
+	end
+
+	return footprintWalkable == true, {
+		FootprintWidth = footprintWidth,
+		FootprintDepth = footprintDepth,
+		OriginalFootprintWidth = originalFootprintWidth,
+		OriginalFootprintDepth = originalFootprintDepth,
+		FootprintSource = source,
+		OccupiedCells = occupiedCells,
+		FirstFailedCell = firstFailedCell,
+	}
 end
 
 local function isPreviewInsideRoom(model)
@@ -1895,7 +1991,7 @@ local function isPreviewBlockedByPlayer(model)
 	return false
 end
 
-local function setPlacementPreviewVisualState(isValid, reason)
+function ui.placementMask.setPreviewVisualState(isValid, reason)
 	local fillColor
 	local tintedParts = 0
 	local tintedHighlights = 0
@@ -1978,7 +2074,7 @@ end
 
 local function setPlacementPreviewValidity(isValid, reason)
 	placementIsValid = isValid
-	setPlacementPreviewVisualState(isValid, reason)
+	ui.placementMask.setPreviewVisualState(isValid, reason)
 end
 
 local function unbindCatalogPlacementControls()
@@ -2156,7 +2252,8 @@ local function updateCatalogPlacementPreview()
 
 	placementPreview:PivotTo(targetCFrame)
 
-	local maskFootprintWalkable = isCatalogPlacementMaskFootprintWalkable(placementPreview, maskTarget)
+	local maskFootprintWalkable, maskFootprintDebug =
+		ui.placementMask.isFootprintWalkable(placementPreview, maskTarget)
 	local invalidReason = nil
 
 	if maskTarget and maskTarget.CellWalkable == false then
@@ -2175,8 +2272,47 @@ local function updateCatalogPlacementPreview()
 	end
 
 	if DEBUG_TILE_MASK_PLACEMENT == true and maskTarget then
+		local occupiedCellText = "none"
+		local firstFailedCellText = "none"
+
+		if maskFootprintDebug then
+			local occupiedCellLabels = {}
+
+			for _, cell in ipairs(maskFootprintDebug.OccupiedCells or {}) do
+				table.insert(occupiedCellLabels, tostring(cell.X) .. "," .. tostring(cell.Z))
+			end
+
+			if #occupiedCellLabels > 0 then
+				occupiedCellText = table.concat(occupiedCellLabels, " ")
+			end
+
+			if maskFootprintDebug.FirstFailedCell then
+				firstFailedCellText = tostring(maskFootprintDebug.FirstFailedCell.X)
+					.. ","
+					.. tostring(maskFootprintDebug.FirstFailedCell.Z)
+			end
+		end
+
 		warn(
 			"[FurnitureCatalog.TileMaskPlacement]",
+			"template",
+			tostring(placingItemData and (placingItemData.TemplateName or placingItemData.Id) or placementPreview.Name),
+			"furnitureName",
+			tostring(placementPreview.Name),
+			"footprintBeforeRotation",
+			maskFootprintDebug
+				and (tostring(maskFootprintDebug.OriginalFootprintWidth)
+					.. "x"
+					.. tostring(maskFootprintDebug.OriginalFootprintDepth))
+				or "nil",
+			"footprintAfterRotation",
+			maskFootprintDebug
+				and (tostring(maskFootprintDebug.FootprintWidth)
+					.. "x"
+					.. tostring(maskFootprintDebug.FootprintDepth))
+				or "nil",
+			"footprintSource",
+			tostring(maskFootprintDebug and maskFootprintDebug.FootprintSource),
 			"hitPart",
 			maskTarget.HitPart and maskTarget.HitPart.Name or "nil",
 			"hitPosition",
@@ -2189,6 +2325,10 @@ local function updateCatalogPlacementPreview()
 			tostring(maskTarget.CellWalkable),
 			"FootprintCellsAreWalkable",
 			tostring(maskFootprintWalkable),
+			"occupiedCells",
+			occupiedCellText,
+			"firstFailedCell",
+			firstFailedCellText,
 			"finalCanPlace",
 			tostring(isValid),
 			"invalidReason",
