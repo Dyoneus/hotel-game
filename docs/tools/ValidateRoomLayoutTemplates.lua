@@ -710,6 +710,16 @@ local function validateTemplate(layout, templateModel)
 	return issues
 end
 
+local function templateUsesTileMask(templateModel)
+	if not templateModel or not templateModel:IsA("Model") then
+		return false
+	end
+
+	local walkableFloor = findWalkableFloor(templateModel)
+
+	return getBooleanAttribute(templateModel, walkableFloor, "UsesTileMask") == true
+end
+
 local roomTemplates = ReplicatedStorage:FindFirstChild("RoomTemplates")
 
 if not roomTemplates then
@@ -719,10 +729,25 @@ end
 local availableLayouts = RoomLayoutConfig.GetSelectableLayouts()
 local unavailableLayouts = RoomLayoutConfig.GetUnavailableLayouts()
 local vipLayouts = RoomLayoutConfig.GetVipLayouts()
+local configuredTemplateNames = {}
 local missingTemplates = 0
 local validatedTemplates = 0
 local templatesWithErrors = 0
 local structuralWarnings = 0
+local devMaskedTemplates = 0
+local devMaskedTemplatesWithErrors = 0
+local devMaskedWarnings = 0
+
+local function addConfiguredTemplateNames(layouts)
+	for _, layout in ipairs(layouts) do
+		if typeof(layout.TemplateName) == "string" then
+			configuredTemplateNames[layout.TemplateName] = true
+		end
+	end
+end
+
+addConfiguredTemplateNames(availableLayouts)
+addConfiguredTemplateNames(unavailableLayouts)
 
 print(TOOL_PREFIX .. " Validating " .. tostring(#availableLayouts) .. " available room layout template(s).")
 
@@ -783,8 +808,67 @@ for _, layout in ipairs(availableLayouts) do
 	end
 end
 
+if roomTemplates then
+	for _, template in ipairs(roomTemplates:GetChildren()) do
+		if template:IsA("Model")
+			and configuredTemplateNames[template.Name] ~= true
+			and templateUsesTileMask(template) then
+
+			local walkableFloor = findWalkableFloor(template)
+			local layout = {
+				LayoutId = template:GetAttribute("LayoutId") or template.Name,
+				TemplateName = template:GetAttribute("TemplateName") or template.Name,
+				TileCount = getPositiveIntegerAttribute(template, walkableFloor, "TileCount"),
+			}
+			local issues = validateTemplate(layout, template)
+
+			devMaskedTemplates += 1
+
+			if #issues.errors == 0 and #issues.warnings == 0 then
+				print(string.format(
+					"[OK] [DEV] %s template=%s",
+					tostring(layout.LayoutId),
+					tostring(layout.TemplateName)
+				))
+			else
+				if #issues.errors > 0 then
+					devMaskedTemplatesWithErrors += 1
+					warn(string.format(
+						"[ERROR] [DEV] %s template=%s has %d structural error(s).",
+						tostring(layout.LayoutId),
+						tostring(layout.TemplateName),
+						#issues.errors
+					))
+
+					for _, message in ipairs(issues.errors) do
+						warn("  - " .. message)
+					end
+				end
+
+				if #issues.warnings > 0 then
+					devMaskedWarnings += #issues.warnings
+					warn(string.format(
+						"[WARN] [DEV] %s template=%s has %d warning(s).",
+						tostring(layout.LayoutId),
+						tostring(layout.TemplateName),
+						#issues.warnings
+					))
+
+					for _, message in ipairs(issues.warnings) do
+						warn("  - " .. message)
+					end
+				end
+			end
+
+			for _, message in ipairs(issues.summaries) do
+				print("  - " .. message)
+			end
+		end
+	end
+end
+
 print(string.format(
-	"%s Summary: available layouts=%d validated templates=%d missing templates=%d templates with errors=%d structural warnings=%d VIP layouts=%d unavailable layouts=%d",
+	"%s Summary: available layouts=%d validated templates=%d missing templates=%d templates with errors=%d structural warnings=%d VIP layouts=%d unavailable layouts=%d dev masked templates=%d dev masked templates with errors=%d dev masked warnings=%d",
 	TOOL_PREFIX,
 	#availableLayouts,
 	validatedTemplates,
@@ -792,5 +876,8 @@ print(string.format(
 	templatesWithErrors,
 	structuralWarnings,
 	#vipLayouts,
-	#unavailableLayouts
+	#unavailableLayouts,
+	devMaskedTemplates,
+	devMaskedTemplatesWithErrors,
+	devMaskedWarnings
 ))
