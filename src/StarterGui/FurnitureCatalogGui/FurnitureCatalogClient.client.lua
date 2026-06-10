@@ -228,6 +228,13 @@ local placementSource = nil
 local OVERLAP_SHRINK = 0.08
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
 local DEBUG_TILE_MASK_PLACEMENT = false
+local KNOWN_FOOTPRINT_OVERRIDES = {
+	Gate_Test_OpenClose = {
+		Width = 1,
+		Depth = 1,
+		Source = "TestGateOverride",
+	},
+}
 
 local CATALOG_ROTATE_ACTION = "CatalogRotatePreview"
 local CATALOG_CANCEL_ACTION = "CatalogCancelPlacement"
@@ -1738,11 +1745,59 @@ function ui.placementMask.getPositiveIntegerAttribute(instance, attributeName)
 	return nil
 end
 
+function ui.placementMask.getTemplateKey(model)
+	if not model then
+		return nil
+	end
+
+	local catalogTemplateName = model:GetAttribute("CatalogTemplateName")
+
+	if typeof(catalogTemplateName) == "string" and catalogTemplateName ~= "" then
+		return catalogTemplateName
+	end
+
+	local templateId = model:GetAttribute("TemplateId")
+
+	if typeof(templateId) == "string" and templateId ~= "" then
+		return templateId
+	end
+
+	return model.Name
+end
+
+function ui.placementMask.getFootprintOverride(model)
+	local templateKey = ui.placementMask.getTemplateKey(model)
+
+	if typeof(templateKey) ~= "string" then
+		return nil
+	end
+
+	return KNOWN_FOOTPRINT_OVERRIDES[templateKey]
+end
+
+function ui.placementMask.applyFootprintOverride(model)
+	local footprintOverride = ui.placementMask.getFootprintOverride(model)
+
+	if not footprintOverride then
+		return
+	end
+
+	model:SetAttribute("FootprintWidth", footprintOverride.Width)
+	model:SetAttribute("FootprintDepth", footprintOverride.Depth)
+end
+
 function ui.placementMask.getExplicitFootprint(model)
+	local footprintOverride = ui.placementMask.getFootprintOverride(model)
+
+	if footprintOverride then
+		return footprintOverride.Width, footprintOverride.Depth, footprintOverride.Source
+	end
+
 	if ui.placementMask.getPositiveIntegerAttribute(model, "FootprintWidth")
 		or ui.placementMask.getPositiveIntegerAttribute(model, "FootprintDepth") then
 
-		return GridConfig.GetFurnitureFootprint(model)
+		local footprintWidth, footprintDepth = GridConfig.GetFurnitureFootprint(model)
+		return footprintWidth, footprintDepth, "Attributes"
 	end
 
 	return nil, nil
@@ -1791,8 +1846,7 @@ function ui.placementMask.getDerivedFootprint(model, floor, tileSize)
 end
 
 function ui.placementMask.getRotatedFootprint(model, gridContext)
-	local footprintWidth, footprintDepth = ui.placementMask.getExplicitFootprint(model)
-	local source = "Attributes"
+	local footprintWidth, footprintDepth, source = ui.placementMask.getExplicitFootprint(model)
 
 	if not footprintWidth or not footprintDepth then
 		source = "PlacementBounds"
@@ -2194,6 +2248,8 @@ local function createCatalogPlacementPreview(itemData)
 
 	placementPreview = template:Clone()
 	placementPreview.Name = "CatalogPlacementPreview"
+	placementPreview:SetAttribute("CatalogTemplateName", templateName)
+	ui.placementMask.applyFootprintOverride(placementPreview)
 
 	local templatePivot = placementPreview:GetPivot()
 	placementBaseRotation = templatePivot - templatePivot.Position

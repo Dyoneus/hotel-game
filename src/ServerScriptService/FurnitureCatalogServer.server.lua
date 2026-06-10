@@ -34,6 +34,13 @@ local MAX_PURCHASE_QUANTITY = 99
 local OVERLAP_SHRINK = 0.08
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
 local PLACEMENT_CONTAINMENT_EPSILON = GridConfig.GRID_VALIDATION_TOLERANCE or 0.05
+local TEST_GATE_TEMPLATE_NAME = "Gate_Test_OpenClose"
+local KNOWN_FOOTPRINT_OVERRIDES = {
+	[TEST_GATE_TEMPLATE_NAME] = {
+		Width = 1,
+		Depth = 1,
+	},
+}
 
 local catalogById = {}
 local catalogByTemplateName = {}
@@ -191,6 +198,73 @@ local function getTemplate(templateName)
 	end
 
 	return nil
+end
+
+local function getStringAttribute(instance, attributeName, defaultValue)
+	if not instance then
+		return defaultValue
+	end
+
+	local value = instance:GetAttribute(attributeName)
+
+	if typeof(value) == "string" and value ~= "" then
+		return value
+	end
+
+	return defaultValue
+end
+
+local function getBooleanAttribute(instance, attributeName, defaultValue)
+	if not instance then
+		return defaultValue
+	end
+
+	local value = instance:GetAttribute(attributeName)
+
+	if typeof(value) == "boolean" then
+		return value
+	end
+
+	return defaultValue
+end
+
+local function getInventoryOnlyTestItem(itemId)
+	if itemId ~= TEST_GATE_TEMPLATE_NAME then
+		return nil
+	end
+
+	local template = getTemplate(TEST_GATE_TEMPLATE_NAME)
+
+	if not template then
+		return nil
+	end
+
+	return {
+		Id = TEST_GATE_TEMPLATE_NAME,
+		TemplateName = TEST_GATE_TEMPLATE_NAME,
+		DisplayName = getStringAttribute(template, "DisplayName", "Test Gate"),
+		Category = getStringAttribute(template, "Category", "Gate"),
+		FootprintWidth = 1,
+		FootprintDepth = 1,
+		SupportsOpenClose = getBooleanAttribute(template, "SupportsOpenClose", true),
+		DefaultAction = getStringAttribute(template, "DefaultAction", "OpenClose"),
+		OpenCloseTargetName = getStringAttribute(template, "OpenCloseTargetName", "GatePanel"),
+	}
+end
+
+local function applyKnownFootprintOverride(model, templateName)
+	if not model or typeof(templateName) ~= "string" then
+		return
+	end
+
+	local footprintOverride = KNOWN_FOOTPRINT_OVERRIDES[templateName]
+
+	if not footprintOverride then
+		return
+	end
+
+	model:SetAttribute("FootprintWidth", footprintOverride.Width)
+	model:SetAttribute("FootprintDepth", footprintOverride.Depth)
 end
 
 local function getPublicCatalog()
@@ -452,6 +526,13 @@ local function getPositiveIntegerAttribute(instance, attributeName)
 end
 
 local function getExplicitFurnitureFootprint(model)
+	local templateId = model and model:GetAttribute("TemplateId")
+	local footprintOverride = typeof(templateId) == "string" and KNOWN_FOOTPRINT_OVERRIDES[templateId] or nil
+
+	if footprintOverride then
+		return footprintOverride.Width, footprintOverride.Depth
+	end
+
 	if getPositiveIntegerAttribute(model, "FootprintWidth")
 		or getPositiveIntegerAttribute(model, "FootprintDepth") then
 
@@ -1084,6 +1165,10 @@ local function handlePlaceItem(player, payload, options)
 
 	local item = catalogById[itemId] or catalogByTemplateName[itemId]
 
+	if not item and consumeInventory then
+		item = getInventoryOnlyTestItem(itemId)
+	end
+
 	if not item then
 		sendResult(player, resultKind, false, "Unknown catalog item.")
 		return
@@ -1134,6 +1219,7 @@ local function handlePlaceItem(player, payload, options)
 	local furnitureClone = template:Clone()
 	furnitureClone.Name = template.Name
 	furnitureClone:SetAttribute("TemplateId", item.TemplateName)
+	applyKnownFootprintOverride(furnitureClone, item.TemplateName)
 	furnitureClone:SetAttribute("PersistentId", createPersistentId(player, item.TemplateName))
 	furnitureClone:SetAttribute("Tradable", true)
 	furnitureClone:SetAttribute("Sellable", true)
