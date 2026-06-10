@@ -198,7 +198,7 @@ local function canTestVipLayouts(player)
 	return AdminConfig.IsAdmin(player.UserId)
 end
 
-local function playerHasVipLayoutAccess(player)
+local function playerHasVip(player)
 	if typeof(player) == "Instance"
 		and player:IsA("Player")
 		and player:GetAttribute("HasVip") == true then
@@ -206,7 +206,43 @@ local function playerHasVipLayoutAccess(player)
 		return true
 	end
 
-	return canTestVipLayouts(player)
+	return false
+end
+
+local function playerHasVipLayoutAccess(player)
+	return playerHasVip(player) or canTestVipLayouts(player)
+end
+
+local function canUseDevLayouts(player)
+	if RunService:IsStudio() then
+		return true
+	end
+
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return false
+	end
+
+	if player:GetAttribute("CanUseDevLayouts") == true
+		or player:GetAttribute("CanTestDevLayouts") == true
+		or player:GetAttribute("IsAdmin") == true then
+
+		return true
+	end
+
+	return AdminConfig.IsAdmin(player.UserId)
+end
+
+local function getLayoutAccessContext(player)
+	local canUseVipLayouts = playerHasVipLayoutAccess(player)
+	local canUseDevLayoutAccess = canUseDevLayouts(player)
+
+	return {
+		HasVip = playerHasVip(player),
+		CanUseVipLayouts = canUseVipLayouts,
+		CanTestVipLayouts = canTestVipLayouts(player),
+		CanUseDevLayouts = canUseDevLayoutAccess,
+		CanTestDevLayouts = canUseDevLayoutAccess,
+	}
 end
 
 local function getRoomName(player)
@@ -221,9 +257,7 @@ local function resolveOwnedRoomTemplate(layoutId, warnOnFallback, player)
 	local layout = RoomLayoutConfig.GetLayout(layoutId)
 
 	if typeof(layout) == "table" then
-		local canUseLayout, layoutMessage = RoomLayoutConfig.CanUseLayout(layoutId, {
-			HasVip = playerHasVipLayoutAccess(player),
-		})
+		local canUseLayout, layoutMessage = RoomLayoutConfig.CanUseLayout(layoutId, getLayoutAccessContext(player))
 
 		if not canUseLayout then
 			return nil, layoutMessage or ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE
@@ -3660,29 +3694,47 @@ local function handleCreateOwnedRoomRequest(player, payload)
 	end
 
 	local requestedLayout = RoomLayoutConfig.GetLayout(payload.LayoutId)
+	local requestedLayoutNeedsDevAccess = typeof(requestedLayout) == "table"
+		and (requestedLayout.IsDevOnly == true or requestedLayout.AccessTier == RoomLayoutConfig.ACCESS_DEV)
 
-	if typeof(requestedLayout) == "table" and requestedLayout.RequiresVip == true then
-		if not playerHasVipLayoutAccess(player) then
-			sendCreateOwnedRoomResult(player, false, "This layout requires VIP.")
+	if typeof(requestedLayout) == "table" then
+		local canUseLayout, layoutMessage = RoomLayoutConfig.CanUseLayout(payload.LayoutId, getLayoutAccessContext(player))
+
+		if not canUseLayout then
+			sendCreateOwnedRoomResult(player, false, layoutMessage or ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE)
 			return
 		end
 
-		local template, templateError = resolveOwnedRoomTemplate(payload.LayoutId, false, player)
+		if requestedLayout.RequiresVip == true or requestedLayoutNeedsDevAccess then
+			local template, templateError = resolveOwnedRoomTemplate(payload.LayoutId, false, player)
 
-		if not template then
-			sendCreateOwnedRoomResult(player, false, templateError or ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE)
-			return
+			if not template then
+				sendCreateOwnedRoomResult(player, false, templateError or ROOM_LAYOUT_TEMPLATE_NOT_READY_MESSAGE)
+				return
+			end
 		end
 	end
 
-	local success, message, roomRecord = RoomPersistence.CreateOwnedRoom(player, {
+	local createOptions = {
 		LayoutId = payload.LayoutId,
 		DisplayName = filteredDisplayName,
 		Category = payload.Category,
 		Description = filteredDescription,
 		IsPublic = payload.IsPublic,
 		AllowVipTesting = canTestVipLayouts(player),
-	})
+		CanUseDevLayouts = canUseDevLayouts(player),
+	}
+	local success = nil
+	local message = nil
+	local roomRecord = nil
+
+	if requestedLayoutNeedsDevAccess then
+		success, message, roomRecord = RoomLayoutConfig.WithDevLayoutAccess(function()
+			return RoomPersistence.CreateOwnedRoom(player, createOptions)
+		end)
+	else
+		success, message, roomRecord = RoomPersistence.CreateOwnedRoom(player, createOptions)
+	end
 
 	sendCreateOwnedRoomResult(player, success, message, roomRecord)
 

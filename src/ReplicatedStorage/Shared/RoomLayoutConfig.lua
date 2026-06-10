@@ -12,6 +12,7 @@ local ACCESS_VIP = RoomLayoutConfig.ACCESS_VIP
 local ACCESS_DEV = RoomLayoutConfig.ACCESS_DEV
 local STATUS_AVAILABLE = RoomLayoutConfig.STATUS_AVAILABLE
 local STATUS_UNAVAILABLE = RoomLayoutConfig.STATUS_UNAVAILABLE
+local scopedDevLayoutAccessDepth = 0
 
 -- MaxVisitors is a first-pass planning value. Exact capacity limits can be
 -- tuned per layout after room templates and performance budgets exist.
@@ -834,6 +835,41 @@ function RoomLayoutConfig.IsValidLayoutId(layoutId)
 	return typeof(layoutId) == "string" and layoutsById[layoutId] ~= nil
 end
 
+local function contextCanUseVipLayouts(context)
+	return context.HasVip == true
+		or context.CanUseVipLayouts == true
+		or context.CanTestVipLayouts == true
+end
+
+local function contextCanUseDevLayouts(context)
+	return context.CanUseDevLayouts == true
+		or context.CanTestDevLayouts == true
+		or context.CanUseDevOnly == true
+		or context.AllowDevTesting == true
+		or scopedDevLayoutAccessDepth > 0
+end
+
+local function layoutRequiresDevAccess(layout)
+	return layout.IsDevOnly == true or layout.AccessTier == ACCESS_DEV
+end
+
+function RoomLayoutConfig.WithDevLayoutAccess(callback)
+	if typeof(callback) ~= "function" then
+		return nil
+	end
+
+	scopedDevLayoutAccessDepth += 1
+
+	local ok, result1, result2, result3, result4 = pcall(callback)
+	scopedDevLayoutAccessDepth -= 1
+
+	if not ok then
+		error(result1, 2)
+	end
+
+	return result1, result2, result3, result4
+end
+
 function RoomLayoutConfig.CanUseLayout(layoutId, context)
 	local layout = layoutsById[layoutId]
 
@@ -847,11 +883,11 @@ function RoomLayoutConfig.CanUseLayout(layoutId, context)
 		return false, "This layout is currently unavailable."
 	end
 
-	if layout.IsDevOnly == true and context.CanUseDevOnly ~= true and context.HasVip ~= true then
+	if layoutRequiresDevAccess(layout) and not contextCanUseDevLayouts(context) then
 		return false, "This layout is only available for testing."
 	end
 
-	if layout.RequiresVip == true and context.HasVip ~= true then
+	if layout.RequiresVip == true and not contextCanUseVipLayouts(context) then
 		return false, "This layout requires VIP."
 	end
 

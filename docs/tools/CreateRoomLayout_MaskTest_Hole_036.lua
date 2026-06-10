@@ -481,5 +481,5 @@ print(string.format("%s EntryWalkTarget position=%s", TOOL_PREFIX, tostring(entr
 print(string.format("%s Cave width = %.0f tile (%.1f studs).", TOOL_PREFIX, DOOR_OPENING_WIDTH / TILE_SIZE, DOOR_OPENING_WIDTH))
 print(TOOL_PREFIX .. " DoorSpawn is on TileX=" .. tostring(DOOR_TILE_INDEX) .. " TileZ=1, which is walkable.")
 print(TOOL_PREFIX .. " EntryWalkTarget is on TileX=" .. tostring(DOOR_TILE_INDEX) .. " TileZ=2, which is walkable.")
-print(TOOL_PREFIX .. " This dev template is not registered in RoomLayoutConfig and should not appear in Room Planner.")
+print(TOOL_PREFIX .. " This dev template is visible only in Studio/admin/test Room Planner mode.")
 print(TOOL_PREFIX .. " Next: run docs/tools/ValidateRoomLayoutTemplates.lua.")

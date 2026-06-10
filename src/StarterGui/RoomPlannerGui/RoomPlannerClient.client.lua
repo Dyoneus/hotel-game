@@ -216,8 +216,19 @@ local function canTestVipLayouts()
 		or player:GetAttribute("CanTestVipLayouts") == true
 end
 
+local function playerHasVip()
+	return player:GetAttribute("HasVip") == true
+end
+
+local function canUseVipLayouts()
+	return playerHasVip() or canTestVipLayouts()
+end
+
 local function canTestDevLayouts()
-	return canTestVipLayouts()
+	return RunService:IsStudio()
+		or player:GetAttribute("IsAdmin") == true
+		or player:GetAttribute("CanUseDevLayouts") == true
+		or player:GetAttribute("CanTestDevLayouts") == true
 end
 
 local function enrichLayoutInfo(layoutInfo)
@@ -230,18 +241,19 @@ local function enrichLayoutInfo(layoutInfo)
 	local hasTemplate = templateExists(enriched)
 	local isVip = enriched.RequiresVip == true or enriched.AccessTier == RoomLayoutConfig.ACCESS_VIP
 	local isDev = enriched.IsDevOnly == true or enriched.AccessTier == RoomLayoutConfig.ACCESS_DEV
+	local canUseVipLayout = isVip and canUseVipLayouts()
 	local canUseVipForTesting = isVip and canTestVipLayouts()
 	local canUseDevForTesting = isDev and canTestDevLayouts()
 
 	enriched.TemplateExists = hasTemplate
 	enriched.TemplateStatusText = hasTemplate and "Ready" or "Template missing"
-	enriched.IsVipLocked = isVip and not canUseVipForTesting
+	enriched.IsVipLocked = isVip and not canUseVipLayout
 	enriched.IsVipTestMode = canUseVipForTesting and hasTemplate
 	enriched.IsDevLocked = isDev and not canUseDevForTesting
 	enriched.IsDevTestMode = canUseDevForTesting and hasTemplate
 	enriched.IsCreatable = enriched.IsSelectable == true
 		and enriched.Status == RoomLayoutConfig.STATUS_AVAILABLE
-		and (enriched.AccessTier == RoomLayoutConfig.ACCESS_FREE or canUseVipForTesting or canUseDevForTesting)
+		and (enriched.AccessTier == RoomLayoutConfig.ACCESS_FREE or canUseVipLayout or canUseDevForTesting)
 		and hasTemplate
 
 	if not hasTemplate then
@@ -1337,6 +1349,8 @@ end
 player:GetAttributeChangedSignal("CurrentRoomName"):Connect(closeForRoomChange)
 player:GetAttributeChangedSignal("CurrentRoomType"):Connect(closeForRoomChange)
 player:GetAttributeChangedSignal("CanTestVipLayouts"):Connect(refreshLayoutAccess)
+player:GetAttributeChangedSignal("CanUseDevLayouts"):Connect(refreshLayoutAccess)
+player:GetAttributeChangedSignal("CanTestDevLayouts"):Connect(refreshLayoutAccess)
 player:GetAttributeChangedSignal("HasVip"):Connect(refreshLayoutAccess)
 player:GetAttributeChangedSignal("IsAdmin"):Connect(refreshLayoutAccess)
 
