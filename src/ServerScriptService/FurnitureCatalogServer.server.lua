@@ -42,14 +42,6 @@ local KNOWN_FOOTPRINT_OVERRIDES = {
 	},
 }
 
-local catalogById = {}
-local catalogByTemplateName = {}
-
-for _, item in ipairs(FurnitureCatalogConfig.GetItemsArray()) do
-	catalogById[item.Id] = item
-	catalogByTemplateName[item.TemplateName] = item
-end
-
 local function getOrCreateRemoteEvent(name)
 	local existing = remoteEvents:FindFirstChild(name)
 
@@ -228,6 +220,207 @@ local function getBooleanAttribute(instance, attributeName, defaultValue)
 	return defaultValue
 end
 
+local function getPositiveIntegerAttributeStrict(instance, attributeName)
+	if not instance then
+		return nil
+	end
+
+	local value = instance:GetAttribute(attributeName)
+
+	if typeof(value) == "number"
+		and value == value
+		and value > 0
+		and value < math.huge
+		and math.floor(value) == value then
+
+		return value
+	end
+
+	return nil
+end
+
+local function getNonNegativeIntegerAttributeStrict(instance, attributeName, defaultValue)
+	if not instance then
+		return defaultValue
+	end
+
+	local value = instance:GetAttribute(attributeName)
+
+	if typeof(value) == "number"
+		and value == value
+		and value >= 0
+		and value < math.huge
+		and math.floor(value) == value then
+
+		return value
+	end
+
+	return defaultValue
+end
+
+local function autoCatalogKeyMatches(template, key)
+	if typeof(key) ~= "string" or key == "" then
+		return false
+	end
+
+	if template.Name == key then
+		return true
+	end
+
+	local id = getStringAttribute(template, "Id", nil)
+	local templateName = getStringAttribute(template, "TemplateName", nil)
+	local templateId = getStringAttribute(template, "TemplateId", nil)
+
+	return id == key
+		or templateName == key
+		or templateId == key
+end
+
+local function findAutoCatalogTemplateByKey(key)
+	if typeof(key) ~= "string" or key == "" then
+		return nil
+	end
+
+	for _, child in ipairs(furnitureTemplates:GetChildren()) do
+		if child:IsA("Model")
+			and child:GetAttribute("AutoCatalogEnabled") == true
+			and autoCatalogKeyMatches(child, key) then
+
+			return child
+		end
+	end
+
+	return nil
+end
+
+local function resolveTemplateModel(templateName)
+	local template = getTemplate(templateName)
+
+	if template then
+		return template
+	end
+
+	return findAutoCatalogTemplateByKey(templateName)
+end
+
+local function getCatalogTemplateName(item)
+	if typeof(item) ~= "table" then
+		return nil
+	end
+
+	if typeof(item.TemplateName) == "string" and item.TemplateName ~= "" then
+		return item.TemplateName
+	end
+
+	if typeof(item.TemplateId) == "string" and item.TemplateId ~= "" then
+		return item.TemplateId
+	end
+
+	if typeof(item.Id) == "string" and item.Id ~= "" then
+		return item.Id
+	end
+
+	return nil
+end
+
+local function buildAutoCatalogItemFromTemplate(template)
+	if not template
+		or not template:IsA("Model")
+		or template:GetAttribute("AutoCatalogEnabled") ~= true then
+
+		return nil, "Unknown catalog item."
+	end
+
+	local price = getPositiveIntegerAttributeStrict(template, "Price")
+
+	if not price then
+		return nil, "Catalog item is missing a valid price."
+	end
+
+	local currencyKey = getStringAttribute(template, "CurrencyKey", nil)
+	local purchaseCurrency = getStringAttribute(template, "PurchaseCurrency", nil)
+	local resolvedCurrency = purchaseCurrency or currencyKey
+
+	if not resolvedCurrency then
+		return nil, "Catalog item is missing a purchase currency."
+	end
+
+	local itemId = getStringAttribute(template, "Id", template.Name)
+	local templateName =
+		getStringAttribute(template, "TemplateName", getStringAttribute(template, "TemplateId", template.Name))
+	local sellPrice = getNonNegativeIntegerAttributeStrict(template, "SellPrice", 0)
+
+	return {
+		Id = itemId,
+		TemplateName = templateName,
+		DisplayName = getStringAttribute(template, "DisplayName", template.Name),
+		Description = getStringAttribute(template, "Description", ""),
+		MaxPerRoom = nil,
+		Category = getStringAttribute(template, "Category", "Other"),
+		FootprintWidth = getPositiveIntegerAttributeStrict(template, "FootprintWidth"),
+		FootprintDepth = getPositiveIntegerAttributeStrict(template, "FootprintDepth"),
+		Price = price,
+		SellPrice = sellPrice,
+		CurrencyKey = currencyKey or resolvedCurrency,
+		PurchaseCurrency = resolvedCurrency,
+		TradableOnPurchase = getBooleanAttribute(template, "TradableOnPurchase", false),
+		Sellable = getBooleanAttribute(template, "SellableOnPurchase", true),
+		PermissionActions = {},
+		SupportsOpenClose = getBooleanAttribute(template, "SupportsOpenClose", false),
+		DefaultAction = getStringAttribute(template, "DefaultAction", nil),
+		OpenCloseTargetName = getStringAttribute(template, "OpenCloseTargetName", nil),
+		Featured = getBooleanAttribute(template, "Featured", false),
+		IsLimited = false,
+	}, nil
+end
+
+local function resolveCatalogItemById(itemId)
+	if typeof(itemId) ~= "string" or itemId == "" then
+		return nil, "Invalid item.", nil
+	end
+
+	local item = FurnitureCatalogConfig.GetItem(itemId)
+
+	if item then
+		local templateName = getCatalogTemplateName(item)
+		local template = resolveTemplateModel(templateName)
+
+		if not template then
+			return nil, "Missing furniture template: " .. tostring(templateName), nil
+		end
+
+		if template:GetAttribute("AutoCatalogEnabled") == true then
+			local autoItem, autoMessage = buildAutoCatalogItemFromTemplate(template)
+
+			if not autoItem then
+				return nil, autoMessage, template
+			end
+
+			return autoItem, nil, template
+		end
+
+		return item, nil, template
+	end
+
+	local autoTemplate = findAutoCatalogTemplateByKey(itemId)
+
+	if autoTemplate then
+		local autoItem, autoMessage = buildAutoCatalogItemFromTemplate(autoTemplate)
+
+		if not autoItem then
+			return nil, autoMessage, autoTemplate
+		end
+
+		return autoItem, nil, autoTemplate
+	end
+
+	return nil, "Unknown catalog item.", nil
+end
+
+local function resolveCatalogItemByTemplateName(templateName)
+	return resolveCatalogItemById(templateName)
+end
+
 local function getInventoryOnlyTestItem(itemId)
 	if itemId ~= TEST_GATE_TEMPLATE_NAME then
 		return nil
@@ -271,7 +464,10 @@ local function getPublicCatalog()
 	local publicItems = {}
 
 	for _, item in ipairs(FurnitureCatalogConfig.GetPublicCatalog()) do
-		if getTemplate(item.TemplateName) then
+		local itemId = item.Id or item.TemplateName
+		local resolvedItem = itemId and resolveCatalogItemById(itemId)
+
+		if resolvedItem then
 			table.insert(publicItems, item)
 		end
 	end
@@ -948,16 +1144,17 @@ local function handleAddToInventory(player, payload)
 		return
 	end
 
-	local item = FurnitureCatalogConfig.GetItem(itemId)
+	local item, itemMessage = resolveCatalogItemById(itemId)
 
 	if not item then
-		sendAddToInventoryResult(player, false, "Unknown catalog item.")
+		sendAddToInventoryResult(player, false, itemMessage or "Unknown catalog item.")
 		return
 	end
 
-	local templateId = item.TemplateName or item.Id
+	local templateId = getCatalogTemplateName(item)
+	local template = resolveTemplateModel(templateId)
 
-	if not getTemplate(templateId) then
+	if not template then
 		sendAddToInventoryResult(
 			player,
 			false,
@@ -1163,14 +1360,15 @@ local function handlePlaceItem(player, payload, options)
 		return
 	end
 
-	local item = catalogById[itemId] or catalogByTemplateName[itemId]
+	local item, itemMessage = resolveCatalogItemByTemplateName(itemId)
 
 	if not item and consumeInventory then
 		item = getInventoryOnlyTestItem(itemId)
+		itemMessage = nil
 	end
 
 	if not item then
-		sendResult(player, resultKind, false, "Unknown catalog item.")
+		sendResult(player, resultKind, false, itemMessage or "Unknown catalog item.")
 		return
 	end
 
@@ -1188,8 +1386,10 @@ local function handlePlaceItem(player, payload, options)
 		return
 	end
 
+	local templateName = getCatalogTemplateName(item)
+
 	if item.MaxPerRoom then
-		local currentCount = countCatalogItemInRoom(furnitureFolder, item.TemplateName)
+		local currentCount = countCatalogItemInRoom(furnitureFolder, templateName)
 
 		if currentCount >= item.MaxPerRoom then
 			sendResult(
@@ -1202,10 +1402,10 @@ local function handlePlaceItem(player, payload, options)
 		end
 	end
 
-	local template = getTemplate(item.TemplateName)
+	local template = resolveTemplateModel(templateName)
 
 	if not template then
-		sendResult(player, resultKind, false, "Missing furniture template: " .. item.TemplateName)
+		sendResult(player, resultKind, false, "Missing furniture template: " .. tostring(templateName))
 		return
 	end
 
@@ -1218,9 +1418,9 @@ local function handlePlaceItem(player, payload, options)
 
 	local furnitureClone = template:Clone()
 	furnitureClone.Name = template.Name
-	furnitureClone:SetAttribute("TemplateId", item.TemplateName)
-	applyKnownFootprintOverride(furnitureClone, item.TemplateName)
-	furnitureClone:SetAttribute("PersistentId", createPersistentId(player, item.TemplateName))
+	furnitureClone:SetAttribute("TemplateId", templateName)
+	applyKnownFootprintOverride(furnitureClone, templateName)
+	furnitureClone:SetAttribute("PersistentId", createPersistentId(player, templateName))
 	furnitureClone:SetAttribute("Tradable", true)
 	furnitureClone:SetAttribute("Sellable", true)
 
@@ -1271,7 +1471,7 @@ local function handlePlaceItem(player, payload, options)
 	local placementInventoryDetails = nil
 
 	if consumeInventory then
-		local templateId = item.TemplateName or item.Id
+		local templateId = templateName
 		local removed, _, newCount, inventoryDetails =
 			RoomPersistence.RemoveInventoryItem(player, templateId, 1)
 
@@ -1318,10 +1518,10 @@ local function handlePlaceItem(player, payload, options)
 		saved = RoomPersistence.SavePlayer(player)
 
 		if not saved then
-			warn("Furniture placement save flush failed for", player.Name, item.TemplateName)
+			warn("Furniture placement save flush failed for", player.Name, templateName)
 		end
 	else
-		warn("Furniture placement room capture failed for", player.Name, item.TemplateName)
+		warn("Furniture placement room capture failed for", player.Name, templateName)
 	end
 
 	local saveMessageSuffix = ""
@@ -1338,7 +1538,7 @@ local function handlePlaceItem(player, payload, options)
 			item.DisplayName .. " placed from inventory." .. saveMessageSuffix,
 			{
 				ItemId = item.Id,
-				TemplateId = item.TemplateName,
+				TemplateId = templateName,
 				Source = "Inventory",
 				RemainingCount = remainingCount,
 				InventoryDetails = placementInventoryDetails,
