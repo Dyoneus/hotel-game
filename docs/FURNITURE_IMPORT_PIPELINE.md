@@ -286,6 +286,13 @@ After importing into Studio:
 - Disable `CanCollide` on visuals unless the furniture should block movement.
 - Recheck pivot and floor alignment after scaling.
 
+Meshy imports may arrive with the wrong pivot or scale. Run
+`docs/tools/PrepareImportedFurnitureTemplate.lua` after manual scaling, or enable
+`AUTO_SCALE_TO_TARGET_SIZE` in that helper for a selected model. For chunky
+plush armchairs, prefer a `2x2` footprint and a target visual height around
+`5.0` to `5.5` studs. `PlacementBounds` should align to the visual bottom of the
+model, not to an imported pivot that may be floating away from the mesh.
+
 ## 13. Release Checklist
 
 Before merging or shipping an imported furniture item:

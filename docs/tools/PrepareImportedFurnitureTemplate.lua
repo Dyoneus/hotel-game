@@ -8,9 +8,19 @@ local Selection = game:GetService("Selection")
 local TOOL_PREFIX = "[PrepareImportedFurnitureTemplate]"
 local FURNITURE_TEMPLATES_FOLDER_NAME = "FurnitureTemplates"
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
-local TILE_SIZE = 4
-local FOOTPRINT_MARGIN = 0.4
+
+local AUTO_SCALE_TO_TARGET_SIZE = false
+local TARGET_VISUAL_WIDTH = 5.0
+local TARGET_VISUAL_HEIGHT = 5.2
+local TARGET_VISUAL_DEPTH = 4.2
+local TARGET_FOOTPRINT_WIDTH = 2
+local TARGET_FOOTPRINT_DEPTH = 2
+local FORCE_TARGET_FOOTPRINT = false
+
+local ALIGN_PLACEMENT_BOUNDS_TO_VISUAL_BOTTOM = true
 local PLACEMENT_BOUNDS_HEIGHT = 4
+local TILE_SIZE = 4
+local PLACEMENT_BOUNDS_MARGIN = 0.4
 
 local MOVE_TO_TEMPLATE_FOLDER = false
 local AUTO_CATALOG_ENABLED = false
@@ -18,8 +28,6 @@ local DEFAULT_CATEGORY = "Other"
 local DEFAULT_CURRENCY_KEY = "Dollars"
 local DEFAULT_PRICE = 1
 local DEFAULT_SELL_PRICE = 0
-local DEFAULT_FOOTPRINT_WIDTH = 1
-local DEFAULT_FOOTPRINT_DEPTH = 1
 local SET_VISUAL_COLLISION = true
 local CREATE_PLACEMENT_BOUNDS = true
 local SET_PRIMARY_PART_TO_PLACEMENT_BOUNDS = true
@@ -27,12 +35,53 @@ local SET_PRIMARY_PART_TO_PLACEMENT_BOUNDS = true
 local RENAME_UNSAFE_MODEL = false
 local REMOVE_EMBEDDED_SCRIPTS = false
 
+local VISUAL_BOUNDS_HELPER_PART_NAMES = {
+	CollisionBuffer = true,
+	ClickHitbox = true,
+	SitPoint = true,
+	SleepPoint = true,
+	PlayPoint = true,
+	EnterPoint = true,
+	TalkPoint = true,
+	RoomAnchor = true,
+	DoorSpawn = true,
+}
+
 local function formatValue(value)
 	if typeof(value) == "string" then
 		return string.format("%q", value)
 	end
 
 	return tostring(value)
+end
+
+local function formatNumber(value)
+	if typeof(value) ~= "number" then
+		return "n/a"
+	end
+
+	return string.format("%.2f", value)
+end
+
+local function formatVector(vector)
+	if typeof(vector) ~= "Vector3" then
+		return "n/a"
+	end
+
+	return string.format("%.2f x %.2f x %.2f", vector.X, vector.Y, vector.Z)
+end
+
+local function formatBounds(bounds)
+	if not bounds then
+		return "unavailable"
+	end
+
+	return "center="
+		.. formatVector(bounds.Center)
+		.. "; size="
+		.. formatVector(bounds.Size)
+		.. "; bottomY="
+		.. formatNumber(bounds.Min.Y)
 end
 
 local function printInfo(message)
@@ -49,6 +98,16 @@ local function stopWithInstructions(message)
 	end
 
 	printInfo("Select exactly one furniture Model under ReplicatedStorage.FurnitureTemplates, then run this script again.")
+end
+
+local function hasTrueAttribute(instance, attributeNames)
+	for _, attributeName in ipairs(attributeNames) do
+		if instance:GetAttribute(attributeName) == true then
+			return true
+		end
+	end
+
+	return false
 end
 
 local function isSafeNameCharacter(byte)
@@ -225,8 +284,6 @@ local function ensureAttributes(model)
 		{ Name = "SellPrice", Value = DEFAULT_SELL_PRICE },
 		{ Name = "TradableOnPurchase", Value = false },
 		{ Name = "SellableOnPurchase", Value = true },
-		{ Name = "FootprintWidth", Value = DEFAULT_FOOTPRINT_WIDTH },
-		{ Name = "FootprintDepth", Value = DEFAULT_FOOTPRINT_DEPTH },
 	}
 
 	for _, attribute in ipairs(attributes) do
@@ -241,6 +298,27 @@ local function ensureAttributes(model)
 	end
 
 	return added, kept
+end
+
+local function ensureFootprintAttributes(model, added, kept)
+	local footprintAttributes = {
+		{ Name = "FootprintWidth", Value = TARGET_FOOTPRINT_WIDTH },
+		{ Name = "FootprintDepth", Value = TARGET_FOOTPRINT_DEPTH },
+	}
+
+	for _, attribute in ipairs(footprintAttributes) do
+		local currentValue = model:GetAttribute(attribute.Name)
+
+		if FORCE_TARGET_FOOTPRINT then
+			model:SetAttribute(attribute.Name, attribute.Value)
+			table.insert(added, attribute.Name .. "=" .. formatValue(attribute.Value) .. " (forced)")
+		elseif currentValue == nil then
+			model:SetAttribute(attribute.Name, attribute.Value)
+			table.insert(added, attribute.Name .. "=" .. formatValue(attribute.Value))
+		else
+			table.insert(kept, attribute.Name .. "=" .. formatValue(currentValue))
+		end
+	end
 end
 
 local function getPositiveIntegerAttribute(model, attributeName, fallbackValue)
@@ -291,10 +369,148 @@ local function findPlacementBounds(model)
 	return boundsParts[1]
 end
 
-local function ensurePlacementBounds(model)
+local function isVisualBoundsHelperPart(part)
+	return VISUAL_BOUNDS_HELPER_PART_NAMES[part.Name] == true
+end
+
+local function getPartWorldCorners(part)
+	local halfSize = part.Size / 2
+	local localCorners = {
+		Vector3.new(-halfSize.X, -halfSize.Y, -halfSize.Z),
+		Vector3.new(-halfSize.X, -halfSize.Y, halfSize.Z),
+		Vector3.new(-halfSize.X, halfSize.Y, -halfSize.Z),
+		Vector3.new(-halfSize.X, halfSize.Y, halfSize.Z),
+		Vector3.new(halfSize.X, -halfSize.Y, -halfSize.Z),
+		Vector3.new(halfSize.X, -halfSize.Y, halfSize.Z),
+		Vector3.new(halfSize.X, halfSize.Y, -halfSize.Z),
+		Vector3.new(halfSize.X, halfSize.Y, halfSize.Z),
+	}
+	local worldCorners = {}
+
+	for _, localCorner in ipairs(localCorners) do
+		table.insert(worldCorners, part.CFrame:PointToWorldSpace(localCorner))
+	end
+
+	return worldCorners
+end
+
+local function getVisualBoundsParts(model)
+	local visibleParts = {}
+	local fallbackParts = {}
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and descendant.Name ~= PLACEMENT_BOUNDS_PART_NAME
+			and descendant:GetAttribute("IgnoreForPlacementBounds") ~= true then
+
+			local isSeat = descendant:IsA("Seat") or descendant:IsA("VehicleSeat")
+			local isHelper = isVisualBoundsHelperPart(descendant)
+
+			if (descendant.Transparency < 1 or isSeat) and not isHelper then
+				table.insert(visibleParts, descendant)
+			elseif not isHelper then
+				table.insert(fallbackParts, descendant)
+			end
+		end
+	end
+
+	if #visibleParts > 0 then
+		return visibleParts, "visible"
+	end
+
+	return fallbackParts, "transparent-fallback"
+end
+
+local function calculateVisualBounds(model)
+	local visualParts, source = getVisualBoundsParts(model)
+
+	if #visualParts <= 0 then
+		printWarning("No visual BaseParts found for bounds calculation.")
+		return nil
+	end
+
+	local minX = math.huge
+	local minY = math.huge
+	local minZ = math.huge
+	local maxX = -math.huge
+	local maxY = -math.huge
+	local maxZ = -math.huge
+
+	for _, part in ipairs(visualParts) do
+		for _, corner in ipairs(getPartWorldCorners(part)) do
+			minX = math.min(minX, corner.X)
+			minY = math.min(minY, corner.Y)
+			minZ = math.min(minZ, corner.Z)
+			maxX = math.max(maxX, corner.X)
+			maxY = math.max(maxY, corner.Y)
+			maxZ = math.max(maxZ, corner.Z)
+		end
+	end
+
+	return {
+		Min = Vector3.new(minX, minY, minZ),
+		Max = Vector3.new(maxX, maxY, maxZ),
+		Center = Vector3.new(
+			(minX + maxX) / 2,
+			(minY + maxY) / 2,
+			(minZ + maxZ) / 2
+		),
+		Size = Vector3.new(maxX - minX, maxY - minY, maxZ - minZ),
+		PartCount = #visualParts,
+		Source = source,
+	}
+end
+
+local function getScaleFactorToTargetSize(bounds)
+	if not bounds then
+		return nil
+	end
+
+	local size = bounds.Size
+
+	if size.X <= 0 or size.Y <= 0 or size.Z <= 0 then
+		return nil
+	end
+
+	return math.min(
+		TARGET_VISUAL_WIDTH / size.X,
+		TARGET_VISUAL_HEIGHT / size.Y,
+		TARGET_VISUAL_DEPTH / size.Z
+	)
+end
+
+local function scaleModelToTargetSize(model, boundsBeforeScaling)
+	if not AUTO_SCALE_TO_TARGET_SIZE then
+		return boundsBeforeScaling, nil
+	end
+
+	local scaleFactor = getScaleFactorToTargetSize(boundsBeforeScaling)
+
+	if not scaleFactor or scaleFactor <= 0 or scaleFactor >= math.huge then
+		printWarning("AUTO_SCALE_TO_TARGET_SIZE is true, but visual bounds could not produce a valid scale factor.")
+		return boundsBeforeScaling, nil
+	end
+
+	local oldScale = model:GetScale()
+	local targetScale = oldScale * scaleFactor
+	model:ScaleTo(targetScale)
+
+	local boundsAfterScaling = calculateVisualBounds(model)
+
+	return boundsAfterScaling, {
+		OldSize = boundsBeforeScaling and boundsBeforeScaling.Size or nil,
+		TargetSize = Vector3.new(TARGET_VISUAL_WIDTH, TARGET_VISUAL_HEIGHT, TARGET_VISUAL_DEPTH),
+		ScaleFactor = scaleFactor,
+		OldScale = oldScale,
+		NewScale = targetScale,
+		NewSize = boundsAfterScaling and boundsAfterScaling.Size or nil,
+	}
+end
+
+local function ensurePlacementBounds(model, visualBounds)
 	if not CREATE_PLACEMENT_BOUNDS then
 		printInfo("CREATE_PLACEMENT_BOUNDS = false; PlacementBounds was not created or updated.")
-		return nil, "skipped"
+		return nil, "skipped", nil, nil, nil, visualBounds and visualBounds.Min.Y or nil
 	end
 
 	local bounds = findPlacementBounds(model)
@@ -307,16 +523,30 @@ local function ensurePlacementBounds(model)
 		status = "created"
 	end
 
-	local footprintWidth = getPositiveIntegerAttribute(model, "FootprintWidth", DEFAULT_FOOTPRINT_WIDTH)
-	local footprintDepth = getPositiveIntegerAttribute(model, "FootprintDepth", DEFAULT_FOOTPRINT_DEPTH)
+	local footprintWidth = getPositiveIntegerAttribute(model, "FootprintWidth", TARGET_FOOTPRINT_WIDTH)
+	local footprintDepth = getPositiveIntegerAttribute(model, "FootprintDepth", TARGET_FOOTPRINT_DEPTH)
 	local size = Vector3.new(
-		footprintWidth * TILE_SIZE - FOOTPRINT_MARGIN,
+		footprintWidth * TILE_SIZE - PLACEMENT_BOUNDS_MARGIN,
 		PLACEMENT_BOUNDS_HEIGHT,
-		footprintDepth * TILE_SIZE - FOOTPRINT_MARGIN
+		footprintDepth * TILE_SIZE - PLACEMENT_BOUNDS_MARGIN
 	)
 
 	bounds.Size = size
-	bounds.CFrame = model:GetPivot() * CFrame.new(0, PLACEMENT_BOUNDS_HEIGHT / 2, 0)
+
+	if ALIGN_PLACEMENT_BOUNDS_TO_VISUAL_BOTTOM and visualBounds then
+		bounds.CFrame = CFrame.new(
+			visualBounds.Center.X,
+			visualBounds.Min.Y + PLACEMENT_BOUNDS_HEIGHT / 2,
+			visualBounds.Center.Z
+		)
+	else
+		if ALIGN_PLACEMENT_BOUNDS_TO_VISUAL_BOTTOM then
+			printWarning("Visual bounds unavailable; PlacementBounds is falling back to the model pivot.")
+		end
+
+		bounds.CFrame = model:GetPivot() * CFrame.new(0, PLACEMENT_BOUNDS_HEIGHT / 2, 0)
+	end
+
 	bounds.Transparency = 1
 	bounds.Anchored = true
 	bounds.CanCollide = false
@@ -326,17 +556,12 @@ local function ensurePlacementBounds(model)
 	bounds.TopSurface = Enum.SurfaceType.Smooth
 	bounds.BottomSurface = Enum.SurfaceType.Smooth
 
-	return bounds, status
-end
-
-local function hasTrueAttribute(instance, attributeNames)
-	for _, attributeName in ipairs(attributeNames) do
-		if instance:GetAttribute(attributeName) == true then
-			return true
-		end
-	end
-
-	return false
+	return bounds,
+		status,
+		footprintWidth,
+		footprintDepth,
+		bounds.Position.Y - bounds.Size.Y / 2,
+		visualBounds and visualBounds.Min.Y or nil
 end
 
 local function setPropertyIfDifferent(instance, propertyName, value)
@@ -449,8 +674,18 @@ end
 
 validateOrRenameModel(model)
 
+local visualBoundsBeforeScaling = calculateVisualBounds(model)
+local visualBoundsAfterScaling, scaleResult = scaleModelToTargetSize(model, visualBoundsBeforeScaling)
+
 local addedAttributes, keptAttributes = ensureAttributes(model)
-local placementBounds, placementBoundsStatus = ensurePlacementBounds(model)
+ensureFootprintAttributes(model, addedAttributes, keptAttributes)
+
+local placementBounds,
+	placementBoundsStatus,
+	footprintWidth,
+	footprintDepth,
+	placementBoundsBottomY,
+	visualBottomY = ensurePlacementBounds(model, visualBoundsAfterScaling)
 local primaryPartResult = "unchanged"
 
 if SET_PRIMARY_PART_TO_PLACEMENT_BOUNDS then
@@ -466,8 +701,34 @@ local adjustedVisualParts, visualPartCount, seatCount = prepareVisualParts(model
 local scriptsDetected, scriptsRemoved = detectEmbeddedScripts(model)
 
 printInfo("Prepared model: " .. model.Name)
+printInfo("Visual bounds before scaling: " .. formatBounds(visualBoundsBeforeScaling))
+
+if scaleResult then
+	printInfo(
+		"Scale target size: "
+			.. formatVector(scaleResult.TargetSize)
+			.. "; factor="
+			.. formatNumber(scaleResult.ScaleFactor)
+			.. "; scale "
+			.. formatNumber(scaleResult.OldScale)
+			.. " -> "
+			.. formatNumber(scaleResult.NewScale)
+	)
+	printInfo("Visual bounds after scaling: " .. formatBounds(visualBoundsAfterScaling))
+elseif AUTO_SCALE_TO_TARGET_SIZE then
+	printInfo("Visual bounds after scaling: unavailable; scaling was skipped.")
+else
+	printInfo("Auto scale: disabled.")
+end
+
 printInfo("Attributes added: " .. formatList(addedAttributes))
 printInfo("Attributes kept: " .. formatList(keptAttributes))
+printInfo(
+	"Footprint: "
+		.. tostring(footprintWidth or "n/a")
+		.. " x "
+		.. tostring(footprintDepth or "n/a")
+)
 
 if placementBounds then
 	printInfo(
@@ -475,6 +736,12 @@ if placementBounds then
 			.. placementBoundsStatus
 			.. "; Size = "
 			.. tostring(placementBounds.Size)
+	)
+	printInfo(
+		"PlacementBounds bottomY="
+			.. formatNumber(placementBoundsBottomY)
+			.. "; visual bottomY="
+			.. formatNumber(visualBottomY)
 	)
 else
 	printInfo("PlacementBounds " .. placementBoundsStatus .. ".")
