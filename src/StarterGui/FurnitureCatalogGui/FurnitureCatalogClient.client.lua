@@ -27,6 +27,14 @@ gui.DisplayOrder = 160
 
 local ui = {}
 ui.placementMask = {}
+ui.placementPreviewVisual = {}
+ui.placementStartup = {
+	StartId = 0,
+	RoomName = nil,
+	RoomModel = nil,
+	Floor = nil,
+	GridContext = nil,
+}
 
 for _, child in ipairs(gui:GetChildren()) do
 	if child ~= script then
@@ -227,7 +235,10 @@ local placementSource = nil
 
 local OVERLAP_SHRINK = 0.08
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
+local PREVIEW_PLACEMENT_BOUNDS_PART_NAME = "PreviewPlacementBounds"
 local DEBUG_TILE_MASK_PLACEMENT = false
+local DEBUG_PLACEMENT_ROOM_READY = false
+local DEBUG_PLACEMENT_PREVIEW_VISUAL = false
 local KNOWN_FOOTPRINT_OVERRIDES = {
 	Gate_Test_OpenClose = {
 		Width = 1,
@@ -484,15 +495,20 @@ end
 
 local function getCurrentFloor()
 	local roomFolder = getCurrentRoomFolder()
+	local roomModel = getCurrentRoomModel()
 
-	if not roomFolder then
-		return nil
-	end
-
-	local floor = roomFolder:FindFirstChild("WalkableFloor")
+	local floor = roomFolder and roomFolder:FindFirstChild("WalkableFloor")
 
 	if floor and floor:IsA("BasePart") then
 		return floor
+	end
+
+	if roomModel then
+		floor = roomModel:FindFirstChild("WalkableFloor", true)
+
+		if floor and floor:IsA("BasePart") then
+			return floor
+		end
 	end
 
 	return nil
@@ -1229,6 +1245,122 @@ local function setStatus(text)
 	ui.StatusLabel.Text = tostring(text or "")
 end
 
+function ui.placementStartup.debug(...)
+	if DEBUG_PLACEMENT_ROOM_READY == true then
+		warn("[FurnitureCatalog.PlacementRoomReady]", ...)
+	end
+end
+
+function ui.placementStartup.getContext()
+	local roomName = player:GetAttribute("CurrentRoomName")
+
+	if typeof(roomName) ~= "string" or roomName == "" then
+		return nil, "CurrentRoomName is missing"
+	end
+
+	local playerRoomType = player:GetAttribute("CurrentRoomType")
+
+	if typeof(playerRoomType) == "string"
+		and playerRoomType ~= ""
+		and playerRoomType ~= "PlayerRoom" then
+
+		return nil, "CurrentRoomType is " .. playerRoomType
+	end
+
+	if not activeRooms or not activeRooms.Parent then
+		return nil, "workspace.ActiveRooms is missing"
+	end
+
+	local roomModel = activeRooms:FindFirstChild(roomName)
+
+	if not roomModel or not roomModel:IsA("Model") then
+		return nil, "Active room model is missing"
+	end
+
+	local roomType = roomModel:GetAttribute("RoomType")
+
+	if typeof(roomType) == "string"
+		and roomType ~= ""
+		and roomType ~= "PlayerRoom" then
+
+		return nil, "Active room type is " .. roomType
+	end
+
+	local floor = getCurrentFloor()
+
+	if not floor or not floor:IsA("BasePart") then
+		return nil, "WalkableFloor is missing"
+	end
+
+	local success, gridContext = pcall(GridConfig.GetGridContext, roomModel)
+
+	if not success or not gridContext then
+		return nil, "Grid context is not ready"
+	end
+
+	ui.placementStartup.debug(
+		"ready",
+		"CurrentRoomName",
+		roomName,
+		"room",
+		roomModel.Name,
+		"floor",
+		floor.Name,
+		"UsesTileMask",
+		tostring(gridContext.UsesTileMask)
+	)
+
+	return {
+		RoomName = roomName,
+		RoomModel = roomModel,
+		Floor = floor,
+		GridContext = gridContext,
+	}, nil
+end
+
+function ui.placementStartup.waitForPlacementRoomContext(timeoutSeconds, startId)
+	local timeoutAt = os.clock() + (timeoutSeconds or 2.5)
+	local lastReason = nil
+
+	while os.clock() <= timeoutAt do
+		if ui.placementStartup.StartId ~= startId then
+			ui.placementStartup.debug("stale token ignored", startId, ui.placementStartup.StartId)
+			return nil, "stale"
+		end
+
+		local context, reason = ui.placementStartup.getContext()
+
+		if context then
+			ui.placementStartup.RoomName = context.RoomName
+			ui.placementStartup.RoomModel = context.RoomModel
+			ui.placementStartup.Floor = context.Floor
+			ui.placementStartup.GridContext = context.GridContext
+			return context, nil
+		end
+
+		lastReason = reason
+		ui.placementStartup.debug(
+			"waiting",
+			"CurrentRoomName",
+			tostring(player:GetAttribute("CurrentRoomName")),
+			tostring(reason)
+		)
+		task.wait(0.05)
+	end
+
+	ui.placementStartup.debug("timeout", tostring(lastReason))
+	return nil, lastReason or "timeout"
+end
+
+function ui.placementStartup.cancelPending(reason)
+	ui.placementStartup.StartId += 1
+	ui.placementStartup.RoomName = nil
+	ui.placementStartup.RoomModel = nil
+	ui.placementStartup.Floor = nil
+	ui.placementStartup.GridContext = nil
+	ui.placementStartup.debug("cancel", tostring(reason), ui.placementStartup.StartId)
+end
+
 local function normalizeCatalogCurrencyBalance(value)
 	if typeof(value) ~= "number"
 		or value ~= value
@@ -1421,6 +1553,7 @@ end
 
 local helperPartNames = {
 	CollisionBuffer = true,
+	[PREVIEW_PLACEMENT_BOUNDS_PART_NAME] = true,
 	SitPoint = true,
 	SleepPoint = true,
 	PlayPoint = true,
@@ -1594,6 +1727,182 @@ local function getModelXZBoundsAtCFrame(model, targetCFrame)
 		minZ = minZ,
 		maxZ = maxZ,
 	}
+end
+
+function ui.placementPreviewVisual.debug(...)
+	if DEBUG_PLACEMENT_PREVIEW_VISUAL == true then
+		warn("[FurnitureCatalog.PlacementPreviewVisual]", ...)
+	end
+end
+
+function ui.placementPreviewVisual.getPlacementBounds(model)
+	local placementBoundsParts = getPlacementBoundsParts(model)
+
+	if #placementBoundsParts > 0 then
+		return placementBoundsParts[1], "PlacementBounds"
+	end
+
+	return nil, nil
+end
+
+function ui.placementPreviewVisual.getCurrentWorldBounds(model)
+	local minX = math.huge
+	local minY = math.huge
+	local minZ = math.huge
+	local maxX = -math.huge
+	local maxY = -math.huge
+	local maxZ = -math.huge
+	local foundPart = false
+
+	for _, part in ipairs(getPlacementCheckParts(model)) do
+		foundPart = true
+
+		for _, corner in ipairs(getPartWorldCornersFromCFrame(part.CFrame, part.Size)) do
+			minX = math.min(minX, corner.X)
+			minY = math.min(minY, corner.Y)
+			minZ = math.min(minZ, corner.Z)
+			maxX = math.max(maxX, corner.X)
+			maxY = math.max(maxY, corner.Y)
+			maxZ = math.max(maxZ, corner.Z)
+		end
+	end
+
+	if not foundPart then
+		return nil
+	end
+
+	return {
+		Center = Vector3.new(
+			(minX + maxX) / 2,
+			(minY + maxY) / 2,
+			(minZ + maxZ) / 2
+		),
+		Size = Vector3.new(maxX - minX, maxY - minY, maxZ - minZ),
+		Min = Vector3.new(minX, minY, minZ),
+		Max = Vector3.new(maxX, maxY, maxZ),
+	}
+end
+
+function ui.placementPreviewVisual.getExplicitBoundsSize(model)
+	if not ui.placementMask.getPositiveIntegerAttribute(model, "FootprintWidth")
+		and not ui.placementMask.getPositiveIntegerAttribute(model, "FootprintDepth") then
+
+		return nil
+	end
+
+	local footprintWidth, footprintDepth = GridConfig.GetFurnitureFootprint(model)
+
+	return GridConfig.GetRecommendedPlacementBoundsSize(
+		footprintWidth,
+		footprintDepth,
+		GridConfig.TILE_SIZE
+	)
+end
+
+function ui.placementPreviewVisual.createBoundsProxy(model)
+	local worldBounds = ui.placementPreviewVisual.getCurrentWorldBounds(model)
+
+	if not worldBounds then
+		return nil, "No placement or visual bounds available"
+	end
+
+	local boundsSize = ui.placementPreviewVisual.getExplicitBoundsSize(model)
+
+	if not boundsSize then
+		boundsSize = Vector3.new(
+			math.max(worldBounds.Size.X, 0.2),
+			math.max(worldBounds.Size.Y, GridConfig.RECOMMENDED_PLACEMENT_BOUNDS_HEIGHT or 4),
+			math.max(worldBounds.Size.Z, 0.2)
+		)
+	end
+
+	local proxy = Instance.new("Part")
+	proxy.Name = PREVIEW_PLACEMENT_BOUNDS_PART_NAME
+	proxy.Size = boundsSize
+	proxy.CFrame = CFrame.new(
+		worldBounds.Center.X,
+		worldBounds.Min.Y + boundsSize.Y / 2,
+		worldBounds.Center.Z
+	) * (model:GetPivot() - model:GetPivot().Position)
+	proxy.Transparency = 1
+	proxy.Anchored = true
+	proxy.CanCollide = false
+	proxy.CanTouch = false
+	proxy.CanQuery = false
+	proxy.CastShadow = false
+	proxy:SetAttribute("PreviewOnly", true)
+	proxy:SetAttribute("IgnoreForPlacementBounds", true)
+	proxy.Parent = model
+
+	return proxy, "PreviewPlacementBounds"
+end
+
+function ui.placementPreviewVisual.ensureBoundsVisual(previewModel)
+	local boundsPart, boundsSource = ui.placementPreviewVisual.getPlacementBounds(previewModel)
+
+	if not boundsPart then
+		boundsPart, boundsSource = ui.placementPreviewVisual.createBoundsProxy(previewModel)
+	end
+
+	if not boundsPart then
+		ui.placementPreviewVisual.debug(
+			"failed",
+			previewModel and previewModel.Name or "nil",
+			tostring(boundsSource)
+		)
+		return false, boundsSource or "Missing placement bounds"
+	end
+
+	for _, descendant in ipairs(previewModel:GetDescendants()) do
+		if descendant.Name == "CatalogPlacementBoundsSelectionBox"
+			and descendant:IsA("SelectionBox") then
+
+			descendant:Destroy()
+		end
+	end
+
+	local selectionBox = Instance.new("SelectionBox")
+	selectionBox.Name = "CatalogPlacementBoundsSelectionBox"
+	selectionBox.Adornee = boundsPart
+	selectionBox.Color3 = Color3.fromRGB(0, 190, 255)
+	selectionBox.SurfaceColor3 = Color3.fromRGB(0, 190, 255)
+	selectionBox.SurfaceTransparency = 0.65
+	selectionBox.Transparency = 0
+	selectionBox.LineThickness = 0.06
+	selectionBox.Parent = previewModel
+
+	ui.placementPreviewVisual.debug(
+		"created",
+		"preview",
+		previewModel.Name,
+		"source",
+		tostring(boundsSource),
+		"adornee",
+		boundsPart.Name,
+		"visual",
+		selectionBox.ClassName
+	)
+
+	return true, nil
+end
+
+function ui.placementPreviewVisual.countVisuals(model)
+	if not model then
+		return 0
+	end
+
+	local count = 0
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("SelectionBox")
+			or descendant:IsA("BoxHandleAdornment")
+			or descendant.Name == PREVIEW_PLACEMENT_BOUNDS_PART_NAME then
+
+			count += 1
+		end
+	end
+
+	return count
 end
 
 local function getFloorPlacementBounds()
@@ -2124,6 +2433,15 @@ function ui.placementMask.setPreviewVisualState(isValid, reason)
 			tostring(tintedSelectionBoxes)
 		)
 	end
+
+	ui.placementPreviewVisual.debug(
+		"visualState",
+		isValid and "valid-blue" or "invalid-red",
+		"reason",
+		tostring(reason),
+		"selectionBoxesTinted",
+		tostring(tintedSelectionBoxes)
+	)
 end
 
 local function setPlacementPreviewValidity(isValid, reason)
@@ -2186,6 +2504,8 @@ local function bindCatalogPlacementControls()
 end
 
 local function clearPlacementPreviewVisualsOnly()
+	local cleanupCount = ui.placementPreviewVisual.countVisuals(placementPreview)
+
 	if placementPreviewHighlight then
 		placementPreviewHighlight:Destroy()
 		placementPreviewHighlight = nil
@@ -2195,6 +2515,8 @@ local function clearPlacementPreviewVisualsOnly()
 		placementPreview:Destroy()
 		placementPreview = nil
 	end
+
+	ui.placementPreviewVisual.debug("cleanup count", cleanupCount)
 end
 
 ui.DestroyCatalogPlacementPreview = function()
@@ -2218,14 +2540,19 @@ ui.DestroyCatalogPlacementPreview = function()
 	end
 end
 
-local function createCatalogPlacementPreview(itemData)
+local function createCatalogPlacementPreview(itemData, roomContext)
 	ui.DestroyCatalogPlacementPreview()
+
+	if roomContext and roomContext.RoomName ~= player:GetAttribute("CurrentRoomName") then
+		setStatus("Room changed. Try placing again.")
+		return false
+	end
 
 	local _, _, gridError = getCurrentPlacementGrid()
 
 	if gridError then
 		setStatus(gridError)
-		return
+		return false
 	end
 
 	local templateName = itemData.TemplateName or itemData.Id
@@ -2233,28 +2560,20 @@ local function createCatalogPlacementPreview(itemData)
 
 	if not template or not template:IsA("Model") then
 		setStatus("Missing furniture template: " .. tostring(templateName))
-		return
+		return false
 	end
 
 	local source = itemData.Source == "Inventory" and "Inventory" or "Catalog"
+	local previewModel = template:Clone()
 
-	placingItemData = itemData
-	placementSource = source
-	placementRotationY = 0
-	placementBaseRotation = CFrame.new()
-	player:SetAttribute("CatalogPlacementActive", true)
+	previewModel.Name = "CatalogPlacementPreview"
+	previewModel:SetAttribute("CatalogTemplateName", templateName)
+	ui.placementMask.applyFootprintOverride(previewModel)
 
-	bindCatalogPlacementControls()
-
-	placementPreview = template:Clone()
-	placementPreview.Name = "CatalogPlacementPreview"
-	placementPreview:SetAttribute("CatalogTemplateName", templateName)
-	ui.placementMask.applyFootprintOverride(placementPreview)
-
-	local templatePivot = placementPreview:GetPivot()
+	local templatePivot = previewModel:GetPivot()
 	placementBaseRotation = templatePivot - templatePivot.Position
 
-	for _, descendant in ipairs(placementPreview:GetDescendants()) do
+	for _, descendant in ipairs(previewModel:GetDescendants()) do
 		if descendant:IsA("Script")
 			or descendant:IsA("LocalScript")
 			or descendant:IsA("ClickDetector") then
@@ -2270,15 +2589,37 @@ local function createCatalogPlacementPreview(itemData)
 		end
 	end
 
-	placementPreview.Parent = workspace
+	local boundsVisualReady, boundsVisualMessage =
+		ui.placementPreviewVisual.ensureBoundsVisual(previewModel)
+
+	if not boundsVisualReady then
+		previewModel:Destroy()
+		setStatus(boundsVisualMessage or "Furniture preview visual setup failed.")
+		return false
+	end
 
 	placementPreviewHighlight = Instance.new("Highlight")
 	placementPreviewHighlight.Name = "CatalogPlacementPreviewHighlight"
-	placementPreviewHighlight.Adornee = placementPreview
+	placementPreviewHighlight.Adornee = previewModel
 	placementPreviewHighlight.FillTransparency = 0.45
 	placementPreviewHighlight.OutlineTransparency = 0
 	placementPreviewHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	placementPreviewHighlight.Parent = placementPreview
+	placementPreviewHighlight.Parent = previewModel
+
+	if not placementPreviewHighlight.Parent then
+		previewModel:Destroy()
+		setStatus("Furniture preview visual setup failed.")
+		return false
+	end
+
+	placingItemData = itemData
+	placementSource = source
+	placementRotationY = 0
+	placementPreview = previewModel
+	placementPreview.Parent = workspace
+	player:SetAttribute("CatalogPlacementActive", true)
+
+	bindCatalogPlacementControls()
 
 	setPlacementPreviewValidity(false)
 
@@ -2292,6 +2633,7 @@ local function createCatalogPlacementPreview(itemData)
 	end
 
 	setPlacementHint(getActivePlacementHint(false))
+	return true
 end
 
 local function updateCatalogPlacementPreview()
@@ -4700,7 +5042,36 @@ startInventoryPlacement.Event:Connect(function(itemData)
 		return
 	end
 
-	createCatalogPlacementPreview(itemData)
+	ui.placementStartup.StartId += 1
+
+	local startId = ui.placementStartup.StartId
+
+	setStatus("Preparing room...")
+
+	task.spawn(function()
+		local roomContext, waitMessage =
+			ui.placementStartup.waitForPlacementRoomContext(2.5, startId)
+
+		if ui.placementStartup.StartId ~= startId then
+			ui.placementStartup.debug("stale placement start ignored", startId)
+			return
+		end
+
+		if not roomContext then
+			if waitMessage ~= "stale" then
+				setStatus("Room is still loading. Try again.")
+			end
+
+			return
+		end
+
+		if not canContinueInventoryPlacement() then
+			setStatus("Enter Edit Mode to place furniture.")
+			return
+		end
+
+		createCatalogPlacementPreview(itemData, roomContext)
+	end)
 end)
 
 RunService.RenderStepped:Connect(updateCatalogPlacementPreview)
@@ -5195,7 +5566,15 @@ ui.HandleCatalogVisibilityChanged = function()
 	ui.UpdateOpenButton()
 end
 
-player:GetAttributeChangedSignal("CurrentRoomName"):Connect(ui.HandleCatalogVisibilityChanged)
+player:GetAttributeChangedSignal("CurrentRoomName"):Connect(function()
+	ui.placementStartup.cancelPending("CurrentRoomName changed")
+
+	if placingItemData then
+		ui.DestroyCatalogPlacementPreview()
+	end
+
+	ui.HandleCatalogVisibilityChanged()
+end)
 player:GetAttributeChangedSignal("RoomMode"):Connect(ui.HandleCatalogVisibilityChanged)
 player:GetAttributeChangedSignal("OnboardingStep"):Connect(ui.HandleCatalogVisibilityChanged)
 player:GetAttributeChangedSignal("ControlMode"):Connect(ui.HandleCatalogVisibilityChanged)
@@ -5205,7 +5584,15 @@ activeRooms.ChildAdded:Connect(function()
 	task.defer(ui.UpdateOpenButton)
 end)
 
-activeRooms.ChildRemoved:Connect(function()
+activeRooms.ChildRemoved:Connect(function(child)
+	if child.Name == player:GetAttribute("CurrentRoomName") then
+		ui.placementStartup.cancelPending("active room removed")
+
+		if placingItemData then
+			ui.DestroyCatalogPlacementPreview()
+		end
+	end
+
 	task.defer(ui.UpdateOpenButton)
 end)
 

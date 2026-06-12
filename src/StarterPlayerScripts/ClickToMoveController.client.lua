@@ -854,6 +854,16 @@ local movePreviewState = {
 	rotationOffsetY = 0,
 	hintGui = nil,
 	hintLabel = nil,
+	visual = {
+		debugEnabled = false,
+		proxyName = "PreviewPlacementBounds",
+		selectionBoxName = "MovePlacementBoundsSelectionBox",
+		validColor = Color3.fromRGB(0, 190, 255),
+		invalidColor = Color3.fromRGB(255, 60, 60),
+		surfaceTransparency = 0.65,
+		transparency = 0,
+		lineThickness = 0.06,
+	},
 	helperUi = {
 		mainHudGuiName = "MainHudGui",
 		mainHudBarName = "MainHudBottomBar",
@@ -2093,6 +2103,7 @@ end
 local movementIgnoredFurniturePartNames = {
 	CollisionBuffer = true,
 	PlacementBounds = true,
+	[movePreviewState.visual.proxyName] = true,
 	SitPoint = true,
 	SleepPoint = true,
 	PlayPoint = true,
@@ -3352,6 +3363,7 @@ end
 local helperPartNames = {
 	CollisionBuffer = true,
 	ClickHitbox = true,
+	[movePreviewState.visual.proxyName] = true,
 	SitPoint = true,
 	SleepPoint = true,
 	PlayPoint = true,
@@ -3647,6 +3659,199 @@ local function getModelXZBounds(model)
 	}
 end
 
+function movePreviewState.visual.debug(...)
+	if movePreviewState.visual.debugEnabled == true then
+		warn("[ClickToMoveController.MovePreviewVisual]", ...)
+	end
+end
+
+function movePreviewState.visual.getBoundsPart(previewModel)
+	local placementBoundsParts = getPlacementBoundsParts(previewModel)
+
+	if #placementBoundsParts > 0 then
+		return placementBoundsParts[1], "PlacementBounds"
+	end
+
+	local proxy = previewModel:FindFirstChild(movePreviewState.visual.proxyName, true)
+
+	if proxy and proxy:IsA("BasePart") then
+		return proxy, movePreviewState.visual.proxyName
+	end
+
+	return nil, nil
+end
+
+function movePreviewState.visual.getCurrentWorldBounds(previewModel)
+	local minX = math.huge
+	local minY = math.huge
+	local minZ = math.huge
+	local maxX = -math.huge
+	local maxY = -math.huge
+	local maxZ = -math.huge
+	local foundPart = false
+
+	for _, part in ipairs(getPlacementCheckParts(previewModel)) do
+		foundPart = true
+
+		for _, corner in ipairs(getPartWorldCorners(part)) do
+			minX = math.min(minX, corner.X)
+			minY = math.min(minY, corner.Y)
+			minZ = math.min(minZ, corner.Z)
+			maxX = math.max(maxX, corner.X)
+			maxY = math.max(maxY, corner.Y)
+			maxZ = math.max(maxZ, corner.Z)
+		end
+	end
+
+	if not foundPart then
+		return nil
+	end
+
+	return {
+		Center = Vector3.new(
+			(minX + maxX) / 2,
+			(minY + maxY) / 2,
+			(minZ + maxZ) / 2
+		),
+		Size = Vector3.new(maxX - minX, maxY - minY, maxZ - minZ),
+		Min = Vector3.new(minX, minY, minZ),
+		Max = Vector3.new(maxX, maxY, maxZ),
+	}
+end
+
+function movePreviewState.visual.getExplicitBoundsSize(previewModel)
+	if not movePreviewState.footprint.getPositiveAttribute(previewModel, "FootprintWidth")
+		and not movePreviewState.footprint.getPositiveAttribute(previewModel, "FootprintDepth") then
+
+		return nil
+	end
+
+	local footprintWidth, footprintDepth = GridConfig.GetFurnitureFootprint(previewModel)
+
+	return GridConfig.GetRecommendedPlacementBoundsSize(
+		footprintWidth,
+		footprintDepth,
+		GridConfig.TILE_SIZE
+	)
+end
+
+function movePreviewState.visual.createBoundsProxy(previewModel)
+	local worldBounds = movePreviewState.visual.getCurrentWorldBounds(previewModel)
+
+	if not worldBounds then
+		return nil, "No placement or visual bounds available"
+	end
+
+	local boundsSize = movePreviewState.visual.getExplicitBoundsSize(previewModel)
+
+	if not boundsSize then
+		boundsSize = Vector3.new(
+			math.max(worldBounds.Size.X, 0.2),
+			math.max(worldBounds.Size.Y, GridConfig.RECOMMENDED_PLACEMENT_BOUNDS_HEIGHT or 4),
+			math.max(worldBounds.Size.Z, 0.2)
+		)
+	end
+
+	local pivot = previewModel:GetPivot()
+	local proxy = Instance.new("Part")
+	proxy.Name = movePreviewState.visual.proxyName
+	proxy.Size = boundsSize
+	proxy.CFrame = CFrame.new(
+		worldBounds.Center.X,
+		worldBounds.Min.Y + boundsSize.Y / 2,
+		worldBounds.Center.Z
+	) * (pivot - pivot.Position)
+	proxy.Transparency = 1
+	proxy.Anchored = true
+	proxy.CanCollide = false
+	proxy.CanTouch = false
+	proxy.CanQuery = false
+	proxy.CastShadow = false
+	proxy:SetAttribute("PreviewOnly", true)
+	proxy:SetAttribute("IgnoreForPlacementBounds", true)
+	proxy.Parent = previewModel
+
+	movePreviewState.visual.debug(
+		"bounds proxy created",
+		previewModel.Name,
+		tostring(proxy.Size)
+	)
+
+	return proxy, movePreviewState.visual.proxyName
+end
+
+function movePreviewState.visual.applyBoxStyle(selectionBox, color)
+	selectionBox.Color3 = color
+	selectionBox.SurfaceColor3 = color
+	selectionBox.SurfaceTransparency = movePreviewState.visual.surfaceTransparency
+	selectionBox.Transparency = movePreviewState.visual.transparency
+	selectionBox.LineThickness = movePreviewState.visual.lineThickness
+end
+
+function movePreviewState.visual.ensureBoundsBox(previewModel)
+	local boundsPart, boundsSource = movePreviewState.visual.getBoundsPart(previewModel)
+
+	if not boundsPart then
+		boundsPart, boundsSource = movePreviewState.visual.createBoundsProxy(previewModel)
+	end
+
+	if not boundsPart then
+		movePreviewState.visual.debug(
+			"missing bounds",
+			previewModel and previewModel.Name or "nil",
+			tostring(boundsSource)
+		)
+		return false, boundsSource or "Missing placement bounds"
+	end
+
+	for _, descendant in ipairs(previewModel:GetDescendants()) do
+		if descendant.Name == movePreviewState.visual.selectionBoxName
+			and descendant:IsA("SelectionBox") then
+
+			descendant:Destroy()
+		end
+	end
+
+	local selectionBox = Instance.new("SelectionBox")
+	selectionBox.Name = movePreviewState.visual.selectionBoxName
+	selectionBox.Adornee = boundsPart
+	movePreviewState.visual.applyBoxStyle(selectionBox, movePreviewState.visual.validColor)
+	selectionBox.Parent = previewModel
+
+	movePreviewState.visual.debug(
+		"bounds box created",
+		"preview",
+		previewModel.Name,
+		"source",
+		tostring(boundsSource),
+		"adornee",
+		boundsPart.Name,
+		"type",
+		selectionBox.ClassName
+	)
+
+	return true, nil
+end
+
+function movePreviewState.visual.countPreviewVisuals(previewModel)
+	if not previewModel then
+		return 0
+	end
+
+	local count = 0
+
+	for _, descendant in ipairs(previewModel:GetDescendants()) do
+		if descendant:IsA("SelectionBox")
+			or descendant:IsA("BoxHandleAdornment")
+			or descendant.Name == movePreviewState.visual.proxyName then
+
+			count += 1
+		end
+	end
+
+	return count
+end
+
 local function isPreviewInsideRoom(previewModel)
 	local previewBounds = getModelXZBounds(previewModel)
 	local floorBounds = getFloorPlacementBounds()
@@ -3817,11 +4022,10 @@ function movePreviewState.setPlacementPreviewVisualState(isValid, reason)
 	local tintedSelectionBoxes = 0
 
 	if isValid then
-		-- Bright cyan/blue is easier to see against green walls.
-		fillColor = Color3.fromRGB(0, 190, 255)
+		fillColor = movePreviewState.visual.validColor
 		outlineColor = Color3.fromRGB(255, 255, 255)
 	else
-		fillColor = Color3.fromRGB(255, 60, 60)
+		fillColor = movePreviewState.visual.invalidColor
 		outlineColor = Color3.fromRGB(255, 255, 255)
 	end
 
@@ -3838,12 +4042,12 @@ function movePreviewState.setPlacementPreviewVisualState(isValid, reason)
 	if placementPreview then
 		for _, descendant in ipairs(placementPreview:GetDescendants()) do
 			if descendant:IsA("BasePart") then
-				if descendant.Name ~= "SitPoint"
-					and descendant.Name ~= "SleepPoint"
-					and descendant.Name ~= "PlayPoint"
-					and descendant.Name ~= "EnterPoint"
-					and descendant.Name ~= "TalkPoint" then
+				local shouldTintPart =
+					descendant.Name ~= "PlacementBounds"
+					and descendant.Name ~= movePreviewState.visual.proxyName
+					and helperPartNames[descendant.Name] ~= true
 
+				if shouldTintPart then
 					descendant.Color = fillColor
 					descendant.Transparency = 0.35
 					descendant.Material = Enum.Material.Neon
@@ -3862,10 +4066,7 @@ function movePreviewState.setPlacementPreviewVisualState(isValid, reason)
 				descendant.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 				tintedHighlights += 1
 			elseif descendant:IsA("SelectionBox") then
-				descendant.Color3 = fillColor
-				descendant.SurfaceColor3 = fillColor
-				descendant.SurfaceTransparency = 0.65
-				descendant.Transparency = 0
+				movePreviewState.visual.applyBoxStyle(descendant, fillColor)
 				tintedSelectionBoxes += 1
 			elseif descendant:IsA("BoxHandleAdornment") then
 				descendant.Color3 = fillColor
@@ -3893,6 +4094,15 @@ function movePreviewState.setPlacementPreviewVisualState(isValid, reason)
 			tostring(tintedSelectionBoxes)
 		)
 	end
+
+	movePreviewState.visual.debug(
+		"visualState",
+		isValid and "valid-blue" or "invalid-red",
+		"reason",
+		tostring(reason),
+		"selectionBoxesTinted",
+		tostring(tintedSelectionBoxes)
+	)
 end
 
 local function setPlacementPreviewValidity(isValid, reason)
@@ -3995,6 +4205,8 @@ function movePreviewState.reset()
 end
 
 local function destroyPlacementPreview()
+	local cleanupCount = movePreviewState.visual.countPreviewVisuals(placementPreview)
+
 	if placementPreview then
 		placementPreview:Destroy()
 		placementPreview = nil
@@ -4010,6 +4222,8 @@ local function destroyPlacementPreview()
 
 	showOriginalFurniture()
 	setMovingFurnitureIgnored(false)
+
+	movePreviewState.visual.debug("cleanup count", cleanupCount)
 end
 
 local function dimOriginalFurniture(furnitureModel)
@@ -4036,7 +4250,7 @@ local function createPlacementPreview(furnitureModel)
 	destroyPlacementPreview()
 
 	if not furnitureModel then
-		return
+		return false
 	end
 
 	placementPreview = furnitureModel:Clone()
@@ -4054,12 +4268,24 @@ local function createPlacementPreview(furnitureModel)
 			descendant.CanCollide = false
 			descendant.CanTouch = false
 			descendant.CanQuery = false
-			descendant.Transparency = math.max(descendant.Transparency, 0.55)
+
+			if descendant.Name == "PlacementBounds" then
+				descendant.Transparency = 1
+			else
+				descendant.Transparency = math.max(descendant.Transparency, 0.55)
+			end
 		end
 	end
 
-	placementPreview.Parent = workspace
-	
+	local boundsBoxReady, boundsBoxMessage = movePreviewState.visual.ensureBoundsBox(placementPreview)
+
+	if not boundsBoxReady then
+		placementPreview:Destroy()
+		placementPreview = nil
+		warn(boundsBoxMessage or "Furniture move preview visual setup failed.")
+		return false
+	end
+
 	placementPreviewHighlight = Instance.new("Highlight")
 	placementPreviewHighlight.Name = "PlacementPreviewHighlight"
 	placementPreviewHighlight.Adornee = placementPreview
@@ -4068,7 +4294,10 @@ local function createPlacementPreview(furnitureModel)
 	placementPreviewHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 	placementPreviewHighlight.Parent = placementPreview
 
+	placementPreview.Parent = workspace
+
 	setPlacementPreviewValidity(false)
+	return true
 end
 
 local function updatePlacementPreview()
@@ -5270,7 +5499,10 @@ moveButton.MouseButton1Click:Connect(function()
 	movePreviewState.rotationOffsetY = 0
 
 	-- Create preview first because createPlacementPreview() calls destroyPlacementPreview().
-	createPlacementPreview(movingFurniture)
+	if not createPlacementPreview(movingFurniture) then
+		movingFurniture = nil
+		return
+	end
 
 	-- Then fade and ignore the original furniture.
 	dimOriginalFurniture(movingFurniture)
