@@ -113,7 +113,41 @@ Do not rely on imported mesh bounds for placement. Mesh bounds can be noisy,
 rotated, oversized, or too tight. `PlacementBounds` is the intentional placement
 contract.
 
-## 5. Set Pivot and PrimaryPart
+## 5. Separate Visual Size From Gameplay Footprint
+
+`FootprintWidth`, `FootprintDepth`, and `PlacementBounds` define the gameplay
+footprint: where the item may be placed, how TileMask holes are checked, and how
+nearby furniture is blocked.
+
+The visual mesh may be slightly larger than that footprint when the overhang is
+intentional. This is useful for stylized furniture with soft cushions, high
+backs, arms, crowns, or decorative trim. Do not change the global grid size just
+to fit one furniture item.
+
+Use these optional attributes when visual overhang is intentional:
+
+```lua
+AllowVisualOverhang = true
+VisualOverhangStudsX = 0.4
+VisualOverhangStudsZ = 0.3
+```
+
+`VisualOverhangStudsX` and `VisualOverhangStudsZ` are documentation/validator
+metadata for reviewers. Runtime placement still uses `PlacementBounds` and the
+footprint attributes.
+
+Sizing examples:
+
+- Simple chair: usually `1x1` with little or no overhang.
+- Chunky armchair: `1x1` with small overhang, or `2x1` / `2x2` if truly large.
+- Throne: often `1x1` with visual overhang, or `2x1` if wide.
+- Sofa: usually `2x1`, `3x1`, or `3x2`.
+- Bed: usually around `3x4` for larger imported beds.
+
+Always test nearby placement visually. Even allowed overhang should not make two
+adjacent items look badly intersected.
+
+## 6. Set Pivot and PrimaryPart
 
 Set a stable model pivot before testing.
 
@@ -127,7 +161,7 @@ Recommended setup:
 The preview, placement, move, rotate, and saved CFrame behavior all depend on a
 predictable pivot.
 
-## 6. Prepare Visual Mesh Parts
+## 7. Prepare Visual Mesh Parts
 
 For visual `MeshPart` and `BasePart` descendants:
 
@@ -141,7 +175,7 @@ For visual `MeshPart` and `BasePart` descendants:
 Some furniture intentionally blocks movement. In that case, keep collision
 deliberate and test that avatars cannot become trapped.
 
-## 7. Choose a Supported Category
+## 8. Choose a Supported Category
 
 Use one of the supported catalog categories:
 
@@ -166,7 +200,7 @@ Use one of the supported catalog categories:
 
 Use singular categories such as `Chair`, `Table`, and `Bed` for new imports.
 
-## 8. Keep Trading and Marketplace Rules Intentional
+## 9. Keep Trading and Marketplace Rules Intentional
 
 Normal Dollar furniture should usually be:
 
@@ -185,7 +219,7 @@ Before release, test:
 - Selling is enabled or disabled according to `SellableOnPurchase`.
 - Marketplace listing behavior is disabled or enabled only as intended.
 
-## 9. Configure Interactive Furniture
+## 10. Configure Interactive Furniture
 
 ### Sit Furniture
 
@@ -224,7 +258,7 @@ Requirements:
 - Public interaction attributes such as `PublicUse`, `PublicOpenClose`, or
   `AllowPublicOpenClose` should only be set deliberately.
 
-## 10. Validate the Template
+## 11. Validate the Template
 
 Run this Studio tool after adding or changing furniture:
 
@@ -246,7 +280,7 @@ Legacy starter templates may still warn while they are being normalized. New
 `AutoCatalogEnabled = true` imported furniture should pass strict checks before
 being treated as ready.
 
-## 11. Test In Studio
+## 12. Test In Studio
 
 Use this checklist for every imported item:
 
@@ -265,7 +299,7 @@ Use this checklist for every imported item:
 - Trade/marketplace behavior matches `TradableOnPurchase`.
 - Interactive actions such as Sit or OpenClose still work after save/rejoin.
 
-## 12. Meshy and Imported Model Tips
+## 13. Meshy and Imported Model Tips
 
 Before importing:
 
@@ -288,12 +322,15 @@ After importing into Studio:
 
 Meshy imports may arrive with the wrong pivot or scale. Run
 `docs/tools/PrepareImportedFurnitureTemplate.lua` after manual scaling, or enable
-`AUTO_SCALE_TO_TARGET_SIZE` in that helper for a selected model. For chunky
-plush armchairs, prefer a `2x2` footprint and a target visual height around
-`5.0` to `5.5` studs. `PlacementBounds` should align to the visual bottom of the
-model, not to an imported pivot that may be floating away from the mesh.
+`AUTO_SCALE_TO_TARGET_SIZE` in that helper for a selected model. Manual visual
+scale remains preferred per item. For chunky plush armchairs, prefer a `2x2`
+footprint only when the chair is truly large; otherwise a `1x1` footprint with
+intentional `AllowVisualOverhang = true` may fit better. Target visual height is
+usually around `5.0` to `5.5` studs. `PlacementBounds` should align to the visual
+bottom of the model, not to an imported pivot that may be floating away from the
+mesh.
 
-## 13. Release Checklist
+## 14. Release Checklist
 
 Before merging or shipping an imported furniture item:
 

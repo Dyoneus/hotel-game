@@ -12,6 +12,7 @@ local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
 local TILE_SIZE = 4
 local FOOTPRINT_MARGIN = 0.4
 local PLACEMENT_BOUNDS_TOLERANCE = 0.25
+local VISUAL_OVERHANG_TOLERANCE = 0.05
 local MAX_FOOTPRINT_TILES = 20
 local EXTREME_BOUNDS_XZ_STUDS = TILE_SIZE * (MAX_FOOTPRINT_TILES + 4)
 local EXTREME_BOUNDS_Y_STUDS = 80
@@ -1112,6 +1113,157 @@ local function isVisualPart(part)
 	return part:IsA("BasePart") and not isHelperPart(part)
 end
 
+local function getVisualBoundsParts(model)
+	local visibleParts = {}
+	local fallbackParts = {}
+
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and descendant.Name ~= PLACEMENT_BOUNDS_PART_NAME
+			and descendant:GetAttribute("IgnoreForPlacementBounds") ~= true then
+
+			if isVisualPart(descendant) then
+				if descendant.Transparency < 1
+					or descendant:IsA("Seat")
+					or descendant:IsA("VehicleSeat") then
+
+					append(visibleParts, descendant)
+				else
+					append(fallbackParts, descendant)
+				end
+			end
+		end
+	end
+
+	if #visibleParts > 0 then
+		return visibleParts
+	end
+
+	return fallbackParts
+end
+
+local function getPartWorldCorners(part)
+	local halfSize = part.Size / 2
+	local localCorners = {
+		Vector3.new(-halfSize.X, -halfSize.Y, -halfSize.Z),
+		Vector3.new(-halfSize.X, -halfSize.Y, halfSize.Z),
+		Vector3.new(-halfSize.X, halfSize.Y, -halfSize.Z),
+		Vector3.new(-halfSize.X, halfSize.Y, halfSize.Z),
+		Vector3.new(halfSize.X, -halfSize.Y, -halfSize.Z),
+		Vector3.new(halfSize.X, -halfSize.Y, halfSize.Z),
+		Vector3.new(halfSize.X, halfSize.Y, -halfSize.Z),
+		Vector3.new(halfSize.X, halfSize.Y, halfSize.Z),
+	}
+	local worldCorners = {}
+
+	for _, localCorner in ipairs(localCorners) do
+		append(worldCorners, part.CFrame:PointToWorldSpace(localCorner))
+	end
+
+	return worldCorners
+end
+
+local function getVisualBoundsRelativeToPlacementBounds(model, placementBounds)
+	if not placementBounds then
+		return nil
+	end
+
+	local visualParts = getVisualBoundsParts(model)
+
+	if #visualParts == 0 then
+		return nil
+	end
+
+	local minX = math.huge
+	local minZ = math.huge
+	local maxX = -math.huge
+	local maxZ = -math.huge
+
+	for _, part in ipairs(visualParts) do
+		for _, worldCorner in ipairs(getPartWorldCorners(part)) do
+			local boundsLocalCorner = placementBounds.CFrame:PointToObjectSpace(worldCorner)
+
+			minX = math.min(minX, boundsLocalCorner.X)
+			minZ = math.min(minZ, boundsLocalCorner.Z)
+			maxX = math.max(maxX, boundsLocalCorner.X)
+			maxZ = math.max(maxZ, boundsLocalCorner.Z)
+		end
+	end
+
+	return {
+		SizeX = maxX - minX,
+		SizeZ = maxZ - minZ,
+		PartCount = #visualParts,
+	}
+end
+
+local function getOptionalNumberAttribute(report, model, attributeName)
+	local value = model:GetAttribute(attributeName)
+
+	if value == nil then
+		return nil
+	end
+
+	if typeof(value) ~= "number" or value ~= value or value < 0 or value >= math.huge then
+		addWarning(report, attributeName .. " should be a non-negative number when set.")
+		return nil
+	end
+
+	return value
+end
+
+local function validateVisualOverhang(report, model, placementBounds)
+	if not placementBounds then
+		return
+	end
+
+	local visualBounds = getVisualBoundsRelativeToPlacementBounds(model, placementBounds)
+
+	if not visualBounds then
+		return
+	end
+
+	local excessX = math.max(0, visualBounds.SizeX - placementBounds.Size.X)
+	local excessZ = math.max(0, visualBounds.SizeZ - placementBounds.Size.Z)
+
+	if excessX <= VISUAL_OVERHANG_TOLERANCE and excessZ <= VISUAL_OVERHANG_TOLERANCE then
+		return
+	end
+
+	local declaredOverhangX = getOptionalNumberAttribute(report, model, "VisualOverhangStudsX")
+	local declaredOverhangZ = getOptionalNumberAttribute(report, model, "VisualOverhangStudsZ")
+	local details = string.format(
+		" Visual X/Z %.2f x %.2f, PlacementBounds X/Z %.2f x %.2f, excess %.2f x %.2f.",
+		visualBounds.SizeX,
+		visualBounds.SizeZ,
+		placementBounds.Size.X,
+		placementBounds.Size.Z,
+		excessX,
+		excessZ
+	)
+
+	if declaredOverhangX or declaredOverhangZ then
+		details = details
+			.. string.format(
+				" Declared overhang X/Z %.2f x %.2f.",
+				declaredOverhangX or 0,
+				declaredOverhangZ or 0
+			)
+	end
+
+	if model:GetAttribute("AllowVisualOverhang") == true then
+		addWarning(
+			report,
+			"Visual overhang allowed; verify it does not overlap nearby furniture badly." .. details
+		)
+	else
+		addWarning(
+			report,
+			"Visual mesh extends beyond PlacementBounds. Set AllowVisualOverhang=true if intentional." .. details
+		)
+	end
+end
+
 local function isUnanchoredAllowed(model, part)
 	local modelAllows = hasTrueAttribute(model, ALLOW_UNANCHORED_ATTRIBUTES)
 	local partAllows = hasTrueAttribute(part, ALLOW_UNANCHORED_ATTRIBUTES)
@@ -1209,6 +1361,7 @@ local function validateTemplate(model)
 	local placementBounds = validatePlacementBounds(report, model, footprintWidth, footprintDepth)
 
 	validateRootStrategy(report, model, placementBounds)
+	validateVisualOverhang(report, model, placementBounds)
 	validatePublicCatalogMetadata(report, model)
 	validateTradableSafety(report, model)
 	validateSitMetadata(report, model)

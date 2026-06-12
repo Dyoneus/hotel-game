@@ -17,6 +17,10 @@ local TARGET_FOOTPRINT_WIDTH = 2
 local TARGET_FOOTPRINT_DEPTH = 2
 local FORCE_TARGET_FOOTPRINT = false
 
+local ALLOW_VISUAL_OVERHANG = false
+local VISUAL_OVERHANG_STUDS_X = 0
+local VISUAL_OVERHANG_STUDS_Z = 0
+
 local ALIGN_PLACEMENT_BOUNDS_TO_VISUAL_BOTTOM = true
 local PLACEMENT_BOUNDS_HEIGHT = 4
 local TILE_SIZE = 4
@@ -318,6 +322,23 @@ local function ensureFootprintAttributes(model, added, kept)
 		else
 			table.insert(kept, attribute.Name .. "=" .. formatValue(currentValue))
 		end
+	end
+end
+
+local function applyVisualOverhangAttributes(model, added)
+	if not ALLOW_VISUAL_OVERHANG then
+		return
+	end
+
+	local overhangAttributes = {
+		{ Name = "AllowVisualOverhang", Value = true },
+		{ Name = "VisualOverhangStudsX", Value = VISUAL_OVERHANG_STUDS_X },
+		{ Name = "VisualOverhangStudsZ", Value = VISUAL_OVERHANG_STUDS_Z },
+	}
+
+	for _, attribute in ipairs(overhangAttributes) do
+		model:SetAttribute(attribute.Name, attribute.Value)
+		table.insert(added, attribute.Name .. "=" .. formatValue(attribute.Value) .. " (set)")
 	end
 end
 
@@ -679,6 +700,7 @@ local visualBoundsAfterScaling, scaleResult = scaleModelToTargetSize(model, visu
 
 local addedAttributes, keptAttributes = ensureAttributes(model)
 ensureFootprintAttributes(model, addedAttributes, keptAttributes)
+applyVisualOverhangAttributes(model, addedAttributes)
 
 local placementBounds,
 	placementBoundsStatus,
