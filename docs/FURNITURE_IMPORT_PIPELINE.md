@@ -17,6 +17,11 @@ Each direct child should be one furniture `Model`. Do not place imported shop
 templates in room templates, StarterGui, ServerScriptService, or workspace-only
 folders.
 
+Optional setup helper: after placing and selecting one imported model in Studio,
+run `docs/tools/PrepareImportedFurnitureTemplate.lua` from the Command Bar. It
+adds baseline attributes, creates `PlacementBounds`, sets safe visual collision
+defaults, and leaves `AutoCatalogEnabled = false` for review.
+
 ## 2. Name the Model
 
 Use stable ASCII model names:
