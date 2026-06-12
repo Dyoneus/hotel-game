@@ -2141,13 +2141,130 @@ local function getFurnitureFootprintCenter(furnitureModel)
 	return furnitureModel:GetPivot().Position
 end
 
-local function getRotatedFurnitureFootprint(furnitureModel, context)
+movePreviewState.footprint = movePreviewState.footprint or {}
+movePreviewState.footprint.epsilon = GridConfig.GRID_VALIDATION_TOLERANCE or 0.05
+
+function movePreviewState.footprint.getPositiveAttribute(furnitureModel, attributeName)
+	if not furnitureModel then
+		return nil
+	end
+
+	local value = furnitureModel:GetAttribute(attributeName)
+
+	if typeof(value) == "number"
+		and value == value
+		and value > 0
+		and value < math.huge
+		and math.floor(value) == value then
+
+		return value
+	end
+
+	return nil
+end
+
+function movePreviewState.footprint.getMovementParts(furnitureModel)
+	local placementBoundsParts = {}
+
+	for _, descendant in ipairs(furnitureModel:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant.Name == "PlacementBounds" then
+			table.insert(placementBoundsParts, descendant)
+		end
+	end
+
+	if #placementBoundsParts > 0 then
+		return placementBoundsParts
+	end
+
+	local fallbackParts = {}
+
+	for _, descendant in ipairs(furnitureModel:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and not isMovementIgnoredFurniturePart(descendant)
+			and (
+				descendant.CanCollide
+				or descendant.Transparency < 1
+			) then
+
+			table.insert(fallbackParts, descendant)
+		end
+	end
+
+	return fallbackParts
+end
+
+function movePreviewState.footprint.getBoundsDerivedFootprint(furnitureModel, context)
+	local footprintParts = movePreviewState.footprint.getMovementParts(furnitureModel)
+
+	if #footprintParts <= 0 then
+		return GridConfig.GetFurnitureFootprint(furnitureModel)
+	end
+
+	local floor = context and context.floor
+	local resolvedTileSize = context and context.tileSize or GridConfig.TILE_SIZE
+
+	if typeof(resolvedTileSize) ~= "number" or resolvedTileSize <= 0 then
+		resolvedTileSize = GridConfig.TILE_SIZE
+	end
+
+	local minX = math.huge
+	local maxX = -math.huge
+	local minZ = math.huge
+	local maxZ = -math.huge
+
+	for _, part in ipairs(footprintParts) do
+		local halfSize = part.Size / 2
+		local localCorners = {
+			Vector3.new(-halfSize.X, 0, -halfSize.Z),
+			Vector3.new(-halfSize.X, 0, halfSize.Z),
+			Vector3.new(halfSize.X, 0, -halfSize.Z),
+			Vector3.new(halfSize.X, 0, halfSize.Z),
+		}
+
+		for _, localCorner in ipairs(localCorners) do
+			local worldCorner = part.CFrame:PointToWorldSpace(localCorner)
+			local footprintCorner = worldCorner
+
+			if floor and floor:IsA("BasePart") then
+				footprintCorner = floor.CFrame:PointToObjectSpace(worldCorner)
+			end
+
+			minX = math.min(minX, footprintCorner.X)
+			maxX = math.max(maxX, footprintCorner.X)
+			minZ = math.min(minZ, footprintCorner.Z)
+			maxZ = math.max(maxZ, footprintCorner.Z)
+		end
+	end
+
+	local widthStuds = math.max(maxX - minX, resolvedTileSize)
+	local depthStuds = math.max(maxZ - minZ, resolvedTileSize)
+	local footprintWidth = math.max(
+		1,
+		math.ceil((widthStuds - movePreviewState.footprint.epsilon) / resolvedTileSize)
+	)
+	local footprintDepth = math.max(
+		1,
+		math.ceil((depthStuds - movePreviewState.footprint.epsilon) / resolvedTileSize)
+	)
+
+	return footprintWidth, footprintDepth
+end
+
+function movePreviewState.footprint.getExplicitRotatedFootprint(furnitureModel, context)
+	if not movePreviewState.footprint.getPositiveAttribute(furnitureModel, "FootprintWidth")
+		and not movePreviewState.footprint.getPositiveAttribute(furnitureModel, "FootprintDepth") then
+
+		return nil, nil
+	end
+
 	local footprintWidth, footprintDepth = GridConfig.GetFurnitureFootprint(furnitureModel)
 
-	-- Patch 9G will clean up template footprint attributes. For now, this supports
-	-- future rectangular footprints while defaulting current furniture to 1x1.
 	if footprintWidth ~= footprintDepth then
-		local localLookVector = context.floor.CFrame:VectorToObjectSpace(furnitureModel:GetPivot().LookVector)
+		local localLookVector = furnitureModel:GetPivot().LookVector
+
+		if context and context.floor and context.floor:IsA("BasePart") then
+			localLookVector = context.floor.CFrame:VectorToObjectSpace(localLookVector)
+		end
 
 		if math.abs(localLookVector.X) > math.abs(localLookVector.Z) then
 			footprintWidth, footprintDepth = footprintDepth, footprintWidth
@@ -2155,6 +2272,19 @@ local function getRotatedFurnitureFootprint(furnitureModel, context)
 	end
 
 	return footprintWidth, footprintDepth
+end
+
+function movePreviewState.footprint.getRotatedFootprint(furnitureModel, context)
+	local footprintWidth, footprintDepth = movePreviewState.footprint.getExplicitRotatedFootprint(
+		furnitureModel,
+		context
+	)
+
+	if footprintWidth and footprintDepth then
+		return footprintWidth, footprintDepth
+	end
+
+	return movePreviewState.footprint.getBoundsDerivedFootprint(furnitureModel, context)
 end
 
 local function cellIsInsideFurnitureFootprint(cell, centerCell, footprintWidth, footprintDepth)
@@ -2176,7 +2306,10 @@ local function isCellBlockedByFurnitureFootprint(cell, context, furnitureFolder)
 			local centerCell = worldToCell(footprintCenter, context)
 
 			if centerCell then
-				local footprintWidth, footprintDepth = getRotatedFurnitureFootprint(furnitureModel, context)
+				local footprintWidth, footprintDepth = movePreviewState.footprint.getRotatedFootprint(
+					furnitureModel,
+					context
+				)
 
 				if cellIsInsideFurnitureFootprint(cell, centerCell, footprintWidth, footprintDepth) then
 					return true
@@ -2211,7 +2344,10 @@ local function getFurnitureFootprintBlockingNames(cell, context, furnitureFolder
 			local centerCell = worldToCell(footprintCenter, context)
 
 			if centerCell then
-				local footprintWidth, footprintDepth = getRotatedFurnitureFootprint(furnitureModel, context)
+				local footprintWidth, footprintDepth = movePreviewState.footprint.getRotatedFootprint(
+					furnitureModel,
+					context
+				)
 
 				if cellIsInsideFurnitureFootprint(cell, centerCell, footprintWidth, footprintDepth) then
 					addBlockingName(blockingNames, furnitureModel)
@@ -3165,7 +3301,10 @@ function movePreviewState.isPlacementMaskFootprintWalkable(previewModel, maskTar
 		floor = maskTarget.Context.Floor,
 		tileSize = maskTarget.Context.TileSize,
 	}
-	local footprintWidth, footprintDepth = getRotatedFurnitureFootprint(previewModel, movementContext)
+	local footprintWidth, footprintDepth = movePreviewState.footprint.getRotatedFootprint(
+		previewModel,
+		movementContext
+	)
 	local footprintWalkable = GridConfig.FootprintCellsAreWalkable(
 		maskTarget.Context,
 		maskTarget.CellX,
@@ -3544,7 +3683,10 @@ local function isPreviewFootprintWalkable(previewModel)
 		floor = gridContext.Floor,
 		tileSize = gridContext.TileSize,
 	}
-	local footprintWidth, footprintDepth = getRotatedFurnitureFootprint(previewModel, movementContext)
+	local footprintWidth, footprintDepth = movePreviewState.footprint.getRotatedFootprint(
+		previewModel,
+		movementContext
+	)
 	local footprintWalkable = GridConfig.FootprintCellsAreWalkable(
 		gridContext,
 		cellX,
