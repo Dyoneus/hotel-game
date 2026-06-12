@@ -3,6 +3,10 @@
 Regular Dollar furniture can be added to the Catalog by placing a template model in
 `ReplicatedStorage.FurnitureTemplates` and enabling catalog attributes on that model.
 
+For the full Meshy/imported furniture workflow, including `PlacementBounds`,
+pivots, validation, TileMask testing, and marketplace safety, see
+`docs/FURNITURE_IMPORT_PIPELINE.md`.
+
 ## Basic Setup
 
 1. Add a model under `ReplicatedStorage.FurnitureTemplates`.
