@@ -11,6 +11,11 @@
       "Shared": {
         "$className": "Folder",
         "$path": "src/ReplicatedStorage/Shared"
+      },
+
+      "FurnitureTemplates": {
+        "$className": "Folder",
+        "$path": "src/ReplicatedStorage/FurnitureTemplates"
       }
     },
 
