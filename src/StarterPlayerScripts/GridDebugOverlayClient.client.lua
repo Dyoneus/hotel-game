@@ -2,9 +2,11 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
--- Player-facing floor tile styling. Designers can set UsesTileGrid = false on
--- custom/decorative floors that should not show tile seams.
-local FLOOR_GRID_LINES_ENABLED = true
+-- Runtime grid line overlay for debugging and explicit grid-floor previews.
+-- Normal room view keeps the logical grid invisible; hover and placement
+-- feedback are owned by separate scripts.
+local SHOW_RUNTIME_GRID_OVERLAY = false
+local FLOOR_GRID_LINES_ENABLED = SHOW_RUNTIME_GRID_OVERLAY
 local DEBUG_GRID_LINES = false
 
 local GRID_LINE_COLOR = Color3.fromRGB(120, 120, 120)

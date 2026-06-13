@@ -11,6 +11,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local TOOL_PREFIX = "[CreateRoomLayout_Free_036_A]"
 local REPLACE_EXISTING = true
+-- Grid floor is the starter/default visual floor for now. Future floor styles
+-- should be room finishes purchasable/applicable separately from furniture.
+local FLOOR_STYLE = "Grid"
+
+local FLOOR_STYLES = {
+	Plain = true,
+	Grid = true,
+	Wood = true,
+	Checker = true,
+	Carpet = true,
+}
 
 local LAYOUT_ID = "Free_036_A"
 local TEMPLATE_NAME = "RoomLayout_Free_036_A"
@@ -30,6 +41,13 @@ local WALL_THICKNESS = 1
 local WALL_CENTER_Y = FLOOR_TOP_Y + WALL_HEIGHT / 2
 local DOOR_OPENING_WIDTH = TILE_SIZE
 local DOORWAY_COLLISION_CLEARANCE = TILE_SIZE / 2
+local DOOR_TILE_INDEX = 4
+
+local function getTileCenterX(tileIndex)
+	return -FLOOR_SIZE.X / 2 + (tileIndex - 0.5) * TILE_SIZE
+end
+
+local DOOR_CENTER_X = getTileCenterX(DOOR_TILE_INDEX)
 
 local COLORS = {
 	Floor = Color3.fromRGB(194, 184, 162),
@@ -147,6 +165,173 @@ local function createVisualPart(parent, name, size, cframe, color, material)
 	})
 end
 
+
+local function getFloorStyle()
+	if FLOOR_STYLES[FLOOR_STYLE] then
+		return FLOOR_STYLE
+	end
+
+	warn(TOOL_PREFIX .. " Unsupported FLOOR_STYLE='" .. tostring(FLOOR_STYLE) .. "'. Falling back to Plain.")
+	return "Plain"
+end
+
+local function getFloorColor(colorName, fallback)
+	return COLORS[colorName] or fallback
+end
+
+local function buildFloorBorder(decorativeFloor, prefix, color, material)
+	local y = FLOOR_TOP_Y + 0.02
+	local borderThickness = 0.12
+
+	createVisualPart(
+		decorativeFloor,
+		prefix .. "FrontBorder",
+		Vector3.new(FLOOR_SIZE.X, 0.03, borderThickness),
+		CFrame.new(0, y, -FLOOR_SIZE.Z / 2 + borderThickness / 2),
+		color,
+		material
+	)
+
+	createVisualPart(
+		decorativeFloor,
+		prefix .. "BackBorder",
+		Vector3.new(FLOOR_SIZE.X, 0.03, borderThickness),
+		CFrame.new(0, y, FLOOR_SIZE.Z / 2 - borderThickness / 2),
+		color,
+		material
+	)
+
+	createVisualPart(
+		decorativeFloor,
+		prefix .. "LeftBorder",
+		Vector3.new(borderThickness, 0.03, FLOOR_SIZE.Z),
+		CFrame.new(-FLOOR_SIZE.X / 2 + borderThickness / 2, y, 0),
+		color,
+		material
+	)
+
+	createVisualPart(
+		decorativeFloor,
+		prefix .. "RightBorder",
+		Vector3.new(borderThickness, 0.03, FLOOR_SIZE.Z),
+		CFrame.new(FLOOR_SIZE.X / 2 - borderThickness / 2, y, 0),
+		color,
+		material
+	)
+end
+
+local function buildPlainFloorStyle(decorativeFloor)
+	local borderColor = getFloorColor("FloorGrid", getFloorColor("FloorTileB", getFloorColor("FloorVein", COLORS.Floor)))
+	buildFloorBorder(decorativeFloor, "PlainFloor", borderColor, Enum.Material.SmoothPlastic)
+end
+
+local function buildGridFloorStyle(decorativeFloor)
+	local gridColor = getFloorColor("FloorGrid", getFloorColor("FloorTileB", getFloorColor("FloorVein", COLORS.Floor)))
+	local gridMaterial = COLORS.FloorVein and Enum.Material.Marble or Enum.Material.SmoothPlastic
+
+	for xIndex = 1, GRID_WIDTH - 1 do
+		local x = -FLOOR_SIZE.X / 2 + xIndex * TILE_SIZE
+
+		createVisualPart(
+			decorativeFloor,
+			"GridLineX_" .. tostring(xIndex),
+			Vector3.new(0.045, 0.03, FLOOR_SIZE.Z),
+			CFrame.new(x, FLOOR_TOP_Y + 0.025, 0),
+			gridColor,
+			gridMaterial
+		)
+	end
+
+	for zIndex = 1, GRID_DEPTH - 1 do
+		local z = -FLOOR_SIZE.Z / 2 + zIndex * TILE_SIZE
+
+		createVisualPart(
+			decorativeFloor,
+			"GridLineZ_" .. tostring(zIndex),
+			Vector3.new(FLOOR_SIZE.X, 0.03, 0.045),
+			CFrame.new(0, FLOOR_TOP_Y + 0.026, z),
+			gridColor,
+			gridMaterial
+		)
+	end
+end
+
+local function buildWoodFloorStyle(decorativeFloor)
+	local plankA = getFloorColor("FloorTileA", getFloorColor("FloorAccent", COLORS.Floor))
+	local plankB = getFloorColor("FloorTileB", getFloorColor("FloorVein", getFloorColor("FloorGrid", COLORS.Floor)))
+
+	for xIndex = 1, GRID_WIDTH do
+		local x = -FLOOR_SIZE.X / 2 + (xIndex - 0.5) * TILE_SIZE
+		local color = if xIndex % 2 == 0 then plankA else plankB
+
+		createVisualPart(
+			decorativeFloor,
+			"WoodPlank_" .. tostring(xIndex),
+			Vector3.new(TILE_SIZE - 0.08, 0.025, FLOOR_SIZE.Z),
+			CFrame.new(x, FLOOR_TOP_Y + 0.018, 0),
+			color,
+			Enum.Material.Wood
+		)
+	end
+end
+
+local function buildCheckerFloorStyle(decorativeFloor)
+	local tileA = getFloorColor("FloorTileA", getFloorColor("FloorAccent", COLORS.Floor))
+	local tileB = getFloorColor("FloorTileB", getFloorColor("FloorVein", getFloorColor("FloorGrid", COLORS.Floor)))
+
+	for xIndex = 1, GRID_WIDTH do
+		for zIndex = 1, GRID_DEPTH do
+			local x = -FLOOR_SIZE.X / 2 + (xIndex - 0.5) * TILE_SIZE
+			local z = -FLOOR_SIZE.Z / 2 + (zIndex - 0.5) * TILE_SIZE
+			local color = if (xIndex + zIndex) % 2 == 0 then tileA else tileB
+
+			createVisualPart(
+				decorativeFloor,
+				"CheckerTile_" .. tostring(xIndex) .. "_" .. tostring(zIndex),
+				Vector3.new(TILE_SIZE, 0.025, TILE_SIZE),
+				CFrame.new(x, FLOOR_TOP_Y + 0.018, z),
+				color,
+				Enum.Material.SmoothPlastic
+			)
+		end
+	end
+end
+
+local function buildCarpetFloorStyle(decorativeFloor)
+	local carpetColor = getFloorColor("Entrance", getFloorColor("FloorAccent", COLORS.Floor))
+	local borderColor = getFloorColor("EntranceEdge", getFloorColor("WallTrim", getFloorColor("GoldTrim", getFloorColor("DarkTrim", carpetColor))))
+
+	createVisualPart(
+		decorativeFloor,
+		"CarpetCenterPanel",
+		Vector3.new(math.max(TILE_SIZE, FLOOR_SIZE.X - TILE_SIZE), 0.035, math.max(TILE_SIZE, FLOOR_SIZE.Z - TILE_SIZE)),
+		CFrame.new(0, FLOOR_TOP_Y + 0.025, 0),
+		carpetColor,
+		Enum.Material.Fabric
+	)
+
+	buildFloorBorder(decorativeFloor, "Carpet", borderColor, Enum.Material.Fabric)
+end
+
+local function buildFloorStyle(decorativeFloor)
+	local floorStyle = getFloorStyle()
+	decorativeFloor:SetAttribute("FloorStyle", floorStyle)
+
+	if floorStyle == "Grid" then
+		buildGridFloorStyle(decorativeFloor)
+	elseif floorStyle == "Wood" then
+		buildWoodFloorStyle(decorativeFloor)
+	elseif floorStyle == "Checker" then
+		buildCheckerFloorStyle(decorativeFloor)
+	elseif floorStyle == "Carpet" then
+		buildCarpetFloorStyle(decorativeFloor)
+	else
+		buildPlainFloorStyle(decorativeFloor)
+	end
+
+	return floorStyle
+end
+
 local function buildWalls(roomFolder)
 	local walls = Instance.new("Folder")
 	walls.Name = "Walls"
@@ -154,8 +339,14 @@ local function buildWalls(roomFolder)
 
 	local halfWidth = FLOOR_SIZE.X / 2
 	local halfDepth = FLOOR_SIZE.Z / 2
-	local frontVisualSegmentWidth = (FLOOR_SIZE.X - DOOR_OPENING_WIDTH) / 2
-	local frontCollisionSegmentWidth = math.max(0, frontVisualSegmentWidth - DOORWAY_COLLISION_CLEARANCE)
+	local leftEdgeX = -halfWidth
+	local rightEdgeX = halfWidth
+	local doorLeftX = DOOR_CENTER_X - DOOR_OPENING_WIDTH / 2
+	local doorRightX = DOOR_CENTER_X + DOOR_OPENING_WIDTH / 2
+	local frontLeftVisualSegmentWidth = math.max(0, doorLeftX - leftEdgeX)
+	local frontRightVisualSegmentWidth = math.max(0, rightEdgeX - doorRightX)
+	local frontLeftCollisionSegmentWidth = math.max(0, doorLeftX - DOORWAY_COLLISION_CLEARANCE - leftEdgeX)
+	local frontRightCollisionSegmentWidth = math.max(0, rightEdgeX - doorRightX - DOORWAY_COLLISION_CLEARANCE)
 	local frontWallZ = -halfDepth - WALL_THICKNESS / 2
 
 	createWall(
@@ -182,8 +373,8 @@ local function buildWalls(roomFolder)
 	createVisualPart(
 		walls,
 		"WallFrontLeft",
-		Vector3.new(frontVisualSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
-		CFrame.new(-(DOOR_OPENING_WIDTH / 2 + frontVisualSegmentWidth / 2), WALL_CENTER_Y, frontWallZ),
+		Vector3.new(frontLeftVisualSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
+		CFrame.new(leftEdgeX + frontLeftVisualSegmentWidth / 2, WALL_CENTER_Y, frontWallZ),
 		COLORS.Wall,
 		Enum.Material.SmoothPlastic
 	)
@@ -191,27 +382,27 @@ local function buildWalls(roomFolder)
 	createVisualPart(
 		walls,
 		"WallFrontRight",
-		Vector3.new(frontVisualSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
-		CFrame.new(DOOR_OPENING_WIDTH / 2 + frontVisualSegmentWidth / 2, WALL_CENTER_Y, frontWallZ),
+		Vector3.new(frontRightVisualSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
+		CFrame.new(doorRightX + frontRightVisualSegmentWidth / 2, WALL_CENTER_Y, frontWallZ),
 		COLORS.Wall,
 		Enum.Material.SmoothPlastic
 	)
 
-	if frontCollisionSegmentWidth > 0 then
-		local frontCollisionCenterX = DOOR_OPENING_WIDTH / 2 + DOORWAY_COLLISION_CLEARANCE + frontCollisionSegmentWidth / 2
-
+	if frontLeftCollisionSegmentWidth > 0 then
 		createInvisibleCollider(
 			walls,
 			"WallFrontLeftCollision",
-			Vector3.new(frontCollisionSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
-			CFrame.new(-frontCollisionCenterX, WALL_CENTER_Y, frontWallZ)
+			Vector3.new(frontLeftCollisionSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
+			CFrame.new(leftEdgeX + frontLeftCollisionSegmentWidth / 2, WALL_CENTER_Y, frontWallZ)
 		)
+	end
 
+	if frontRightCollisionSegmentWidth > 0 then
 		createInvisibleCollider(
 			walls,
 			"WallFrontRightCollision",
-			Vector3.new(frontCollisionSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
-			CFrame.new(frontCollisionCenterX, WALL_CENTER_Y, frontWallZ)
+			Vector3.new(frontRightCollisionSegmentWidth, WALL_HEIGHT, WALL_THICKNESS),
+			CFrame.new(rightEdgeX - frontRightCollisionSegmentWidth / 2, WALL_CENTER_Y, frontWallZ)
 		)
 	end
 
@@ -219,7 +410,7 @@ local function buildWalls(roomFolder)
 		walls,
 		"DoorOpeningTrimTop",
 		Vector3.new(DOOR_OPENING_WIDTH + 0.5, 0.35, 0.7),
-		CFrame.new(0, FLOOR_TOP_Y + WALL_HEIGHT - 0.6, frontWallZ),
+		CFrame.new(DOOR_CENTER_X, FLOOR_TOP_Y + WALL_HEIGHT - 0.6, frontWallZ),
 		COLORS.Trim,
 		Enum.Material.Wood
 	)
@@ -234,34 +425,13 @@ local function buildDecorativeFloor(roomFolder)
 		decorativeFloor,
 		"EntranceMat",
 		Vector3.new(DOOR_OPENING_WIDTH, 0.06, TILE_SIZE * 1.5),
-		CFrame.new(0, FLOOR_TOP_Y + 0.04, -FLOOR_SIZE.Z / 2 + TILE_SIZE * 0.75),
+		CFrame.new(DOOR_CENTER_X, FLOOR_TOP_Y + 0.04, -FLOOR_SIZE.Z / 2 + TILE_SIZE * 0.75),
 		COLORS.Entrance,
 		Enum.Material.Fabric
 	)
 
-	for xIndex = 1, GRID_WIDTH - 1 do
-		local x = -FLOOR_SIZE.X / 2 + xIndex * TILE_SIZE
 
-		createVisualPart(
-			decorativeFloor,
-			"GridLineX_" .. tostring(xIndex),
-			Vector3.new(0.05, 0.03, FLOOR_SIZE.Z),
-			CFrame.new(x, FLOOR_TOP_Y + 0.025, 0),
-			COLORS.FloorTileB
-		)
-	end
-
-	for zIndex = 1, GRID_DEPTH - 1 do
-		local z = -FLOOR_SIZE.Z / 2 + zIndex * TILE_SIZE
-
-		createVisualPart(
-			decorativeFloor,
-			"GridLineZ_" .. tostring(zIndex),
-			Vector3.new(FLOOR_SIZE.X, 0.03, 0.05),
-			CFrame.new(0, FLOOR_TOP_Y + 0.026, z),
-			COLORS.FloorTileB
-		)
-	end
+	buildFloorStyle(decorativeFloor)
 end
 
 local function buildDecor(roomFolder)
@@ -322,8 +492,8 @@ local function buildTemplate(templateFolder)
 	setGridAttributes(template)
 
 	local roomAnchor = createMarker(template, "RoomAnchor", CFrame.new(0, 0, 0))
-	local doorSpawnPosition = Vector3.new(0, MARKER_Y, -FLOOR_SIZE.Z / 2 - 2)
-	local entryWalkTargetPosition = Vector3.new(0, MARKER_Y, -FLOOR_SIZE.Z / 2 + TILE_SIZE / 2)
+	local doorSpawnPosition = Vector3.new(DOOR_CENTER_X, MARKER_Y, -FLOOR_SIZE.Z / 2 - 2)
+	local entryWalkTargetPosition = Vector3.new(DOOR_CENTER_X, MARKER_Y, -FLOOR_SIZE.Z / 2 + TILE_SIZE / 2)
 	local doorSpawn = createMarker(template, "DoorSpawn", createRoomFacingCFrame(doorSpawnPosition))
 	local entryWalkTarget = createMarker(template, "EntryWalkTarget", createRoomFacingCFrame(entryWalkTargetPosition))
 	template.PrimaryPart = roomAnchor
@@ -345,7 +515,7 @@ local function buildTemplate(templateFolder)
 		roomFolder,
 		"RoomExitZone",
 		Vector3.new(DOOR_OPENING_WIDTH, 6, TILE_SIZE),
-		CFrame.new(0, FLOOR_TOP_Y + 3, -FLOOR_SIZE.Z / 2 - TILE_SIZE / 2),
+		CFrame.new(DOOR_CENTER_X, FLOOR_TOP_Y + 3, -FLOOR_SIZE.Z / 2 - TILE_SIZE / 2),
 		{
 			CanCollide = false,
 			CanTouch = false,
@@ -388,8 +558,10 @@ print(string.format(
 print(TOOL_PREFIX .. " RoomAnchor position: " .. tostring(roomAnchor.Position))
 print(TOOL_PREFIX .. " DoorSpawn position: " .. tostring(doorSpawn.Position))
 print(TOOL_PREFIX .. " EntryWalkTarget position: " .. tostring(entryWalkTarget.Position))
+print(string.format("%s DoorTileIndex=%d DoorCenterX=%.1f.", TOOL_PREFIX, DOOR_TILE_INDEX, DOOR_CENTER_X))
 print(string.format("%s Cave width = %.0f tile (%.1f studs).", TOOL_PREFIX, DOOR_OPENING_WIDTH / TILE_SIZE, DOOR_OPENING_WIDTH))
 print(string.format("%s EntryWalkTarget remains first interior tile: z=%.1f.", TOOL_PREFIX, entryWalkTarget.Position.Z))
 print(TOOL_PREFIX .. " Doorway trim is non-colliding; entrance-edge visuals do not block the character.")
 print(TOOL_PREFIX .. " Entrance lane kept clear from DoorSpawn to EntryWalkTarget.")
+print(string.format("%s FloorStyle=%s. Gameplay grid remains logical via UsesTileGrid/TileSize/GridWidth/GridDepth.", TOOL_PREFIX, getFloorStyle()))
 print(TOOL_PREFIX .. " Next: run docs/tools/ValidateRoomLayoutTemplates.lua, then create and join Starter Studio from Room Planner.")
