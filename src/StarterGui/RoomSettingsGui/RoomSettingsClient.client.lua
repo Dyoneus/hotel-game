@@ -31,6 +31,7 @@ local ROOM_NAME_MAX_LENGTH = 30
 local ROOM_DESCRIPTION_MAX_LENGTH = 100
 local TAB_BASIC = "Basic"
 local TAB_RIGHTS = "Rights"
+local TAB_FLOOR = "Floor"
 local TAB_BANNED = "Banned Users"
 local TAB_MODERATION = "Moderation"
 local THEME = {
@@ -59,8 +60,12 @@ local state = {
 	category = "Chat Rooms",
 	isPublic = true,
 	editors = {},
+	floorStyles = {},
+	currentFloorStyleId = nil,
 	editorRequestInFlight = false,
 	settingsRequestInFlight = false,
+	floorRequestInFlight = false,
+	applyingFloorStyleId = nil,
 	restoreNavigatorState = nil,
 	openRoomName = nil,
 }
@@ -262,9 +267,10 @@ ui.tabLayout.Padding = UDim.new(0, 8)
 ui.tabLayout.Parent = ui.tabBar
 
 ui.tabs = {}
-for index, tabName in ipairs({ TAB_BASIC, TAB_RIGHTS, TAB_BANNED, TAB_MODERATION }) do
-	local button = createTextButton("Tab_" .. tabName:gsub("%W", ""), tabName, UDim2.new(0.25, -6, 1, 0), ui.tabBar)
+for index, tabName in ipairs({ TAB_BASIC, TAB_RIGHTS, TAB_FLOOR, TAB_BANNED, TAB_MODERATION }) do
+	local button = createTextButton("Tab_" .. tabName:gsub("%W", ""), tabName, UDim2.new(0.2, -7, 1, 0), ui.tabBar)
 	button.LayoutOrder = index
+	button.TextTruncate = Enum.TextTruncate.AtEnd
 	ui.tabs[tabName] = button
 end
 
@@ -386,6 +392,15 @@ end
 local function requestEditors()
 	state.editorRequestInFlight = true
 	roomSettingsRequest:FireServer("GetRoomEditors", {
+		RoomId = state.roomId,
+	})
+end
+
+local function requestFloorStyles()
+	state.floorRequestInFlight = true
+	state.applyingFloorStyleId = nil
+	setStatus("Loading floor styles...", false)
+	roomSettingsRequest:FireServer("GetRoomFloorStyles", {
 		RoomId = state.roomId,
 	})
 end
@@ -633,6 +648,115 @@ local function renderRightsTab()
 	renderEditorRows()
 end
 
+local function renderFloorTab()
+	clearGuiObjects(ui.content)
+	ui.content.CanvasPosition = Vector2.zero
+
+	local styles = typeof(state.floorStyles) == "table" and state.floorStyles or {}
+	local cardHeight = 92
+	local cardGap = 10
+	local contentHeight = math.max(150, 72 + (#styles * (cardHeight + cardGap)))
+
+	ui.content.CanvasSize = UDim2.fromOffset(0, contentHeight)
+
+	createLabel("FloorTitle", "Floor Style", UDim2.fromOffset(18, 16), UDim2.new(1, -36, 0, 24), ui.content, {
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+	})
+	createLabel(
+		"FloorNote",
+		"Choose a starter floor style for this room.",
+		UDim2.fromOffset(18, 40),
+		UDim2.new(1, -36, 0, 20),
+		ui.content,
+		{ TextColor3 = THEME.SubtleText, TextSize = 12 }
+	)
+
+	if #styles == 0 then
+		createLabel(
+			"FloorEmpty",
+			state.floorRequestInFlight and "Loading floor styles..." or "Room styling is only available in your own rooms.",
+			UDim2.fromOffset(18, 78),
+			UDim2.new(1, -36, 0, 26),
+			ui.content,
+			{ TextColor3 = THEME.SubtleText, TextSize = 12, Font = Enum.Font.GothamMedium }
+		)
+		return
+	end
+
+	for index, style in ipairs(styles) do
+		local floorStyleId = tostring(style.FloorStyleId or "")
+		local isCurrent = style.Current == true or floorStyleId == state.currentFloorStyleId
+		local isApplying = state.applyingFloorStyleId == floorStyleId
+		local y = 72 + ((index - 1) * (cardHeight + cardGap))
+
+		local card = Instance.new("Frame")
+		card.Name = "FloorStyleCard_" .. floorStyleId
+		card.Position = UDim2.fromOffset(18, y)
+		card.Size = UDim2.new(1, -36, 0, cardHeight)
+		card.BackgroundColor3 = isCurrent and THEME.PanelAlt or Color3.fromRGB(255, 248, 230)
+		card.BorderSizePixel = 0
+		card.Parent = ui.content
+
+		createCorner(card, 6)
+		createStroke(card, isCurrent and THEME.Confirm or THEME.PanelStroke, 1, isCurrent and 0.1 or 0.25)
+
+		createLabel(
+			"StyleName",
+			tostring(style.DisplayName or floorStyleId),
+			UDim2.fromOffset(12, 8),
+			UDim2.new(1, -132, 0, 22),
+			card,
+			{ Font = Enum.Font.GothamBold, TextSize = 13, TextTruncate = Enum.TextTruncate.AtEnd }
+		)
+		createLabel(
+			"StyleDescription",
+			tostring(style.Description or ""),
+			UDim2.fromOffset(12, 32),
+			UDim2.new(1, -132, 0, 40),
+			card,
+			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top }
+		)
+
+		if isCurrent then
+			local currentBadge = createTextButton("CurrentBadge", "Current", UDim2.fromOffset(86, 28), card)
+			currentBadge.AnchorPoint = Vector2.new(1, 0)
+			currentBadge.Position = UDim2.new(1, -12, 0, 10)
+			currentBadge.BackgroundColor3 = THEME.Confirm
+			currentBadge.Active = false
+			currentBadge.AutoButtonColor = false
+		else
+			local applyButton = createTextButton(
+				"ApplyButton",
+				isApplying and "Applying..." or "Apply",
+				UDim2.fromOffset(92, 30),
+				card
+			)
+			applyButton.AnchorPoint = Vector2.new(1, 0)
+			applyButton.Position = UDim2.new(1, -12, 0, 10)
+			applyButton.BackgroundColor3 = style.Usable == false and THEME.ButtonMuted or THEME.Confirm
+			applyButton.Active = state.floorRequestInFlight ~= true and style.Usable ~= false
+			applyButton.AutoButtonColor = applyButton.Active
+			applyButton.MouseButton1Click:Connect(function()
+				if state.floorRequestInFlight or style.Usable == false then
+					return
+				end
+
+				state.floorRequestInFlight = true
+				state.applyingFloorStyleId = floorStyleId
+				applyButton.Text = "Applying..."
+				applyButton.Active = false
+				applyButton.AutoButtonColor = false
+				setStatus("Applying floor style...", false)
+				roomSettingsRequest:FireServer("ApplyRoomFloorStyle", {
+					RoomId = state.roomId,
+					FloorStyleId = floorStyleId,
+				})
+			end)
+		end
+	end
+end
+
 local function renderPlaceholderTab(message, includeDisabledOptions)
 	clearGuiObjects(ui.content)
 	ui.content.CanvasPosition = Vector2.zero
@@ -678,6 +802,9 @@ renderActiveTab = function()
 	elseif state.activeTab == TAB_RIGHTS then
 		renderRightsTab()
 		requestEditors()
+	elseif state.activeTab == TAB_FLOOR then
+		requestFloorStyles()
+		renderFloorTab()
 	elseif state.activeTab == TAB_BANNED then
 		renderPlaceholderTab("Banned users are coming soon.", false)
 	elseif state.activeTab == TAB_MODERATION then
@@ -706,13 +833,31 @@ local function applySettings(settings)
 	setVisibility(settings.IsPublic == true)
 end
 
+local function applyFloorStyles(response)
+	if typeof(response.CurrentFloorStyleId) == "string" then
+		state.currentFloorStyleId = response.CurrentFloorStyleId
+	end
+
+	if typeof(response.Styles) == "table" then
+		state.floorStyles = response.Styles
+	end
+
+	if state.activeTab == TAB_FLOOR then
+		renderFloorTab()
+	end
+end
+
 local function openWindow(payload)
 	state.isOpen = true
 	state.roomId = getCurrentRoomId(payload)
 	state.activeTab = TAB_BASIC
 	state.editors = {}
+	state.floorStyles = {}
+	state.currentFloorStyleId = nil
 	state.editorRequestInFlight = false
 	state.settingsRequestInFlight = false
+	state.floorRequestInFlight = false
+	state.applyingFloorStyleId = nil
 	state.restoreNavigatorState = nil
 	state.openRoomName = player:GetAttribute("CurrentRoomName")
 
@@ -803,7 +948,18 @@ if workspace.CurrentCamera then
 end
 
 roomSettingsResult.OnClientEvent:Connect(function(response)
-	if not state.isOpen or typeof(response) ~= "table" or response.Kind ~= "RoomSettings" then
+	if not state.isOpen or typeof(response) ~= "table" then
+		return
+	end
+
+	local responseKind = response.Kind
+	local action = response.Action
+
+	if responseKind == "GetRoomFloorStyles" then
+		action = "GetRoomFloorStyles"
+	elseif responseKind == "ApplyRoomFloorStyle" then
+		action = "ApplyRoomFloorStyle"
+	elseif responseKind ~= "RoomSettings" then
 		return
 	end
 
@@ -817,8 +973,6 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		return
 	end
 
-	local action = response.Action
-
 	if action == "GetSettings" or action == "UpdateSettings" then
 		state.settingsRequestInFlight = false
 
@@ -828,10 +982,23 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		end
 	elseif action == "GetRoomEditors" or action == "AddRoomEditor" or action == "RemoveRoomEditor" then
 		state.editorRequestInFlight = false
+	elseif action == "GetRoomFloorStyles" or action == "ApplyRoomFloorStyle" then
+		state.floorRequestInFlight = false
+		state.applyingFloorStyleId = nil
 	end
 
 	if response.Success ~= true then
+		if action == "GetRoomFloorStyles" or action == "ApplyRoomFloorStyle" then
+			applyFloorStyles(response)
+		end
+
 		setStatus(response.Message or "Room settings update failed.", true)
+		return
+	end
+
+	if action == "GetRoomFloorStyles" or action == "ApplyRoomFloorStyle" then
+		applyFloorStyles(response)
+		setStatus(action == "ApplyRoomFloorStyle" and (response.Message or "Floor updated.") or "", false)
 		return
 	end
 
