@@ -7,7 +7,9 @@ local Players = game:GetService("Players")
 
 local RoomPersistence = {}
 
-local RoomLayoutConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("RoomLayoutConfig"))
+local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
+local RoomLayoutConfig = require(sharedFolder:WaitForChild("RoomLayoutConfig"))
+local RoomFloorStyleConfig = require(sharedFolder:WaitForChild("RoomFloorStyleConfig"))
 
 local DATASTORE_NAME = "PlayerProfiles_v1"
 local SAVE_DELAY_SECONDS = 12
@@ -38,6 +40,7 @@ local DEFAULT_PRIMARY_LAYOUT_ID = "Layout_01"
 local DEFAULT_ROOM_DISPLAY_NAME = "My Room"
 local ROOM_DISPLAY_NAME_MAX_LENGTH = 30
 local ROOM_DESCRIPTION_MAX_LENGTH = 100
+local PROFILE_COULD_NOT_LOAD_FLOOR_STYLE_MESSAGE = "Profile is not loaded and could not be loaded."
 local DEBUG_ROOM_DELETE_TRACE = false
 local DEBUG_ROOM_SAVE_TRACE = false
 local DEBUG_PROFILE_CACHE = false
@@ -106,6 +109,10 @@ local function createDefaultProfile()
 				DisplayName = DEFAULT_ROOM_DISPLAY_NAME,
 				LayoutId = DEFAULT_PRIMARY_LAYOUT_ID,
 				RoomState = {},
+				Style = {
+					FloorStyleId = RoomFloorStyleConfig.GetDefaultStyleId(),
+					UpdatedAt = now,
+				},
 				Category = "Chat Rooms",
 				IsPublic = true,
 				MaxOccupancy = 25,
@@ -982,6 +989,59 @@ local function getRoomStateLayoutId(roomState)
 	return isNonEmptyString(roomState.LayoutId) and roomState.LayoutId or nil
 end
 
+local function getDefaultFloorStyleId()
+	local defaultStyleId = RoomFloorStyleConfig.GetDefaultStyleId()
+
+	if isNonEmptyString(defaultStyleId) and RoomFloorStyleConfig.IsValidStyleId(defaultStyleId) then
+		return defaultStyleId
+	end
+
+	return "Grid"
+end
+
+local function normalizeRoomStyle(style, defaults)
+	defaults = defaults or {}
+
+	if typeof(style) ~= "table" then
+		style = {}
+	end
+
+	if not isNonEmptyString(style.FloorStyleId)
+		or not RoomFloorStyleConfig.IsValidStyleId(style.FloorStyleId) then
+
+		style.FloorStyleId = isNonEmptyString(defaults.FloorStyleId)
+			and RoomFloorStyleConfig.IsValidStyleId(defaults.FloorStyleId)
+			and defaults.FloorStyleId
+			or getDefaultFloorStyleId()
+	end
+
+	local now = os.time()
+	style.UpdatedAt = isNonNegativeInteger(style.UpdatedAt)
+		and math.floor(style.UpdatedAt)
+		or defaults.UpdatedAt
+		or now
+
+	return style
+end
+
+local function normalizeRoomStyleForRecord(roomRecord, defaults)
+	defaults = defaults or {}
+
+	local style = roomRecord.Style
+	local styleDefaults = defaults.Style
+
+	if typeof(style) ~= "table" and typeof(styleDefaults) == "table" then
+		style = deepCopy(styleDefaults)
+	end
+
+	roomRecord.Style = normalizeRoomStyle(style, {
+		FloorStyleId = typeof(styleDefaults) == "table" and styleDefaults.FloorStyleId or nil,
+		UpdatedAt = typeof(styleDefaults) == "table" and styleDefaults.UpdatedAt or roomRecord.UpdatedAt,
+	})
+
+	return roomRecord.Style
+end
+
 local function ensureIntegerOrDefault(value, defaultValue)
 	if isFiniteInteger(value) then
 		return math.floor(value)
@@ -1046,6 +1106,7 @@ local function normalizeRoomRecord(roomRecord, roomId, defaults)
 		or defaults.UpdatedAt
 		or roomRecord.CreatedAt
 		or now
+	normalizeRoomStyleForRecord(roomRecord, defaults)
 	roomRecord.IsPrimary = roomId == PRIMARY_ROOM_ID
 	roomRecord.SortOrder = ensureIntegerOrDefault(
 		roomRecord.SortOrder,
@@ -1351,6 +1412,16 @@ local function getRoomSettingsSnapshot(roomRecord)
 		UpdatedAt = roomRecord.UpdatedAt,
 		SortOrder = roomRecord.SortOrder,
 	}
+end
+
+local function getRoomStyleSnapshot(roomRecord)
+	if typeof(roomRecord) ~= "table" then
+		return nil
+	end
+
+	return deepCopy(normalizeRoomStyleForRecord(roomRecord, {
+		UpdatedAt = roomRecord.UpdatedAt,
+	}))
 end
 
 local function mirrorPrimaryRoomSettingsToLegacy(profile, roomRecord)
@@ -1912,6 +1983,30 @@ function RoomPersistence.GetProfile(player)
 	return profile
 end
 
+local function getOrLoadProfileForFloorStyle(player)
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return nil, "Invalid player."
+	end
+
+	local profile = RoomPersistence.GetProfile(player)
+
+	if profile then
+		return profile, nil
+	end
+
+	local loadedProfile, loaded = RoomPersistence.LoadProfile(player)
+
+	if loaded and loadedProfile then
+		profile = RoomPersistence.GetProfile(player) or loadedProfile
+	end
+
+	if not profile then
+		return nil, PROFILE_COULD_NOT_LOAD_FLOOR_STYLE_MESSAGE
+	end
+
+	return profile, nil
+end
+
 function RoomPersistence.EnsureRoomsSchema(profile)
 	return ensureRoomsSchema(profile)
 end
@@ -1994,6 +2089,98 @@ function RoomPersistence.GetRoomSettingsForRoom(player, roomId)
 	end
 
 	return getRoomSettingsSnapshot(roomRecord)
+end
+
+function RoomPersistence.GetRoomStyleForRoom(player, roomId)
+	local profile, profileMessage = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return nil, profileMessage
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return nil, "Room not found."
+	end
+
+	return getRoomStyleSnapshot(roomRecord), "Room style loaded."
+end
+
+function RoomPersistence.GetRoomFloorStyle(player, roomId)
+	local defaultStyleId = getDefaultFloorStyleId()
+	local profile = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return defaultStyleId
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return defaultStyleId
+	end
+
+	local style = normalizeRoomStyleForRecord(roomRecord, {
+		UpdatedAt = roomRecord.UpdatedAt,
+	})
+	local floorStyleId = style and style.FloorStyleId
+
+	if RoomFloorStyleConfig.IsValidStyleId(floorStyleId) then
+		return floorStyleId
+	end
+
+	return defaultStyleId
+end
+
+function RoomPersistence.SetRoomFloorStyleForRoom(player, roomId, floorStyleId, _options)
+	local profile, profileMessage = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return false, profileMessage, nil
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found.", nil
+	end
+
+	local normalizedFloorStyleId = trimString(floorStyleId)
+
+	if not isNonEmptyString(normalizedFloorStyleId)
+		or not RoomFloorStyleConfig.IsValidStyleId(normalizedFloorStyleId) then
+
+		return false, "Floor style not found.", nil
+	end
+
+	local canUseStyle, useStyleMessage = RoomFloorStyleConfig.CanUseStyle(normalizedFloorStyleId, {
+		IsStarter = true,
+	})
+
+	if not canUseStyle then
+		return false, useStyleMessage or "Floor style is not available.", nil
+	end
+
+	local now = os.time()
+	local style = normalizeRoomStyleForRecord(roomRecord, {
+		UpdatedAt = roomRecord.UpdatedAt,
+	})
+
+	style.FloorStyleId = normalizedFloorStyleId
+	style.UpdatedAt = now
+	roomRecord.UpdatedAt = now
+	profile.UpdatedAt = now
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Floor style saved.", deepCopy(style)
 end
 
 function RoomPersistence.UpdateRoomSettingsForRoom(player, roomId, updates)

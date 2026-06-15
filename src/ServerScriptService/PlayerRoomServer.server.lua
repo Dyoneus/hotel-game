@@ -11,6 +11,7 @@ local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistenc
 local RoomPermissionService = require(ServerScriptService:WaitForChild("RoomPermissionService"))
 local PublicRoomConfig = require(sharedFolder:WaitForChild("PublicRoomConfig"))
 local RoomLayoutConfig = require(sharedFolder:WaitForChild("RoomLayoutConfig"))
+local RoomFloorStyleRenderer = require(sharedFolder:WaitForChild("RoomFloorStyleRenderer"))
 local RoomTextPolicyConfig = require(sharedFolder:WaitForChild("RoomTextPolicyConfig"))
 local GridConfig = require(sharedFolder:WaitForChild("GridConfig"))
 
@@ -807,6 +808,36 @@ local function removeEditorHelpers(roomModel)
 	end
 end
 
+local function applyOwnedRoomFloorStyle(roomModel, ownerPlayer, roomId)
+	if not roomModel or not roomModel:IsA("Model") then
+		return
+	end
+
+	local floorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId)
+	local success, applied, message = pcall(function()
+		return RoomFloorStyleRenderer.ApplyFloorStyle(roomModel, floorStyleId)
+	end)
+
+	if not success then
+		warn(
+			"Could not apply owned room floor style:",
+			ownerPlayer and ownerPlayer.Name or "unknown",
+			tostring(roomId),
+			applied
+		)
+		return
+	end
+
+	if not applied then
+		warn(
+			"Could not apply owned room floor style:",
+			ownerPlayer and ownerPlayer.Name or "unknown",
+			tostring(roomId),
+			message
+		)
+	end
+end
+
 local function cloneRoomForPlayer(player, layoutId, roomId)
 	local template, templateError, templateName = resolveOwnedRoomTemplate(layoutId, true, player)
 
@@ -860,6 +891,7 @@ local function cloneRoomForPlayer(player, layoutId, roomId)
 	roomClone:SetAttribute("RoomId", normalizedRoomId)
 	roomClone:SetAttribute("RoomKey", roomClone.Name)
 	roomClone:SetAttribute("DisplayName", player.DisplayName .. "'s Room")
+	applyOwnedRoomFloorStyle(roomClone, player, normalizedRoomId)
 	warnRoomGridValidation(roomClone, "PlayerRoom")
 
 	playerRooms[player] = roomClone
