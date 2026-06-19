@@ -66,6 +66,7 @@ local state = {
 	settingsRequestInFlight = false,
 	floorRequestInFlight = false,
 	applyingFloorStyleId = nil,
+	floorRequestId = 0,
 	restoreNavigatorState = nil,
 	openRoomName = nil,
 }
@@ -396,12 +397,30 @@ local function requestEditors()
 	})
 end
 
-local function requestFloorStyles()
+local function nextFloorRequestId()
+	state.floorRequestId = state.floorRequestId + 1
+	return state.floorRequestId
+end
+
+local function requestFloorStyles(options)
+	options = options or {}
+
 	state.floorRequestInFlight = true
 	state.applyingFloorStyleId = nil
-	setStatus("Loading floor styles...", false)
+	local requestId = nextFloorRequestId()
+
+	if options.ClearStyles ~= false then
+		state.floorStyles = {}
+	end
+
+	if options.SetStatus ~= false then
+		setStatus("Loading floor styles...", false)
+	end
+
 	roomSettingsRequest:FireServer("GetRoomFloorStyles", {
 		RoomId = state.roomId,
+		RequestId = requestId,
+		Silent = options.Silent == true,
 	})
 end
 
@@ -653,7 +672,7 @@ local function renderFloorTab()
 	ui.content.CanvasPosition = Vector2.zero
 
 	local styles = typeof(state.floorStyles) == "table" and state.floorStyles or {}
-	local cardHeight = 92
+	local cardHeight = 96
 	local cardGap = 10
 	local contentHeight = math.max(150, 72 + (#styles * (cardHeight + cardGap)))
 
@@ -665,7 +684,7 @@ local function renderFloorTab()
 	})
 	createLabel(
 		"FloorNote",
-		"Choose a starter floor style for this room.",
+		"Choose a floor style for this room.",
 		UDim2.fromOffset(18, 40),
 		UDim2.new(1, -36, 0, 20),
 		ui.content,
@@ -688,18 +707,27 @@ local function renderFloorTab()
 		local floorStyleId = tostring(style.FloorStyleId or "")
 		local isCurrent = style.Current == true or floorStyleId == state.currentFloorStyleId
 		local isApplying = state.applyingFloorStyleId == floorStyleId
+		local isUsable = style.Usable ~= false
+		local lockedReason = tostring(style.LockedReason or "Not owned")
 		local y = 72 + ((index - 1) * (cardHeight + cardGap))
 
 		local card = Instance.new("Frame")
 		card.Name = "FloorStyleCard_" .. floorStyleId
 		card.Position = UDim2.fromOffset(18, y)
 		card.Size = UDim2.new(1, -36, 0, cardHeight)
-		card.BackgroundColor3 = isCurrent and THEME.PanelAlt or Color3.fromRGB(255, 248, 230)
+		card.BackgroundColor3 = isCurrent
+			and THEME.PanelAlt
+			or (isUsable and Color3.fromRGB(255, 248, 230) or Color3.fromRGB(238, 232, 216))
 		card.BorderSizePixel = 0
 		card.Parent = ui.content
 
 		createCorner(card, 6)
-		createStroke(card, isCurrent and THEME.Confirm or THEME.PanelStroke, 1, isCurrent and 0.1 or 0.25)
+		createStroke(
+			card,
+			isCurrent and THEME.Confirm or THEME.PanelStroke,
+			1,
+			isCurrent and 0.1 or (isUsable and 0.25 or 0.45)
+		)
 
 		createLabel(
 			"StyleName",
@@ -725,7 +753,7 @@ local function renderFloorTab()
 			currentBadge.BackgroundColor3 = THEME.Confirm
 			currentBadge.Active = false
 			currentBadge.AutoButtonColor = false
-		else
+		elseif isUsable then
 			local applyButton = createTextButton(
 				"ApplyButton",
 				isApplying and "Applying..." or "Apply",
@@ -734,16 +762,17 @@ local function renderFloorTab()
 			)
 			applyButton.AnchorPoint = Vector2.new(1, 0)
 			applyButton.Position = UDim2.new(1, -12, 0, 10)
-			applyButton.BackgroundColor3 = style.Usable == false and THEME.ButtonMuted or THEME.Confirm
-			applyButton.Active = state.floorRequestInFlight ~= true and style.Usable ~= false
+			applyButton.BackgroundColor3 = THEME.Confirm
+			applyButton.Active = state.floorRequestInFlight ~= true
 			applyButton.AutoButtonColor = applyButton.Active
 			applyButton.MouseButton1Click:Connect(function()
-				if state.floorRequestInFlight or style.Usable == false then
+				if state.floorRequestInFlight then
 					return
 				end
 
 				state.floorRequestInFlight = true
 				state.applyingFloorStyleId = floorStyleId
+				local requestId = nextFloorRequestId()
 				applyButton.Text = "Applying..."
 				applyButton.Active = false
 				applyButton.AutoButtonColor = false
@@ -751,8 +780,31 @@ local function renderFloorTab()
 				roomSettingsRequest:FireServer("ApplyRoomFloorStyle", {
 					RoomId = state.roomId,
 					FloorStyleId = floorStyleId,
+					RequestId = requestId,
 				})
 			end)
+		else
+			local lockedBadge = createTextButton("LockedBadge", "Locked", UDim2.fromOffset(92, 30), card)
+			lockedBadge.AnchorPoint = Vector2.new(1, 0)
+			lockedBadge.Position = UDim2.new(1, -12, 0, 10)
+			lockedBadge.BackgroundColor3 = THEME.ButtonMuted
+			lockedBadge.Active = false
+			lockedBadge.AutoButtonColor = false
+
+			createLabel(
+				"LockedReason",
+				lockedReason,
+				UDim2.new(1, -116, 0, 44),
+				UDim2.fromOffset(104, 34),
+				card,
+				{
+					TextColor3 = THEME.SubtleText,
+					TextSize = 11,
+					TextWrapped = true,
+					TextXAlignment = Enum.TextXAlignment.Right,
+					TextYAlignment = Enum.TextYAlignment.Top,
+				}
+			)
 		end
 	end
 end
@@ -873,6 +925,14 @@ local function openWindow(payload)
 	setStatus("", false)
 	majorMenuOpened:Fire("RoomSettings")
 	renderActiveTab()
+
+	if state.activeTab ~= TAB_FLOOR then
+		requestFloorStyles({
+			ClearStyles = false,
+			SetStatus = false,
+			Silent = true,
+		})
+	end
 end
 
 local function closeWindow(options)
@@ -973,6 +1033,14 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		return
 	end
 
+	if action == "GetRoomFloorStyles" or action == "ApplyRoomFloorStyle" then
+		local responseRequestId = response.RequestId
+
+		if typeof(responseRequestId) == "number" and responseRequestId < state.floorRequestId then
+			return
+		end
+	end
+
 	if action == "GetSettings" or action == "UpdateSettings" then
 		state.settingsRequestInFlight = false
 
@@ -998,7 +1066,18 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 
 	if action == "GetRoomFloorStyles" or action == "ApplyRoomFloorStyle" then
 		applyFloorStyles(response)
-		setStatus(action == "ApplyRoomFloorStyle" and (response.Message or "Floor updated.") or "", false)
+
+		if action == "ApplyRoomFloorStyle" then
+			setStatus(response.Message or "Floor updated.", false)
+			requestFloorStyles({
+				ClearStyles = false,
+				SetStatus = false,
+				Silent = true,
+			})
+		elseif response.Silent ~= true then
+			setStatus("", false)
+		end
+
 		return
 	end
 

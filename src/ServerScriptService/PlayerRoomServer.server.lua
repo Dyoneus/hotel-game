@@ -21,6 +21,7 @@ local playerRoomSlots = {}
 local nextRoomSlot = 0
 
 local roomCreationInFlightByUserId = {}
+local DEBUG_FLOOR_STYLE_OWNERSHIP = false
 
 local roomTemplates = ReplicatedStorage:WaitForChild("RoomTemplates")
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
@@ -2035,35 +2036,90 @@ local function getCurrentActiveRoomModel(player)
 	return roomModel
 end
 
-local function buildRoomFloorStyleEntry(style, currentFloorStyleId)
+local function getRoomFloorStyleRequestId(payload)
+	if typeof(payload) ~= "table" then
+		return nil
+	end
+
+	if typeof(payload.RequestId) == "number" then
+		return payload.RequestId
+	end
+
+	return nil
+end
+
+local function buildRoomFloorStyleEntry(ownerPlayer, style, currentFloorStyleId)
 	if typeof(style) ~= "table" or typeof(style.FloorStyleId) ~= "string" then
 		return nil
 	end
 
-	local canUseStyle = RoomFloorStyleConfig.CanUseStyle(style.FloorStyleId, {
-		IsStarter = true,
+	if not RoomFloorStyleConfig.IsValidStyleId(style.FloorStyleId) then
+		return nil
+	end
+
+	local isStarter = style.IsDefault == true or style.IsStarter == true
+	local owned = ownerPlayer ~= nil
+		and RoomPersistence.PlayerOwnsFloorStyle ~= nil
+		and RoomPersistence.PlayerOwnsFloorStyle(ownerPlayer, style.FloorStyleId) == true
+	local ownershipContext = {
+		IsStarter = isStarter,
+		Owned = owned,
+		PlayerOwnsStyle = owned,
+		OwnedFloorStyles = owned and {
+			[style.FloorStyleId] = true,
+		} or {},
+	}
+	local canUseStyle, useStyleMessage = RoomFloorStyleConfig.CanUseStyle(style.FloorStyleId, {
+		IsStarter = ownershipContext.IsStarter,
+		Owned = ownershipContext.Owned,
+		PlayerOwnsStyle = ownershipContext.PlayerOwnsStyle,
+		OwnedFloorStyles = ownershipContext.OwnedFloorStyles,
 	})
+	local usable = isStarter or owned or canUseStyle == true
+	local lockedReason = nil
+
+	if not usable then
+		lockedReason = style.CanPurchase == true
+			and "Purchase coming soon"
+			or useStyleMessage
+			or "Not owned"
+	end
+
+	if DEBUG_FLOOR_STYLE_OWNERSHIP then
+		print(
+			"Floor style ownership",
+			ownerPlayer and ownerPlayer.Name or "nil",
+			style.FloorStyleId,
+			"owned=" .. tostring(owned),
+			"usable=" .. tostring(usable),
+			"lockedReason=" .. tostring(lockedReason)
+		)
+	end
 
 	return {
 		FloorStyleId = style.FloorStyleId,
 		DisplayName = style.DisplayName,
 		Description = style.Description,
 		Pattern = style.Pattern,
-		IsStarter = style.IsStarter == true,
+		IsStarter = isStarter,
 		CanPurchase = style.CanPurchase == true,
-		Usable = canUseStyle == true,
+		Price = style.Price,
+		CurrencyKey = style.CurrencyKey,
+		SortOrder = style.SortOrder,
+		Owned = owned,
+		Usable = usable,
 		Current = style.FloorStyleId == currentFloorStyleId,
-		LockedReason = canUseStyle and nil or "Coming soon",
+		LockedReason = lockedReason,
 	}
 end
 
-local function buildUsableRoomFloorStyleEntries(currentFloorStyleId)
+local function buildRoomFloorStyleEntries(ownerPlayer, currentFloorStyleId)
 	local entries = {}
 
 	for _, style in ipairs(RoomFloorStyleConfig.GetAllStyles()) do
-		local entry = buildRoomFloorStyleEntry(style, currentFloorStyleId)
+		local entry = buildRoomFloorStyleEntry(ownerPlayer, style, currentFloorStyleId)
 
-		if entry and entry.Usable == true then
+		if entry then
 			table.insert(entries, entry)
 		end
 	end
@@ -2115,17 +2171,19 @@ local function getEditableFloorStyleTarget(player, payload)
 	return nil, roomId, nil, nil, "Room styling is only available in your own rooms."
 end
 
-local function sendRoomFloorStylesResult(player, ownerPlayer, roomId, success, message)
+local function sendRoomFloorStylesResult(player, ownerPlayer, roomId, success, message, requestId, silent)
 	local currentFloorStyleId = ownerPlayer and RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId) or nil
 
 	roomSettingsResult:FireClient(player, {
 		Kind = "GetRoomFloorStyles",
 		Action = "GetRoomFloorStyles",
+		RequestId = requestId,
+		Silent = silent == true,
 		Success = success == true,
 		Message = message,
 		RoomId = roomId,
 		CurrentFloorStyleId = currentFloorStyleId,
-		Styles = success and buildUsableRoomFloorStyleEntries(currentFloorStyleId) or {},
+		Styles = success and buildRoomFloorStyleEntries(ownerPlayer, currentFloorStyleId) or {},
 	})
 end
 
@@ -3492,12 +3550,16 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	end
 
 	if safeActionName == "GetRoomFloorStyles" then
+		local requestId = getRoomFloorStyleRequestId(payload)
+		local silent = typeof(payload) == "table" and payload.Silent == true
 		local ownerPlayer, roomId, _, _, targetMessage = getEditableFloorStyleTarget(player, payload)
 
 		if not ownerPlayer then
 			roomSettingsResult:FireClient(player, {
 				Kind = "GetRoomFloorStyles",
 				Action = "GetRoomFloorStyles",
+				RequestId = requestId,
+				Silent = silent,
 				Success = false,
 				Message = targetMessage or "Room styling is only available in your own rooms.",
 				RoomId = roomId,
@@ -3506,15 +3568,18 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			return
 		end
 
-		sendRoomFloorStylesResult(player, ownerPlayer, roomId, true, "Floor styles loaded.")
+		sendRoomFloorStylesResult(player, ownerPlayer, roomId, true, "Floor styles loaded.", requestId, silent)
 		return
 	end
 
 	if safeActionName == "ApplyRoomFloorStyle" then
+		local requestId = getRoomFloorStyleRequestId(payload)
+
 		if typeof(payload) ~= "table" then
 			roomSettingsResult:FireClient(player, {
 				Kind = "ApplyRoomFloorStyle",
 				Action = "ApplyRoomFloorStyle",
+				RequestId = requestId,
 				Success = false,
 				Message = "Invalid floor style request.",
 			})
@@ -3527,6 +3592,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			roomSettingsResult:FireClient(player, {
 				Kind = "ApplyRoomFloorStyle",
 				Action = "ApplyRoomFloorStyle",
+				RequestId = requestId,
 				Success = false,
 				Message = targetMessage or "Room styling is only available in your own rooms.",
 				RoomId = roomId,
@@ -3541,6 +3607,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			roomSettingsResult:FireClient(player, {
 				Kind = "ApplyRoomFloorStyle",
 				Action = "ApplyRoomFloorStyle",
+				RequestId = requestId,
 				Success = false,
 				Message = "Floor style not found.",
 				RoomId = roomId,
@@ -3549,28 +3616,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			return
 		end
 
-		local canUseStyle = RoomFloorStyleConfig.CanUseStyle(floorStyleId, {
-			IsStarter = true,
-		})
-
-		if not canUseStyle then
-			local currentFloorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId)
-
-			roomSettingsResult:FireClient(player, {
-				Kind = "ApplyRoomFloorStyle",
-				Action = "ApplyRoomFloorStyle",
-				Success = false,
-				Message = "Coming soon",
-				RoomId = roomId,
-				CurrentFloorStyleId = currentFloorStyleId,
-				Style = buildRoomFloorStyleEntry(styleConfig, currentFloorStyleId),
-			})
-			return
-		end
-
-		local success, message = RoomPersistence.SetRoomFloorStyleForRoom(ownerPlayer, roomId, floorStyleId, {
-			AllowStarter = true,
-		})
+		local success, message = RoomPersistence.SetRoomFloorStyleForRoom(ownerPlayer, roomId, floorStyleId)
 		local currentFloorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId)
 
 		if success and activeRoomModel then
@@ -3589,12 +3635,13 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 		roomSettingsResult:FireClient(player, {
 			Kind = "ApplyRoomFloorStyle",
 			Action = "ApplyRoomFloorStyle",
+			RequestId = requestId,
 			Success = success == true,
 			Message = success and "Floor updated." or (message or "Could not update floor style."),
 			RoomId = roomId,
 			CurrentFloorStyleId = currentFloorStyleId,
-			Style = buildRoomFloorStyleEntry(styleConfig, currentFloorStyleId),
-			Styles = buildUsableRoomFloorStyleEntries(currentFloorStyleId),
+			Style = buildRoomFloorStyleEntry(ownerPlayer, styleConfig, currentFloorStyleId),
+			Styles = buildRoomFloorStyleEntries(ownerPlayer, currentFloorStyleId),
 		})
 		return
 	end

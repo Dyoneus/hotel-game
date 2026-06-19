@@ -314,7 +314,7 @@ function RoomFloorStyleConfig.CanUseStyle(floorStyleId, context)
 		return false, "Floor style not found."
 	end
 
-	if style.IsDefault == true or style.IsStarter == true or style.CanPurchase ~= true then
+	if style.IsDefault == true or style.IsStarter == true then
 		return true, "Floor style available."
 	end
 
@@ -322,7 +322,11 @@ function RoomFloorStyleConfig.CanUseStyle(floorStyleId, context)
 		return true, "Floor style available."
 	end
 
-	return false, "Floor style is reserved for future purchase support."
+	if style.CanPurchase == true then
+		return false, "You do not own this floor style."
+	end
+
+	return false, "Floor style is not available."
 end
 
 return RoomFloorStyleConfig

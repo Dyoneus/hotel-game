@@ -128,6 +128,16 @@ local function createDefaultProfile()
 		FavouriteRooms = {},
 		RoomPermissions = createEmptyRoomPermissions(),
 		MarketplaceListings = {},
+		RoomDecorInventory = {
+			Floors = {
+				[RoomFloorStyleConfig.GetDefaultStyleId()] = {
+					Unlocked = true,
+					AcquiredAt = now,
+					UpdatedAt = now,
+					Source = "StarterGrant",
+				},
+			},
+		},
 		Inventory = {},
 		InventoryUntradable = {},
 		InventoryUnsellable = {},
@@ -999,6 +1009,124 @@ local function getDefaultFloorStyleId()
 	return "Grid"
 end
 
+local function isRoomDecorFloorEntryUnlocked(entry)
+	if entry == true then
+		return true
+	end
+
+	if typeof(entry) ~= "table" then
+		return false
+	end
+
+	if entry.Unlocked == true then
+		return true
+	end
+
+	return isPositiveInteger(entry.Count)
+end
+
+local function normalizeRoomDecorFloorEntry(entry, now)
+	if entry == true then
+		return {
+			Unlocked = true,
+			AcquiredAt = now,
+			UpdatedAt = now,
+		}
+	end
+
+	if typeof(entry) ~= "table" then
+		return nil
+	end
+
+	local unlocked = entry.Unlocked == true or isPositiveInteger(entry.Count)
+
+	if not unlocked then
+		return nil
+	end
+
+	local acquiredAt = isNonNegativeInteger(entry.AcquiredAt)
+		and math.floor(entry.AcquiredAt)
+		or now
+	local updatedAt = isNonNegativeInteger(entry.UpdatedAt)
+		and math.floor(entry.UpdatedAt)
+		or acquiredAt
+
+	local normalized = {
+		Unlocked = true,
+		AcquiredAt = acquiredAt,
+		UpdatedAt = updatedAt,
+	}
+
+	if isPositiveInteger(entry.Count) then
+		normalized.Count = math.floor(entry.Count)
+	end
+
+	if isNonEmptyString(entry.Source) then
+		normalized.Source = trimString(entry.Source)
+	end
+
+	return normalized
+end
+
+local function ensureFloorStyleUnlocked(floors, floorStyleId, now, source)
+	if typeof(floors) ~= "table"
+		or not isNonEmptyString(floorStyleId)
+		or not RoomFloorStyleConfig.IsValidStyleId(floorStyleId) then
+
+		return false
+	end
+
+	if isRoomDecorFloorEntryUnlocked(floors[floorStyleId]) then
+		return false
+	end
+
+	local entry = {
+		Unlocked = true,
+		AcquiredAt = now,
+		UpdatedAt = now,
+	}
+
+	if isNonEmptyString(source) then
+		entry.Source = trimString(source)
+	end
+
+	floors[floorStyleId] = entry
+
+	return true
+end
+
+local function ensureRoomDecorInventory(profile)
+	local decorInventory = typeof(profile.RoomDecorInventory) == "table" and profile.RoomDecorInventory or {}
+	local sourceFloors = typeof(decorInventory.Floors) == "table" and decorInventory.Floors or {}
+	local floors = {}
+	local now = os.time()
+
+	for floorStyleId, entry in pairs(sourceFloors) do
+		local normalizedFloorStyleId = trimString(floorStyleId)
+
+		if isNonEmptyString(normalizedFloorStyleId)
+			and RoomFloorStyleConfig.IsValidStyleId(normalizedFloorStyleId) then
+
+			local normalizedEntry = normalizeRoomDecorFloorEntry(entry, now)
+
+			if normalizedEntry then
+				floors[normalizedFloorStyleId] = normalizedEntry
+			end
+		end
+	end
+
+	ensureFloorStyleUnlocked(floors, getDefaultFloorStyleId(), now, "StarterGrant")
+
+	for _, style in ipairs(RoomFloorStyleConfig.GetStarterStyles()) do
+		ensureFloorStyleUnlocked(floors, style.FloorStyleId, now, "StarterGrant")
+	end
+
+	decorInventory.Floors = floors
+	profile.RoomDecorInventory = decorInventory
+
+	return profile.RoomDecorInventory
+end
+
 local function normalizeRoomStyle(style, defaults)
 	defaults = defaults or {}
 
@@ -1199,6 +1327,8 @@ local function ensureRoomsSchema(profile)
 	if typeof(profile) ~= "table" then
 		return profile
 	end
+
+	ensureRoomDecorInventory(profile)
 
 	local roomDirectory = ensureRoomDirectory(profile)
 	local roomPermissions = ensureRoomPermissions(profile)
@@ -1632,6 +1762,7 @@ local function fillDefaults(profile)
 	ensureCurrencies(profile)
 	ensureDailyReward(profile)
 	ensureWorkActivityCooldowns(profile)
+	ensureRoomDecorInventory(profile)
 	ensureRoomDirectory(profile)
 	ensureFavouriteRooms(profile)
 	ensureRoomPermissions(profile)
@@ -2011,6 +2142,101 @@ function RoomPersistence.EnsureRoomsSchema(profile)
 	return ensureRoomsSchema(profile)
 end
 
+function RoomPersistence.GetRoomDecorInventorySnapshot(player)
+	local profile = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return {
+			Floors = {},
+		}
+	end
+
+	return deepCopy(ensureRoomDecorInventory(profile))
+end
+
+function RoomPersistence.GetOwnedFloorStyles(player)
+	local profile = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return {}
+	end
+
+	local decorInventory = ensureRoomDecorInventory(profile)
+
+	return deepCopy(decorInventory.Floors)
+end
+
+function RoomPersistence.PlayerOwnsFloorStyle(player, floorStyleId)
+	local normalizedFloorStyleId = trimString(floorStyleId)
+
+	if not isNonEmptyString(normalizedFloorStyleId)
+		or not RoomFloorStyleConfig.IsValidStyleId(normalizedFloorStyleId) then
+
+		return false
+	end
+
+	local profile = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return false
+	end
+
+	local decorInventory = ensureRoomDecorInventory(profile)
+
+	return isRoomDecorFloorEntryUnlocked(decorInventory.Floors[normalizedFloorStyleId])
+end
+
+function RoomPersistence.GrantFloorStyle(player, floorStyleId, options)
+	local normalizedFloorStyleId = trimString(floorStyleId)
+
+	if not isNonEmptyString(normalizedFloorStyleId)
+		or not RoomFloorStyleConfig.IsValidStyleId(normalizedFloorStyleId) then
+
+		return false, "Floor style not found.", nil
+	end
+
+	local profile, profileMessage = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return false, profileMessage, nil
+	end
+
+	local decorInventory = ensureRoomDecorInventory(profile)
+	local floors = decorInventory.Floors
+	local existingEntry = floors[normalizedFloorStyleId]
+
+	if isRoomDecorFloorEntryUnlocked(existingEntry) then
+		return true, "Floor style already unlocked.", deepCopy(existingEntry)
+	end
+
+	local now = os.time()
+	local source = typeof(options) == "table" and trimString(options.Source) or "Debug"
+
+	floors[normalizedFloorStyleId] = {
+		Unlocked = true,
+		AcquiredAt = now,
+		UpdatedAt = now,
+	}
+
+	if isNonEmptyString(source) then
+		floors[normalizedFloorStyleId].Source = source
+	end
+
+	profile.UpdatedAt = now
+
+	if typeof(options) == "table" and options.SaveNow == true then
+		local saved, saveMessage = RoomPersistence.SavePlayer(player)
+
+		if not saved then
+			return false, "Floor style granted, but save failed: " .. tostring(saveMessage), deepCopy(floors[normalizedFloorStyleId])
+		end
+	else
+		RoomPersistence.QueueSave(player)
+	end
+
+	return true, "Floor style granted.", deepCopy(floors[normalizedFloorStyleId])
+end
+
 function RoomPersistence.GetMaxOwnedRooms(_player)
 	return MAX_OWNED_ROOMS
 end
@@ -2160,12 +2386,13 @@ function RoomPersistence.SetRoomFloorStyleForRoom(player, roomId, floorStyleId, 
 		return false, "Floor style not found.", nil
 	end
 
-	local canUseStyle, useStyleMessage = RoomFloorStyleConfig.CanUseStyle(normalizedFloorStyleId, {
-		IsStarter = true,
+	local decorInventory = ensureRoomDecorInventory(profile)
+	local canUseStyle = RoomFloorStyleConfig.CanUseStyle(normalizedFloorStyleId, {
+		OwnedFloorStyles = decorInventory.Floors,
 	})
 
 	if not canUseStyle then
-		return false, useStyleMessage or "Floor style is not available.", nil
+		return false, "You do not own this floor style.", nil
 	end
 
 	local now = os.time()
