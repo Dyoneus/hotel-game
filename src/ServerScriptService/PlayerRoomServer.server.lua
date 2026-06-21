@@ -2064,6 +2064,27 @@ local function buildRoomFloorStyleEntry(ownerPlayer, style, currentFloorStyleId)
 	local isStarter = style.IsDefault == true or style.IsStarter == true
 	local isFree = RoomFloorStyleConfig.IsFreeStyle(style.FloorStyleId)
 	local applyPrice, currencyKey = RoomFloorStyleConfig.GetApplyCost(style.FloorStyleId)
+	local previewable = RoomFloorStyleConfig.CanPreviewStyle(style.FloorStyleId)
+	local intentionallyUnavailable = style.Unavailable == true
+		or style.IsUnavailable == true
+		or style.Available == false
+	local canApply = not intentionallyUnavailable
+		and (
+			isFree
+			or (
+				style.CanPurchase == true
+				and typeof(applyPrice) == "number"
+				and applyPrice >= 0
+				and currencyKey == "Dollars"
+			)
+		)
+	local unavailableReason = nil
+
+	if not canApply then
+		unavailableReason = style.UnavailableReason
+			or (currencyKey ~= "Dollars" and "Unavailable")
+			or "Unavailable"
+	end
 
 	if DEBUG_FLOOR_STYLE_OWNERSHIP then
 		print(
@@ -2083,14 +2104,17 @@ local function buildRoomFloorStyleEntry(ownerPlayer, style, currentFloorStyleId)
 		Pattern = style.Pattern,
 		IsStarter = isStarter,
 		CanPurchase = style.CanPurchase == true,
-		Price = style.Price,
-		CurrencyKey = style.CurrencyKey,
+		Price = typeof(style.Price) == "number" and style.Price or (applyPrice or 0),
+		CurrencyKey = currencyKey or style.CurrencyKey or "Dollars",
 		ApplyPrice = applyPrice,
 		ApplyCost = applyPrice,
 		ApplyCurrencyKey = currencyKey,
 		IsFree = isFree,
-		CanPreview = true,
-		CanApply = true,
+		CanPreview = previewable == true,
+		Previewable = previewable == true,
+		CanApply = canApply,
+		Unavailable = not canApply,
+		UnavailableReason = unavailableReason,
 		SortOrder = style.SortOrder,
 		Current = style.FloorStyleId == currentFloorStyleId,
 	}
