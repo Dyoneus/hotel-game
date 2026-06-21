@@ -8,6 +8,7 @@ local RoomPersistence = require(ServerScriptService:WaitForChild("RoomPersistenc
 local shared = ReplicatedStorage:WaitForChild("Shared")
 local FurnitureCatalogConfig = require(shared:WaitForChild("FurnitureCatalogConfig"))
 local GridConfig = require(shared:WaitForChild("GridConfig"))
+local RoomFloorStyleConfig = require(shared:WaitForChild("RoomFloorStyleConfig"))
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
@@ -89,6 +90,92 @@ local function sendResult(player, kind, success, message, data)
 		Message = tostring(message or ""),
 		Data = data or {},
 	})
+end
+
+local function sendFloorStyleOffersResult(player, success, message, styles)
+	if not player or player.Parent ~= Players then
+		return
+	end
+
+	styles = typeof(styles) == "table" and styles or {}
+
+	furnitureCatalogResult:FireClient(player, {
+		Kind = "GetFloorStyleOffers",
+		Success = success == true,
+		Message = tostring(message or ""),
+		Styles = styles,
+		Data = {
+			Styles = styles,
+		},
+	})
+end
+
+local function sendPurchaseFloorStyleResult(player, success, message, result)
+	if not player or player.Parent ~= Players then
+		return
+	end
+
+	result = typeof(result) == "table" and result or {}
+
+	furnitureCatalogResult:FireClient(player, {
+		Kind = "PurchaseFloorStyle",
+		Success = success == true,
+		Message = tostring(message or ""),
+		FloorStyleId = result.FloorStyleId,
+		DisplayName = result.DisplayName,
+		CurrencyKey = result.CurrencyKey,
+		Price = result.Price,
+		NewCurrencyBalance = result.NewCurrencyBalance,
+		Data = result,
+	})
+end
+
+local function buildFloorStyleOffer(_player, style)
+	if typeof(style) ~= "table"
+		or typeof(style.FloorStyleId) ~= "string"
+		or not RoomFloorStyleConfig.IsValidStyleId(style.FloorStyleId) then
+
+		return nil
+	end
+
+	if style.Hidden == true or style.IsHidden == true or style.DevOnly == true then
+		return nil
+	end
+
+	local isStarter = style.IsDefault == true or style.IsStarter == true
+	local applyPrice, applyCurrencyKey = RoomFloorStyleConfig.GetApplyCost(style.FloorStyleId)
+
+	return {
+		FloorStyleId = style.FloorStyleId,
+		DisplayName = style.DisplayName,
+		Description = style.Description,
+		Pattern = style.Pattern,
+		CurrencyKey = style.CurrencyKey,
+		Price = style.Price,
+		ApplyPrice = applyPrice,
+		ApplyCost = applyPrice,
+		ApplyCurrencyKey = applyCurrencyKey,
+		CanPurchase = style.CanPurchase == true,
+		Starter = isStarter,
+		IsStarter = isStarter,
+		IsFree = RoomFloorStyleConfig.IsFreeStyle(style.FloorStyleId),
+		InfoOnly = true,
+		SortOrder = style.SortOrder,
+	}
+end
+
+local function getFloorStyleOffers(player)
+	local offers = {}
+
+	for _, style in ipairs(RoomFloorStyleConfig.GetAllStyles()) do
+		local offer = buildFloorStyleOffer(player, style)
+
+		if offer then
+			table.insert(offers, offer)
+		end
+	end
+
+	return offers
 end
 
 local function getCurrentRoomModel(player)
@@ -1565,6 +1652,27 @@ furnitureCatalogRequest.OnServerEvent:Connect(function(player, actionName, paylo
 	if actionName == "GetCatalog" then
 		sendResult(player, "Catalog", true, "Catalog loaded.", {
 			Items = getPublicCatalog(),
+		})
+		return
+	end
+
+	if actionName == "GetFloorStyleOffers" then
+		sendFloorStyleOffersResult(player, true, "Floor styles loaded.", getFloorStyleOffers(player))
+		return
+	end
+
+	if actionName == "PurchaseFloorStyle" then
+		if typeof(payload) ~= "table" or typeof(payload.FloorStyleId) ~= "string" then
+			sendPurchaseFloorStyleResult(player, false, "Invalid floor style request.", nil)
+			return
+		end
+
+		local style = RoomFloorStyleConfig.GetStyle(payload.FloorStyleId)
+		sendPurchaseFloorStyleResult(player, false, "Preview and apply floors from Room Settings.", {
+			FloorStyleId = payload.FloorStyleId,
+			DisplayName = style and style.DisplayName or nil,
+			CurrencyKey = style and style.CurrencyKey or nil,
+			Price = style and style.Price or nil,
 		})
 		return
 	end

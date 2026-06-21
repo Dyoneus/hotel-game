@@ -66,6 +66,9 @@ local state = {
 	settingsRequestInFlight = false,
 	floorRequestInFlight = false,
 	applyingFloorStyleId = nil,
+	previewFloorStyleId = nil,
+	previewingFloorStyleId = nil,
+	cancelPreviewAfterResponse = false,
 	floorRequestId = 0,
 	restoreNavigatorState = nil,
 	openRoomName = nil,
@@ -121,6 +124,8 @@ local openRoomSettings = getOrCreateClientEvent("OpenRoomSettings")
 local openRoomNavigator = getOrCreateClientEvent("OpenRoomNavigator")
 local closeMajorMenus = getOrCreateClientEvent("CloseMajorMenus")
 local majorMenuOpened = getOrCreateClientEvent("MajorMenuOpened")
+local currencyRefreshRequested = getOrCreateClientEvent("CurrencyRefreshRequested")
+local currencyLocalDelta = getOrCreateClientEvent("CurrencyLocalDelta")
 
 local function createTextButton(name, text, size, parent)
 	local button = Instance.new("TextButton")
@@ -407,6 +412,7 @@ local function requestFloorStyles(options)
 
 	state.floorRequestInFlight = true
 	state.applyingFloorStyleId = nil
+	state.previewingFloorStyleId = nil
 	local requestId = nextFloorRequestId()
 
 	if options.ClearStyles ~= false then
@@ -421,6 +427,95 @@ local function requestFloorStyles(options)
 		RoomId = state.roomId,
 		RequestId = requestId,
 		Silent = options.Silent == true,
+	})
+end
+
+local function cancelFloorPreview(options)
+	if not state.previewFloorStyleId then
+		if state.previewingFloorStyleId then
+			state.cancelPreviewAfterResponse = true
+		end
+
+		return
+	end
+
+	options = options or {}
+	state.previewFloorStyleId = nil
+	state.previewingFloorStyleId = nil
+	state.cancelPreviewAfterResponse = false
+
+	local requestId = nextFloorRequestId()
+
+	if options.SetStatus == true then
+		setStatus("Reverting floor preview...", false)
+	end
+
+	roomSettingsRequest:FireServer("CancelRoomFloorStylePreview", {
+		RoomId = state.roomId,
+		RequestId = requestId,
+		Silent = options.Silent == true,
+	})
+end
+
+local function getFloorStylePriceText(style)
+	local price = style.ApplyPrice or style.ApplyCost or style.Price
+	local currencyKey = style.ApplyCurrencyKey or style.CurrencyKey or "Dollars"
+
+	if typeof(price) ~= "number"
+		or price ~= price
+		or price < 0
+		or price == math.huge
+		or style.IsFree == true then
+
+		return "Free"
+	end
+
+	price = math.floor(price)
+
+	if price <= 0 then
+		return "Free"
+	end
+
+	return tostring(price) .. " " .. tostring(currencyKey)
+end
+
+local function getFloorApplyButtonText(style, isApplying)
+	if isApplying then
+		return "Applying..."
+	end
+
+	local priceText = getFloorStylePriceText(style)
+
+	if priceText == "Free" then
+		return "Apply"
+	end
+
+	return "Apply - " .. priceText
+end
+
+local function fireCurrencyLocalDeltaFromFloorApply(response)
+	if typeof(response) ~= "table" or response.Charged ~= true then
+		return
+	end
+
+	local currencyKey = response.CurrencyKey
+	local balance = response.NewCurrencyBalance
+
+	if typeof(currencyKey) ~= "string" or currencyKey == "" then
+		return
+	end
+
+	if typeof(balance) ~= "number" then
+		return
+	end
+
+	currencyLocalDelta:Fire({
+		CurrencyKey = currencyKey,
+		Balance = balance,
+	})
+	currencyRefreshRequested:Fire({
+		Reason = "FloorStyleApply",
+		Force = true,
 	})
 end
 
@@ -672,7 +767,7 @@ local function renderFloorTab()
 	ui.content.CanvasPosition = Vector2.zero
 
 	local styles = typeof(state.floorStyles) == "table" and state.floorStyles or {}
-	local cardHeight = 96
+	local cardHeight = 122
 	local cardGap = 10
 	local contentHeight = math.max(150, 72 + (#styles * (cardHeight + cardGap)))
 
@@ -684,7 +779,7 @@ local function renderFloorTab()
 	})
 	createLabel(
 		"FloorNote",
-		"Choose a floor style for this room.",
+		"Preview for free. Applying a paid floor charges each time.",
 		UDim2.fromOffset(18, 40),
 		UDim2.new(1, -36, 0, 20),
 		ui.content,
@@ -707,8 +802,10 @@ local function renderFloorTab()
 		local floorStyleId = tostring(style.FloorStyleId or "")
 		local isCurrent = style.Current == true or floorStyleId == state.currentFloorStyleId
 		local isApplying = state.applyingFloorStyleId == floorStyleId
-		local isUsable = style.Usable ~= false
-		local lockedReason = tostring(style.LockedReason or "Not owned")
+		local isPreviewing = state.previewingFloorStyleId == floorStyleId
+		local isPreviewed = state.previewFloorStyleId == floorStyleId
+		local isBusy = state.floorRequestInFlight == true
+		local priceText = getFloorStylePriceText(style)
 		local y = 72 + ((index - 1) * (cardHeight + cardGap))
 
 		local card = Instance.new("Frame")
@@ -717,23 +814,23 @@ local function renderFloorTab()
 		card.Size = UDim2.new(1, -36, 0, cardHeight)
 		card.BackgroundColor3 = isCurrent
 			and THEME.PanelAlt
-			or (isUsable and Color3.fromRGB(255, 248, 230) or Color3.fromRGB(238, 232, 216))
+			or (isPreviewed and Color3.fromRGB(244, 249, 232) or Color3.fromRGB(255, 248, 230))
 		card.BorderSizePixel = 0
 		card.Parent = ui.content
 
 		createCorner(card, 6)
 		createStroke(
 			card,
-			isCurrent and THEME.Confirm or THEME.PanelStroke,
+			(isCurrent or isPreviewed) and THEME.Confirm or THEME.PanelStroke,
 			1,
-			isCurrent and 0.1 or (isUsable and 0.25 or 0.45)
+			(isCurrent or isPreviewed) and 0.1 or 0.25
 		)
 
 		createLabel(
 			"StyleName",
 			tostring(style.DisplayName or floorStyleId),
 			UDim2.fromOffset(12, 8),
-			UDim2.new(1, -132, 0, 22),
+			UDim2.new(1, -182, 0, 22),
 			card,
 			{ Font = Enum.Font.GothamBold, TextSize = 13, TextTruncate = Enum.TextTruncate.AtEnd }
 		)
@@ -741,71 +838,95 @@ local function renderFloorTab()
 			"StyleDescription",
 			tostring(style.Description or ""),
 			UDim2.fromOffset(12, 32),
-			UDim2.new(1, -132, 0, 40),
+			UDim2.new(1, -182, 0, 40),
 			card,
 			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top }
+		)
+
+		createLabel(
+			"StyleMeta",
+			"Pattern: " .. tostring(style.Pattern or "Floor") .. " | " .. priceText,
+			UDim2.fromOffset(12, 78),
+			UDim2.new(1, -182, 0, 18),
+			card,
+			{ TextColor3 = THEME.SubtleText, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd }
 		)
 
 		if isCurrent then
 			local currentBadge = createTextButton("CurrentBadge", "Current", UDim2.fromOffset(86, 28), card)
 			currentBadge.AnchorPoint = Vector2.new(1, 0)
-			currentBadge.Position = UDim2.new(1, -12, 0, 10)
+			currentBadge.Position = UDim2.new(1, -12, 0, 8)
 			currentBadge.BackgroundColor3 = THEME.Confirm
 			currentBadge.Active = false
 			currentBadge.AutoButtonColor = false
-		elseif isUsable then
-			local applyButton = createTextButton(
-				"ApplyButton",
-				isApplying and "Applying..." or "Apply",
-				UDim2.fromOffset(92, 30),
+		elseif isPreviewed then
+			local previewBadge = createTextButton("PreviewBadge", "Preview", UDim2.fromOffset(86, 28), card)
+			previewBadge.AnchorPoint = Vector2.new(1, 0)
+			previewBadge.Position = UDim2.new(1, -12, 0, 8)
+			previewBadge.BackgroundColor3 = THEME.ButtonMuted
+			previewBadge.Active = false
+			previewBadge.AutoButtonColor = false
+		else
+			local previewButton = createTextButton(
+				"PreviewButton",
+				isPreviewing and "Previewing..." or "Preview",
+				UDim2.fromOffset(140, 28),
 				card
 			)
-			applyButton.AnchorPoint = Vector2.new(1, 0)
-			applyButton.Position = UDim2.new(1, -12, 0, 10)
-			applyButton.BackgroundColor3 = THEME.Confirm
-			applyButton.Active = state.floorRequestInFlight ~= true
-			applyButton.AutoButtonColor = applyButton.Active
-			applyButton.MouseButton1Click:Connect(function()
+			previewButton.AnchorPoint = Vector2.new(1, 0)
+			previewButton.Position = UDim2.new(1, -12, 0, 8)
+			previewButton.BackgroundColor3 = THEME.Button
+			previewButton.Active = not isBusy
+			previewButton.AutoButtonColor = previewButton.Active
+			previewButton.MouseButton1Click:Connect(function()
 				if state.floorRequestInFlight then
 					return
 				end
 
 				state.floorRequestInFlight = true
-				state.applyingFloorStyleId = floorStyleId
+				state.previewingFloorStyleId = floorStyleId
 				local requestId = nextFloorRequestId()
-				applyButton.Text = "Applying..."
-				applyButton.Active = false
-				applyButton.AutoButtonColor = false
-				setStatus("Applying floor style...", false)
-				roomSettingsRequest:FireServer("ApplyRoomFloorStyle", {
+				previewButton.Text = "Previewing..."
+				previewButton.Active = false
+				previewButton.AutoButtonColor = false
+				setStatus("Previewing floor style...", false)
+				roomSettingsRequest:FireServer("PreviewRoomFloorStyle", {
 					RoomId = state.roomId,
 					FloorStyleId = floorStyleId,
 					RequestId = requestId,
 				})
 			end)
-		else
-			local lockedBadge = createTextButton("LockedBadge", "Locked", UDim2.fromOffset(92, 30), card)
-			lockedBadge.AnchorPoint = Vector2.new(1, 0)
-			lockedBadge.Position = UDim2.new(1, -12, 0, 10)
-			lockedBadge.BackgroundColor3 = THEME.ButtonMuted
-			lockedBadge.Active = false
-			lockedBadge.AutoButtonColor = false
-
-			createLabel(
-				"LockedReason",
-				lockedReason,
-				UDim2.new(1, -116, 0, 44),
-				UDim2.fromOffset(104, 34),
-				card,
-				{
-					TextColor3 = THEME.SubtleText,
-					TextSize = 11,
-					TextWrapped = true,
-					TextXAlignment = Enum.TextXAlignment.Right,
-					TextYAlignment = Enum.TextYAlignment.Top,
-				}
-			)
 		end
+
+		local applyButton = createTextButton(
+			"ApplyButton",
+			isCurrent and (isApplying and "Applying..." or "Apply") or getFloorApplyButtonText(style, isApplying),
+			UDim2.fromOffset(140, 30),
+			card
+		)
+		applyButton.AnchorPoint = Vector2.new(1, 0)
+		applyButton.Position = UDim2.new(1, -12, 0, 44)
+		applyButton.BackgroundColor3 = THEME.Confirm
+		applyButton.Active = not isBusy
+		applyButton.AutoButtonColor = applyButton.Active
+		applyButton.MouseButton1Click:Connect(function()
+			if state.floorRequestInFlight then
+				return
+			end
+
+			state.floorRequestInFlight = true
+			state.applyingFloorStyleId = floorStyleId
+			local requestId = nextFloorRequestId()
+			applyButton.Text = "Applying..."
+			applyButton.Active = false
+			applyButton.AutoButtonColor = false
+			setStatus("Applying floor style...", false)
+			roomSettingsRequest:FireServer("ApplyRoomFloorStyle", {
+				RoomId = state.roomId,
+				FloorStyleId = floorStyleId,
+				RequestId = requestId,
+			})
+		end)
 	end
 end
 
@@ -910,6 +1031,9 @@ local function openWindow(payload)
 	state.settingsRequestInFlight = false
 	state.floorRequestInFlight = false
 	state.applyingFloorStyleId = nil
+	state.previewFloorStyleId = nil
+	state.previewingFloorStyleId = nil
+	state.cancelPreviewAfterResponse = false
 	state.restoreNavigatorState = nil
 	state.openRoomName = player:GetAttribute("CurrentRoomName")
 
@@ -940,6 +1064,11 @@ local function closeWindow(options)
 		and (typeof(options) ~= "table" or options.RestoreNavigator ~= false)
 	local restoreState = state.restoreNavigatorState
 
+	cancelFloorPreview({
+		Silent = true,
+		SetStatus = false,
+	})
+
 	state.isOpen = false
 	state.restoreNavigatorState = nil
 	state.openRoomName = nil
@@ -958,6 +1087,13 @@ for tabName, button in pairs(ui.tabs) do
 	button.MouseButton1Click:Connect(function()
 		if state.activeTab == tabName then
 			return
+		end
+
+		if state.activeTab == TAB_FLOOR and tabName ~= TAB_FLOOR then
+			cancelFloorPreview({
+				Silent = true,
+				SetStatus = false,
+			})
 		end
 
 		state.activeTab = tabName
@@ -1008,7 +1144,11 @@ if workspace.CurrentCamera then
 end
 
 roomSettingsResult.OnClientEvent:Connect(function(response)
-	if not state.isOpen or typeof(response) ~= "table" then
+	if typeof(response) ~= "table" then
+		return
+	end
+
+	if not state.isOpen and response.Kind ~= "PreviewRoomFloorStyle" then
 		return
 	end
 
@@ -1019,6 +1159,10 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		action = "GetRoomFloorStyles"
 	elseif responseKind == "ApplyRoomFloorStyle" then
 		action = "ApplyRoomFloorStyle"
+	elseif responseKind == "PreviewRoomFloorStyle" then
+		action = "PreviewRoomFloorStyle"
+	elseif responseKind == "CancelRoomFloorStylePreview" then
+		action = "CancelRoomFloorStylePreview"
 	elseif responseKind ~= "RoomSettings" then
 		return
 	end
@@ -1033,7 +1177,11 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		return
 	end
 
-	if action == "GetRoomFloorStyles" or action == "ApplyRoomFloorStyle" then
+	if action == "GetRoomFloorStyles"
+		or action == "ApplyRoomFloorStyle"
+		or action == "PreviewRoomFloorStyle"
+		or action == "CancelRoomFloorStylePreview" then
+
 		local responseRequestId = response.RequestId
 
 		if typeof(responseRequestId) == "number" and responseRequestId < state.floorRequestId then
@@ -1050,30 +1198,81 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		end
 	elseif action == "GetRoomEditors" or action == "AddRoomEditor" or action == "RemoveRoomEditor" then
 		state.editorRequestInFlight = false
-	elseif action == "GetRoomFloorStyles" or action == "ApplyRoomFloorStyle" then
+	elseif action == "GetRoomFloorStyles"
+		or action == "ApplyRoomFloorStyle"
+		or action == "PreviewRoomFloorStyle"
+		or action == "CancelRoomFloorStylePreview" then
+
 		state.floorRequestInFlight = false
 		state.applyingFloorStyleId = nil
+		state.previewingFloorStyleId = nil
 	end
 
 	if response.Success ~= true then
-		if action == "GetRoomFloorStyles" or action == "ApplyRoomFloorStyle" then
+		if action == "GetRoomFloorStyles"
+			or action == "ApplyRoomFloorStyle"
+			or action == "PreviewRoomFloorStyle"
+			or action == "CancelRoomFloorStylePreview" then
+
 			applyFloorStyles(response)
+		end
+
+		if action == "ApplyRoomFloorStyle" and state.previewFloorStyleId then
+			cancelFloorPreview({
+				Silent = true,
+				SetStatus = false,
+			})
 		end
 
 		setStatus(response.Message or "Room settings update failed.", true)
 		return
 	end
 
-	if action == "GetRoomFloorStyles" or action == "ApplyRoomFloorStyle" then
+	if action == "GetRoomFloorStyles"
+		or action == "ApplyRoomFloorStyle"
+		or action == "PreviewRoomFloorStyle"
+		or action == "CancelRoomFloorStylePreview" then
+
 		applyFloorStyles(response)
 
 		if action == "ApplyRoomFloorStyle" then
+			state.previewFloorStyleId = nil
+			state.cancelPreviewAfterResponse = false
+			fireCurrencyLocalDeltaFromFloorApply(response)
 			setStatus(response.Message or "Floor updated.", false)
 			requestFloorStyles({
 				ClearStyles = false,
 				SetStatus = false,
 				Silent = true,
 			})
+		elseif action == "PreviewRoomFloorStyle" then
+			state.previewFloorStyleId = response.PreviewFloorStyleId
+			local shouldCancelPreview = state.cancelPreviewAfterResponse
+				or not state.isOpen
+				or state.activeTab ~= TAB_FLOOR
+			state.cancelPreviewAfterResponse = false
+
+			if shouldCancelPreview then
+				cancelFloorPreview({
+					Silent = true,
+					SetStatus = false,
+				})
+				return
+			end
+
+			renderFloorTab()
+			setStatus(response.Message or "Previewing floor. Apply to save.", false)
+		elseif action == "CancelRoomFloorStylePreview" then
+			state.previewFloorStyleId = nil
+			state.cancelPreviewAfterResponse = false
+
+			if state.activeTab == TAB_FLOOR then
+				renderFloorTab()
+			end
+
+			if response.Silent ~= true then
+				setStatus(response.Message or "Floor preview reverted.", false)
+			end
 		elseif response.Silent ~= true then
 			setStatus("", false)
 		end

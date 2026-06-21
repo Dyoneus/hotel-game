@@ -194,47 +194,22 @@ local function sortStyles(styles)
 	return styles
 end
 
-local function hasContextUnlock(floorStyleId, context)
-	if typeof(context) ~= "table" then
-		return false
-	end
-
-	if context.AllowAllFloorStyles == true
-		or context.AllowPurchasableStyles == true
-		or context.IsStudioPreview == true then
-
-		return true
-	end
-
-	local ownedStyles = context.OwnedFloorStyles
-		or context.UnlockedFloorStyles
-		or context.FloorStyles
-
-	if typeof(ownedStyles) ~= "table" then
-		return false
-	end
-
-	local entry = ownedStyles[floorStyleId]
-
-	if entry == true then
-		return true
-	end
-
-	if typeof(entry) == "table" then
-		if entry.Unlocked == true then
-			return true
-		end
-
-		if typeof(entry.Count) == "number" and entry.Count > 0 then
-			return true
-		end
-	end
-
-	return false
-end
-
 for _, style in ipairs(STYLES) do
 	stylesById[style.FloorStyleId] = style
+end
+
+local function normalizeApplyPrice(style)
+	local price = style and style.Price
+
+	if typeof(price) ~= "number"
+		or price ~= price
+		or price < 0
+		or price == math.huge then
+
+		return 0
+	end
+
+	return math.floor(price)
 end
 
 function RoomFloorStyleConfig.GetStyle(floorStyleId)
@@ -303,6 +278,64 @@ function RoomFloorStyleConfig.IsValidStyleId(floorStyleId)
 	return typeof(floorStyleId) == "string" and stylesById[floorStyleId] ~= nil
 end
 
+function RoomFloorStyleConfig.IsFreeStyle(floorStyleId)
+	local style = stylesById[floorStyleId]
+
+	if not style then
+		return false
+	end
+
+	if style.IsDefault == true or style.IsStarter == true then
+		return true
+	end
+
+	if style.CanPurchase ~= true then
+		return true
+	end
+
+	return normalizeApplyPrice(style) <= 0
+end
+
+function RoomFloorStyleConfig.GetApplyCost(floorStyleId)
+	local style = stylesById[floorStyleId]
+
+	if not style then
+		return nil, nil, "Floor style not found."
+	end
+
+	if RoomFloorStyleConfig.IsFreeStyle(floorStyleId) then
+		return 0, style.CurrencyKey or "Dollars", "Floor style is free."
+	end
+
+	return normalizeApplyPrice(style), style.CurrencyKey or "Dollars", "Floor style has an apply cost."
+end
+
+function RoomFloorStyleConfig.CanPreviewStyle(floorStyleId)
+	local style = stylesById[floorStyleId]
+
+	if not style then
+		return false, "Floor style not found."
+	end
+
+	if style.Hidden == true or style.IsHidden == true or style.DevOnly == true then
+		return false, "Floor style is not available."
+	end
+
+	return true, "Floor style available for preview."
+end
+
+function RoomFloorStyleConfig.CanApplyWithoutPayment(floorStyleId)
+	if not RoomFloorStyleConfig.IsValidStyleId(floorStyleId) then
+		return false, "Floor style not found."
+	end
+
+	if RoomFloorStyleConfig.IsFreeStyle(floorStyleId) then
+		return true, "Floor style can be applied for free."
+	end
+
+	return false, "Payment required to apply this floor style."
+end
+
 function RoomFloorStyleConfig.CanUseStyle(floorStyleId, context)
 	if typeof(floorStyleId) ~= "string" or floorStyleId == "" then
 		return false, "Floor style not found."
@@ -314,16 +347,18 @@ function RoomFloorStyleConfig.CanUseStyle(floorStyleId, context)
 		return false, "Floor style not found."
 	end
 
-	if style.IsDefault == true or style.IsStarter == true then
+	if typeof(context) == "table"
+		and (context.AllowAllFloorStyles == true or context.IsStudioPreview == true) then
+
 		return true, "Floor style available."
 	end
 
-	if hasContextUnlock(style.FloorStyleId, context) then
+	if RoomFloorStyleConfig.IsFreeStyle(style.FloorStyleId) then
 		return true, "Floor style available."
 	end
 
 	if style.CanPurchase == true then
-		return false, "You do not own this floor style."
+		return false, "Payment required to apply this floor style."
 	end
 
 	return false, "Floor style is not available."

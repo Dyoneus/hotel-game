@@ -26,6 +26,14 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 160
 
 local ui = {}
+ui.FloorFinishes = {
+	Offers = {},
+	RequestInFlight = false,
+	Config = {
+		PageName = "Room Finishes",
+		SubcategoryName = "Floors",
+	},
+}
 ui.placementMask = {}
 ui.placementPreviewVisual = {}
 ui.placementStartup = {
@@ -81,12 +89,14 @@ local catalogCurrency = {
 }
 local catalogNavExpanded = {
 	Furniture = false,
+	RoomFinishes = false,
 	Marketplace = false,
 }
 
 local CATALOG_VIEW = {
 	SHOP = "Shop",
 	MARKETPLACE = "Marketplace",
+	ROOM_FINISHES = "RoomFinishes",
 	FRONT_PAGE = "FrontPage",
 	PLACEHOLDER = "Placeholder",
 }
@@ -121,6 +131,7 @@ local CATALOG_PAGE = {
 	FURNITURE_WALL_DECORATION = "FurnitureWallDecoration",
 	FURNITURE_WALLPAPER = "FurnitureWallpaper",
 	FURNITURE_WINDOW = "FurnitureWindow",
+	ROOM_FINISHES_FLOORS = "RoomFinishesFloors",
 	PETS = "Pets",
 	SPECIAL_OFFERS = "SpecialOffers",
 	MARKETPLACE_OFFERS = "MarketplaceOffers",
@@ -140,6 +151,7 @@ local CATALOG_NAV_ITEMS = {
 	{ Page = CATALOG_PAGE.BEST_SELLERS, Label = "Best Sellers", Icon = "*" },
 	{ Page = CATALOG_PAGE.VIP, Label = "VIP", Icon = "V" },
 	{ Group = "Furniture", Label = "Furniture Shop", Icon = "F" },
+	{ Group = "RoomFinishes", Label = "Room Finishes", Icon = "R" },
 	{ Page = CATALOG_PAGE.PETS, Label = "Pets", Icon = "P" },
 	{ Page = CATALOG_PAGE.SPECIAL_OFFERS, Label = "Special Offers", Icon = "!" },
 	{ Group = "Marketplace", Label = "Marketplace", Icon = "M" },
@@ -164,6 +176,14 @@ local CATALOG_SHOP_CATEGORIES = {
 	{ Page = CATALOG_PAGE.FURNITURE_WALL_DECORATION, Label = "Wall Decoration", Category = "Wall Decoration" },
 	{ Page = CATALOG_PAGE.FURNITURE_WALLPAPER, Label = "Wallpaper", Category = "Wallpaper" },
 	{ Page = CATALOG_PAGE.FURNITURE_WINDOW, Label = "Window", Category = "Window" },
+}
+
+ui.FloorFinishes.Pages = {
+	{
+		Page = CATALOG_PAGE.ROOM_FINISHES_FLOORS,
+		Label = ui.FloorFinishes.Config.SubcategoryName,
+		Icon = "-",
+	},
 }
 
 local SHOP_CATEGORY_NORMALIZATION = {
@@ -885,6 +905,8 @@ local function addCatalogNavButton(key, label, icon, layoutOrder, options)
 
 			if options.Group == "Furniture" and selectCatalogPage then
 				selectCatalogPage(CATALOG_PAGE.FURNITURE_SHOP)
+			elseif options.Group == "RoomFinishes" and selectCatalogPage then
+				selectCatalogPage(CATALOG_PAGE.ROOM_FINISHES_FLOORS)
 			end
 		end)
 	end
@@ -929,6 +951,36 @@ rebuildCatalogNavigation = function()
 						order,
 						{
 							Page = category.Page,
+							Indent = true,
+							Height = 22,
+							TextSize = 11,
+							Font = Enum.Font.Gotham,
+						}
+					)
+				end
+			end
+		elseif navItem.Group == "RoomFinishes" then
+			addCatalogNavButton(
+				"RoomFinishesGroup",
+				navItem.Label,
+				navItem.Icon,
+				order,
+				{
+					Group = "RoomFinishes",
+					Caret = catalogNavExpanded.RoomFinishes and "  v" or "  >",
+				}
+			)
+
+			if catalogNavExpanded.RoomFinishes then
+				for _, page in ipairs(ui.FloorFinishes.Pages) do
+					order += 1
+					addCatalogNavButton(
+						page.Page,
+						page.Label,
+						page.Icon or "-",
+						order,
+						{
+							Page = page.Page,
 							Indent = true,
 							Height = 22,
 							TextSize = 11,
@@ -1469,6 +1521,8 @@ local function updateCatalogNavigation()
 
 		if key == "FurnitureGroup" and catalogViewMode == CATALOG_VIEW.SHOP then
 			isSelected = true
+		elseif key == "RoomFinishesGroup" and catalogViewMode == CATALOG_VIEW.ROOM_FINISHES then
+			isSelected = true
 		elseif key == "MarketplaceGroup" and catalogViewMode == CATALOG_VIEW.MARKETPLACE then
 			isSelected = true
 		end
@@ -1480,6 +1534,7 @@ end
 local function updateCatalogChrome()
 	local showingMarketplace = catalogViewMode == CATALOG_VIEW.MARKETPLACE
 	local showingShop = catalogViewMode == CATALOG_VIEW.SHOP
+	local showingRoomFinishes = catalogViewMode == CATALOG_VIEW.ROOM_FINISHES
 	local showingFrontPage = catalogViewMode == CATALOG_VIEW.FRONT_PAGE
 	local showingPlaceholder = catalogViewMode == CATALOG_VIEW.PLACEHOLDER
 	local showingOffers = marketplaceViewMode == MARKETPLACE_VIEW.OFFERS
@@ -1499,7 +1554,7 @@ local function updateCatalogChrome()
 	ui.MarketplaceSearchBox.Visible = showingMarketplace and showingOffers
 	updateCatalogNavigation()
 
-	if showingShop or (showingMarketplace and showingOffers) then
+	if showingShop or showingRoomFinishes or (showingMarketplace and showingOffers) then
 		ui.ItemList.Position = UDim2.fromOffset(22, 154)
 		ui.ItemList.Size = UDim2.new(1, -226, 1, -226)
 	else
@@ -3372,6 +3427,234 @@ local function renderDollarsInfoPage()
 	end)
 end
 
+do
+	local floorFinishes = ui.FloorFinishes
+
+	floorFinishes.getPriceText = function(styleData)
+		local currencyKey = tostring(styleData.ApplyCurrencyKey or styleData.CurrencyKey or "Dollars")
+		local price = styleData.ApplyPrice or styleData.ApplyCost or styleData.Price
+
+		if typeof(price) ~= "number"
+			or price ~= price
+			or price < 0
+			or price == math.huge then
+
+			price = 0
+		end
+
+		return tostring(math.floor(price)) .. " " .. currencyKey
+	end
+
+	floorFinishes.requestOffers = function(options)
+		options = options or {}
+
+		if floorFinishes.RequestInFlight then
+			return
+		end
+
+		floorFinishes.RequestInFlight = true
+
+		if options.SetStatus ~= false then
+			setStatus("Loading floor finishes...")
+		end
+
+		furnitureCatalogRequest:FireServer("GetFloorStyleOffers", {})
+
+		task.delay(REQUEST_TIMEOUT_SECONDS, function()
+			if floorFinishes.RequestInFlight then
+				floorFinishes.RequestInFlight = false
+
+				if catalogViewMode == CATALOG_VIEW.ROOM_FINISHES then
+					floorFinishes.renderPage()
+					setStatus("Floor finishes request timed out.")
+				end
+			end
+		end)
+	end
+
+	floorFinishes.createCard = function(styleData, layoutOrder)
+		local floorStyleId = tostring(styleData.FloorStyleId or "")
+		local isStarter = styleData.Starter == true or styleData.IsStarter == true
+		local isFree = styleData.IsFree == true or isStarter or floorFinishes.getPriceText(styleData) == "0 Dollars"
+
+		local card = Instance.new("Frame")
+		card.Name = "FloorStyleOffer_" .. floorStyleId
+		card.LayoutOrder = layoutOrder
+		card.Size = UDim2.new(1, -4, 0, 124)
+		card.BackgroundColor3 = Color3.fromRGB(246, 239, 209)
+		card.BorderSizePixel = 0
+		card.Parent = ui.ItemList
+
+		createCorner(card, 10)
+		createStroke(card, Color3.fromRGB(176, 153, 110), 1, 0.28)
+
+		local swatch = Instance.new("Frame")
+		swatch.Name = "PatternSwatch"
+		swatch.Position = UDim2.fromOffset(12, 14)
+		swatch.Size = UDim2.fromOffset(54, 54)
+		swatch.BackgroundColor3 = isFree and Color3.fromRGB(94, 126, 86) or Color3.fromRGB(132, 105, 76)
+		swatch.BorderSizePixel = 0
+		swatch.Parent = card
+
+		createCorner(swatch, 8)
+		createStroke(swatch, Color3.fromRGB(84, 68, 48), 1, 0.2)
+
+		local swatchText = Instance.new("TextLabel")
+		swatchText.Name = "PatternText"
+		swatchText.Size = UDim2.fromScale(1, 1)
+		swatchText.BackgroundTransparency = 1
+		swatchText.Text = tostring(styleData.Pattern or "?")
+		swatchText.TextColor3 = Color3.fromRGB(255, 247, 219)
+		swatchText.TextSize = 11
+		swatchText.TextWrapped = true
+		swatchText.Font = Enum.Font.GothamBold
+		swatchText.Parent = swatch
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.Name = "Name"
+		nameLabel.Position = UDim2.fromOffset(78, 10)
+		nameLabel.Size = UDim2.new(1, -210, 0, 24)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Text = tostring(styleData.DisplayName or floorStyleId)
+		nameLabel.TextColor3 = Color3.fromRGB(59, 48, 34)
+		nameLabel.TextSize = 15
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+		nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.Parent = card
+
+		local descriptionLabel = Instance.new("TextLabel")
+		descriptionLabel.Name = "Description"
+		descriptionLabel.Position = UDim2.fromOffset(78, 36)
+		descriptionLabel.Size = UDim2.new(1, -210, 0, 36)
+		descriptionLabel.BackgroundTransparency = 1
+		descriptionLabel.Text = tostring(styleData.Description or "Room floor finish.")
+		descriptionLabel.TextColor3 = Color3.fromRGB(88, 76, 60)
+		descriptionLabel.TextSize = 12
+		descriptionLabel.TextWrapped = true
+		descriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
+		descriptionLabel.TextYAlignment = Enum.TextYAlignment.Top
+		descriptionLabel.Font = Enum.Font.Gotham
+		descriptionLabel.Parent = card
+
+		local metaParts = {
+			"Pattern: " .. tostring(styleData.Pattern or "Floor"),
+		}
+
+		if isStarter then
+			table.insert(metaParts, "Starter")
+		elseif styleData.CanPurchase == true then
+			table.insert(metaParts, "Apply: " .. floorFinishes.getPriceText(styleData))
+		else
+			table.insert(metaParts, "Free")
+		end
+
+		local metaLabel = Instance.new("TextLabel")
+		metaLabel.Name = "Metadata"
+		metaLabel.Position = UDim2.fromOffset(78, 76)
+		metaLabel.Size = UDim2.new(1, -210, 0, 18)
+		metaLabel.BackgroundTransparency = 1
+		metaLabel.Text = table.concat(metaParts, " | ")
+		metaLabel.TextColor3 = Color3.fromRGB(116, 98, 72)
+		metaLabel.TextSize = 11
+		metaLabel.TextXAlignment = Enum.TextXAlignment.Left
+		metaLabel.TextTruncate = Enum.TextTruncate.AtEnd
+		metaLabel.Font = Enum.Font.GothamMedium
+		metaLabel.Parent = card
+
+		local helperLabel = Instance.new("TextLabel")
+		helperLabel.Name = "Helper"
+		helperLabel.Position = UDim2.fromOffset(78, 96)
+		helperLabel.Size = UDim2.new(1, -210, 0, 16)
+		helperLabel.BackgroundTransparency = 1
+		helperLabel.Text = "Preview and apply floors from Room Settings."
+		helperLabel.TextColor3 = Color3.fromRGB(116, 98, 72)
+		helperLabel.TextSize = 10
+		helperLabel.TextXAlignment = Enum.TextXAlignment.Left
+		helperLabel.TextTruncate = Enum.TextTruncate.AtEnd
+		helperLabel.Font = Enum.Font.Gotham
+		helperLabel.Parent = card
+
+		local badge = Instance.new("TextLabel")
+		badge.Name = "StatusBadge"
+		badge.AnchorPoint = Vector2.new(1, 0)
+		badge.Position = UDim2.new(1, -12, 0, 12)
+		badge.Size = UDim2.fromOffset(92, 24)
+		badge.BackgroundColor3 = isStarter and Color3.fromRGB(142, 112, 66) or Color3.fromRGB(84, 132, 98)
+		badge.BorderSizePixel = 0
+		badge.Text = isStarter and "Starter" or (isFree and "Free" or "Paid")
+		badge.TextColor3 = Color3.fromRGB(255, 247, 219)
+		badge.TextSize = 11
+		badge.Font = Enum.Font.GothamBold
+		badge.Parent = card
+
+		createCorner(badge, 7)
+
+		local actionButton = Instance.new("TextButton")
+		actionButton.Name = "FloorStyleActionButton"
+		actionButton.AnchorPoint = Vector2.new(1, 1)
+		actionButton.Position = UDim2.new(1, -12, 1, -12)
+		actionButton.Size = UDim2.fromOffset(104, 30)
+		actionButton.BorderSizePixel = 0
+		actionButton.TextSize = 12
+		actionButton.Font = Enum.Font.GothamBold
+		actionButton.Parent = card
+
+		actionButton.BackgroundColor3 = Color3.fromRGB(155, 160, 155)
+		actionButton.Text = "Room Settings"
+		actionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		actionButton.Active = false
+		actionButton.AutoButtonColor = false
+
+		createCorner(actionButton, 7)
+	end
+
+	floorFinishes.renderPage = function()
+		updateCatalogChrome()
+		clearItemRows()
+
+		createPageLabel(
+			"RoomFinishesTitle",
+			"Room Finishes: Floors",
+			UDim2.new(1, -4, 0, 32),
+			22,
+			Enum.Font.GothamBold,
+			Color3.fromRGB(62, 48, 34)
+		).LayoutOrder = 1
+
+		createPageLabel(
+			"RoomFinishesSubtitle",
+			"Browse room finishes here. Preview and apply floors from Room Settings.",
+			UDim2.new(1, -4, 0, 42),
+			14,
+			Enum.Font.Gotham,
+			Color3.fromRGB(88, 76, 60)
+		).LayoutOrder = 2
+
+		local offers = floorFinishes.Offers
+
+		if floorFinishes.RequestInFlight and #offers == 0 then
+			createEmptyCatalogState("Loading floor finishes...")
+		elseif #offers == 0 then
+			createEmptyCatalogState("No floor finishes found.")
+		end
+
+		for index, styleData in ipairs(offers) do
+			floorFinishes.createCard(styleData, index + 2)
+		end
+
+		if floorFinishes.RequestInFlight then
+			setStatus("Loading floor finishes...")
+		elseif #offers > 0 then
+			setStatus("Preview and apply floors from Room Settings.")
+		end
+
+		task.defer(function()
+			ui.ItemList.CanvasSize = UDim2.fromOffset(0, ui.ListLayout.AbsoluteContentSize.Y + 20)
+		end)
+	end
+end
+
 local function renderPlaceholderPage(page)
 	local placeholder = PLACEHOLDER_PAGE_CONTENT[page] or PLACEHOLDER_PAGE_CONTENT[CATALOG_PAGE.BEST_SELLERS]
 
@@ -4851,6 +5134,25 @@ selectCatalogPage = function(page)
 		return
 	end
 
+	if selectedCatalogPage == CATALOG_PAGE.ROOM_FINISHES_FLOORS then
+		catalogNavExpanded.RoomFinishes = true
+		catalogViewMode = CATALOG_VIEW.ROOM_FINISHES
+		rebuildCatalogNavigation()
+		ui.FloorFinishes.renderPage()
+
+		if #ui.FloorFinishes.Offers == 0 then
+			ui.FloorFinishes.requestOffers({
+				SetStatus = true,
+			})
+		else
+			ui.FloorFinishes.requestOffers({
+				SetStatus = false,
+			})
+		end
+
+		return
+	end
+
 	if selectedCatalogPage == CATALOG_PAGE.MARKETPLACE_OFFERS then
 		catalogNavExpanded.Marketplace = true
 		catalogViewMode = CATALOG_VIEW.MARKETPLACE
@@ -5491,6 +5793,41 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 			if catalogViewMode == CATALOG_VIEW.SHOP then
 				setStatus(message)
 			end
+		end
+
+		return
+	end
+
+	if kind == "GetFloorStyleOffers" then
+		ui.FloorFinishes.RequestInFlight = false
+
+		local styles = response.Styles
+
+		if typeof(data) == "table" and typeof(data.Styles) == "table" then
+			styles = data.Styles
+		end
+
+		if success and typeof(styles) == "table" then
+			ui.FloorFinishes.Offers = styles
+		elseif not success then
+			ui.FloorFinishes.Offers = {}
+		end
+
+		if catalogViewMode == CATALOG_VIEW.ROOM_FINISHES then
+			ui.FloorFinishes.renderPage()
+
+			if not success then
+				setStatus(message ~= "" and message or "Could not load floor finishes.")
+			end
+		end
+
+		return
+	end
+
+	if kind == "PurchaseFloorStyle" then
+		if catalogViewMode == CATALOG_VIEW.ROOM_FINISHES then
+			ui.FloorFinishes.renderPage()
+			setStatus(message ~= "" and message or "Preview and apply floors from Room Settings.")
 		end
 
 		return

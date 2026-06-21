@@ -129,14 +129,7 @@ local function createDefaultProfile()
 		RoomPermissions = createEmptyRoomPermissions(),
 		MarketplaceListings = {},
 		RoomDecorInventory = {
-			Floors = {
-				[RoomFloorStyleConfig.GetDefaultStyleId()] = {
-					Unlocked = true,
-					AcquiredAt = now,
-					UpdatedAt = now,
-					Source = "StarterGrant",
-				},
-			},
+			Floors = {},
 		},
 		Inventory = {},
 		InventoryUntradable = {},
@@ -1068,33 +1061,6 @@ local function normalizeRoomDecorFloorEntry(entry, now)
 	return normalized
 end
 
-local function ensureFloorStyleUnlocked(floors, floorStyleId, now, source)
-	if typeof(floors) ~= "table"
-		or not isNonEmptyString(floorStyleId)
-		or not RoomFloorStyleConfig.IsValidStyleId(floorStyleId) then
-
-		return false
-	end
-
-	if isRoomDecorFloorEntryUnlocked(floors[floorStyleId]) then
-		return false
-	end
-
-	local entry = {
-		Unlocked = true,
-		AcquiredAt = now,
-		UpdatedAt = now,
-	}
-
-	if isNonEmptyString(source) then
-		entry.Source = trimString(source)
-	end
-
-	floors[floorStyleId] = entry
-
-	return true
-end
-
 local function ensureRoomDecorInventory(profile)
 	local decorInventory = typeof(profile.RoomDecorInventory) == "table" and profile.RoomDecorInventory or {}
 	local sourceFloors = typeof(decorInventory.Floors) == "table" and decorInventory.Floors or {}
@@ -1113,12 +1079,6 @@ local function ensureRoomDecorInventory(profile)
 				floors[normalizedFloorStyleId] = normalizedEntry
 			end
 		end
-	end
-
-	ensureFloorStyleUnlocked(floors, getDefaultFloorStyleId(), now, "StarterGrant")
-
-	for _, style in ipairs(RoomFloorStyleConfig.GetStarterStyles()) do
-		ensureFloorStyleUnlocked(floors, style.FloorStyleId, now, "StarterGrant")
 	end
 
 	decorInventory.Floors = floors
@@ -2157,84 +2117,31 @@ end
 function RoomPersistence.GetOwnedFloorStyles(player)
 	local profile = getOrLoadProfileForFloorStyle(player)
 
-	if not profile then
-		return {}
+	if profile then
+		ensureRoomDecorInventory(profile)
 	end
 
-	local decorInventory = ensureRoomDecorInventory(profile)
-
-	return deepCopy(decorInventory.Floors)
+	return {}
 end
 
 function RoomPersistence.PlayerOwnsFloorStyle(player, floorStyleId)
-	local normalizedFloorStyleId = trimString(floorStyleId)
-
-	if not isNonEmptyString(normalizedFloorStyleId)
-		or not RoomFloorStyleConfig.IsValidStyleId(normalizedFloorStyleId) then
-
-		return false
-	end
-
-	local profile = getOrLoadProfileForFloorStyle(player)
-
-	if not profile then
-		return false
-	end
-
-	local decorInventory = ensureRoomDecorInventory(profile)
-
-	return isRoomDecorFloorEntryUnlocked(decorInventory.Floors[normalizedFloorStyleId])
+	return false
 end
 
 function RoomPersistence.GrantFloorStyle(player, floorStyleId, options)
+	return false, "Permanent floor style unlocks are no longer supported.", nil
+end
+
+function RoomPersistence.PurchaseFloorStyle(player, floorStyleId)
 	local normalizedFloorStyleId = trimString(floorStyleId)
+	local style = RoomFloorStyleConfig.GetStyle(normalizedFloorStyleId)
 
-	if not isNonEmptyString(normalizedFloorStyleId)
-		or not RoomFloorStyleConfig.IsValidStyleId(normalizedFloorStyleId) then
-
-		return false, "Floor style not found.", nil
-	end
-
-	local profile, profileMessage = getOrLoadProfileForFloorStyle(player)
-
-	if not profile then
-		return false, profileMessage, nil
-	end
-
-	local decorInventory = ensureRoomDecorInventory(profile)
-	local floors = decorInventory.Floors
-	local existingEntry = floors[normalizedFloorStyleId]
-
-	if isRoomDecorFloorEntryUnlocked(existingEntry) then
-		return true, "Floor style already unlocked.", deepCopy(existingEntry)
-	end
-
-	local now = os.time()
-	local source = typeof(options) == "table" and trimString(options.Source) or "Debug"
-
-	floors[normalizedFloorStyleId] = {
-		Unlocked = true,
-		AcquiredAt = now,
-		UpdatedAt = now,
+	return false, "Preview and apply floors from Room Settings.", {
+		FloorStyleId = normalizedFloorStyleId,
+		DisplayName = style and style.DisplayName or nil,
+		CurrencyKey = style and style.CurrencyKey or nil,
+		Price = style and style.Price or nil,
 	}
-
-	if isNonEmptyString(source) then
-		floors[normalizedFloorStyleId].Source = source
-	end
-
-	profile.UpdatedAt = now
-
-	if typeof(options) == "table" and options.SaveNow == true then
-		local saved, saveMessage = RoomPersistence.SavePlayer(player)
-
-		if not saved then
-			return false, "Floor style granted, but save failed: " .. tostring(saveMessage), deepCopy(floors[normalizedFloorStyleId])
-		end
-	else
-		RoomPersistence.QueueSave(player)
-	end
-
-	return true, "Floor style granted.", deepCopy(floors[normalizedFloorStyleId])
 end
 
 function RoomPersistence.GetMaxOwnedRooms(_player)
@@ -2386,13 +2293,10 @@ function RoomPersistence.SetRoomFloorStyleForRoom(player, roomId, floorStyleId, 
 		return false, "Floor style not found.", nil
 	end
 
-	local decorInventory = ensureRoomDecorInventory(profile)
-	local canUseStyle = RoomFloorStyleConfig.CanUseStyle(normalizedFloorStyleId, {
-		OwnedFloorStyles = decorInventory.Floors,
-	})
+	local canUseStyle = RoomFloorStyleConfig.CanApplyWithoutPayment(normalizedFloorStyleId)
 
 	if not canUseStyle then
-		return false, "You do not own this floor style.", nil
+		return false, "Paid floor styles must be applied from Room Settings.", nil
 	end
 
 	local now = os.time()
@@ -2408,6 +2312,171 @@ function RoomPersistence.SetRoomFloorStyleForRoom(player, roomId, floorStyleId, 
 	RoomPersistence.QueueSave(player)
 
 	return true, "Floor style saved.", deepCopy(style)
+end
+
+function RoomPersistence.ApplyRoomFloorStylePaid(player, roomId, floorStyleId, options)
+	local normalizedFloorStyleId = trimString(floorStyleId)
+
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return false, "Invalid player.", nil
+	end
+
+	if not isNonEmptyString(normalizedFloorStyleId)
+		or not RoomFloorStyleConfig.IsValidStyleId(normalizedFloorStyleId) then
+
+		return false, "Floor style not found.", nil
+	end
+
+	local styleConfig = RoomFloorStyleConfig.GetStyle(normalizedFloorStyleId)
+
+	if typeof(styleConfig) ~= "table" then
+		return false, "Floor style not found.", nil
+	end
+
+	local profile, profileMessage = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return false, profileMessage, nil
+	end
+
+	ensureRoomsSchema(profile)
+	ensureCurrencies(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found.", nil
+	end
+
+	local currentStyle = normalizeRoomStyleForRecord(roomRecord, {
+		UpdatedAt = roomRecord.UpdatedAt,
+	})
+
+	if currentStyle.FloorStyleId == normalizedFloorStyleId then
+		return true, "This floor is already applied.", {
+			FloorStyleId = normalizedFloorStyleId,
+			CurrentFloorStyleId = normalizedFloorStyleId,
+			Style = deepCopy(currentStyle),
+			Charged = false,
+			ChargedAmount = 0,
+			CurrencyKey = styleConfig.CurrencyKey or "Dollars",
+			Price = styleConfig.Price or 0,
+			NewCurrencyBalance = getCurrencyBalance(profile, styleConfig.CurrencyKey or "Dollars"),
+		}
+	end
+
+	local isFreeStyle = RoomFloorStyleConfig.IsFreeStyle(normalizedFloorStyleId)
+	local price, currencyKey = RoomFloorStyleConfig.GetApplyCost(normalizedFloorStyleId)
+	price = typeof(price) == "number" and math.floor(price) or 0
+	currencyKey = trimString(currencyKey)
+
+	if isFreeStyle then
+		local now = os.time()
+
+		currentStyle.FloorStyleId = normalizedFloorStyleId
+		currentStyle.UpdatedAt = now
+		roomRecord.UpdatedAt = now
+		profile.UpdatedAt = now
+
+		RoomPersistence.QueueSave(player)
+
+		return true, "Floor updated.", {
+			FloorStyleId = normalizedFloorStyleId,
+			CurrentFloorStyleId = normalizedFloorStyleId,
+			Style = deepCopy(currentStyle),
+			Charged = false,
+			ChargedAmount = 0,
+			CurrencyKey = currencyKey ~= "" and currencyKey or "Dollars",
+			Price = 0,
+			NewCurrencyBalance = getCurrencyBalance(profile, currencyKey ~= "" and currencyKey or "Dollars"),
+		}
+	end
+
+	if not isValidCurrencyKey(currencyKey) then
+		return false, "This floor style is not available yet.", {
+			FloorStyleId = normalizedFloorStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+		}
+	end
+
+	if currencyKey ~= "Dollars" then
+		return false, "This floor style uses an unsupported currency.", {
+			FloorStyleId = normalizedFloorStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+		}
+	end
+
+	if not isPositiveInteger(price) then
+		return false, "This floor style is missing a valid price.", {
+			FloorStyleId = normalizedFloorStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+		}
+	end
+
+	local currentBalance = getCurrencyBalance(profile, currencyKey)
+
+	if currentBalance < price then
+		return false, "Not enough Dollars.", {
+			FloorStyleId = normalizedFloorStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+			NewCurrencyBalance = currentBalance,
+		}
+	end
+
+	local rollbackSnapshot = {
+		Currencies = deepCopy(profile.Currencies),
+		RoomStyle = deepCopy(roomRecord.Style),
+		RoomUpdatedAt = roomRecord.UpdatedAt,
+		ProfileUpdatedAt = profile.UpdatedAt,
+	}
+	local now = os.time()
+	local newBalance = currentBalance - price
+
+	setCurrencyBalance(profile, currencyKey, newBalance)
+	currentStyle.FloorStyleId = normalizedFloorStyleId
+	currentStyle.UpdatedAt = now
+	roomRecord.UpdatedAt = now
+	profile.UpdatedAt = now
+
+	local saveOk, saveMessage = RoomPersistence.SavePlayer(player)
+
+	if not saveOk then
+		profile.Currencies = deepCopy(rollbackSnapshot.Currencies)
+		roomRecord.Style = deepCopy(rollbackSnapshot.RoomStyle)
+		roomRecord.UpdatedAt = rollbackSnapshot.RoomUpdatedAt
+		profile.UpdatedAt = rollbackSnapshot.ProfileUpdatedAt
+		ensureCurrencies(profile)
+		normalizeRoomStyleForRecord(roomRecord, {
+			UpdatedAt = roomRecord.UpdatedAt,
+		})
+
+		return false, "Floor style apply failed: " .. tostring(saveMessage), {
+			FloorStyleId = normalizedFloorStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+			NewCurrencyBalance = currentBalance,
+		}
+	end
+
+	return true, "Floor updated.", {
+		FloorStyleId = normalizedFloorStyleId,
+		CurrentFloorStyleId = normalizedFloorStyleId,
+		Style = deepCopy(currentStyle),
+		Charged = true,
+		ChargedAmount = price,
+		CurrencyKey = currencyKey,
+		Price = price,
+		NewCurrencyBalance = newBalance,
+	}
 end
 
 function RoomPersistence.UpdateRoomSettingsForRoom(player, roomId, updates)

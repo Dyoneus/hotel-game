@@ -2057,42 +2057,22 @@ local function buildRoomFloorStyleEntry(ownerPlayer, style, currentFloorStyleId)
 		return nil
 	end
 
-	local isStarter = style.IsDefault == true or style.IsStarter == true
-	local owned = ownerPlayer ~= nil
-		and RoomPersistence.PlayerOwnsFloorStyle ~= nil
-		and RoomPersistence.PlayerOwnsFloorStyle(ownerPlayer, style.FloorStyleId) == true
-	local ownershipContext = {
-		IsStarter = isStarter,
-		Owned = owned,
-		PlayerOwnsStyle = owned,
-		OwnedFloorStyles = owned and {
-			[style.FloorStyleId] = true,
-		} or {},
-	}
-	local canUseStyle, useStyleMessage = RoomFloorStyleConfig.CanUseStyle(style.FloorStyleId, {
-		IsStarter = ownershipContext.IsStarter,
-		Owned = ownershipContext.Owned,
-		PlayerOwnsStyle = ownershipContext.PlayerOwnsStyle,
-		OwnedFloorStyles = ownershipContext.OwnedFloorStyles,
-	})
-	local usable = isStarter or owned or canUseStyle == true
-	local lockedReason = nil
-
-	if not usable then
-		lockedReason = style.CanPurchase == true
-			and "Purchase coming soon"
-			or useStyleMessage
-			or "Not owned"
+	if style.Hidden == true or style.IsHidden == true or style.DevOnly == true then
+		return nil
 	end
+
+	local isStarter = style.IsDefault == true or style.IsStarter == true
+	local isFree = RoomFloorStyleConfig.IsFreeStyle(style.FloorStyleId)
+	local applyPrice, currencyKey = RoomFloorStyleConfig.GetApplyCost(style.FloorStyleId)
 
 	if DEBUG_FLOOR_STYLE_OWNERSHIP then
 		print(
-			"Floor style ownership",
+			"Floor style apply",
 			ownerPlayer and ownerPlayer.Name or "nil",
 			style.FloorStyleId,
-			"owned=" .. tostring(owned),
-			"usable=" .. tostring(usable),
-			"lockedReason=" .. tostring(lockedReason)
+			"isFree=" .. tostring(isFree),
+			"price=" .. tostring(applyPrice),
+			"currency=" .. tostring(currencyKey)
 		)
 	end
 
@@ -2105,11 +2085,14 @@ local function buildRoomFloorStyleEntry(ownerPlayer, style, currentFloorStyleId)
 		CanPurchase = style.CanPurchase == true,
 		Price = style.Price,
 		CurrencyKey = style.CurrencyKey,
+		ApplyPrice = applyPrice,
+		ApplyCost = applyPrice,
+		ApplyCurrencyKey = currencyKey,
+		IsFree = isFree,
+		CanPreview = true,
+		CanApply = true,
 		SortOrder = style.SortOrder,
-		Owned = owned,
-		Usable = usable,
 		Current = style.FloorStyleId == currentFloorStyleId,
-		LockedReason = lockedReason,
 	}
 end
 
@@ -3572,6 +3555,109 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 		return
 	end
 
+	if safeActionName == "PreviewRoomFloorStyle" then
+		local requestId = getRoomFloorStyleRequestId(payload)
+
+		if typeof(payload) ~= "table" then
+			roomSettingsResult:FireClient(player, {
+				Kind = "PreviewRoomFloorStyle",
+				Action = "PreviewRoomFloorStyle",
+				RequestId = requestId,
+				Success = false,
+				Message = "Invalid floor style request.",
+			})
+			return
+		end
+
+		local ownerPlayer, roomId, _, activeRoomModel, targetMessage = getEditableFloorStyleTarget(player, payload)
+
+		if not ownerPlayer or not activeRoomModel then
+			roomSettingsResult:FireClient(player, {
+				Kind = "PreviewRoomFloorStyle",
+				Action = "PreviewRoomFloorStyle",
+				RequestId = requestId,
+				Success = false,
+				Message = targetMessage or "Join the room before previewing floor styles.",
+				RoomId = roomId,
+			})
+			return
+		end
+
+		local floorStyleId = typeof(payload.FloorStyleId) == "string" and trimRoomText(payload.FloorStyleId) or nil
+		local canPreview, previewMessage = RoomFloorStyleConfig.CanPreviewStyle(floorStyleId)
+
+		if not canPreview then
+			roomSettingsResult:FireClient(player, {
+				Kind = "PreviewRoomFloorStyle",
+				Action = "PreviewRoomFloorStyle",
+				RequestId = requestId,
+				Success = false,
+				Message = previewMessage or "Floor style not found.",
+				RoomId = roomId,
+				CurrentFloorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId),
+			})
+			return
+		end
+
+		local renderOk, applied, renderMessage = pcall(function()
+			return RoomFloorStyleRenderer.ApplyFloorStyle(activeRoomModel, floorStyleId, {
+				IsPreview = true,
+			})
+		end)
+		local success = renderOk and applied == true
+
+		roomSettingsResult:FireClient(player, {
+			Kind = "PreviewRoomFloorStyle",
+			Action = "PreviewRoomFloorStyle",
+			RequestId = requestId,
+			Success = success,
+			Message = success and "Previewing floor. Apply to save." or (renderOk and renderMessage or tostring(applied)),
+			RoomId = roomId,
+			PreviewFloorStyleId = success and floorStyleId or nil,
+			CurrentFloorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId),
+			Styles = buildRoomFloorStyleEntries(ownerPlayer, RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId)),
+		})
+		return
+	end
+
+	if safeActionName == "CancelRoomFloorStylePreview" then
+		local requestId = getRoomFloorStyleRequestId(payload)
+		local silent = typeof(payload) == "table" and payload.Silent == true
+		local ownerPlayer, roomId, _, activeRoomModel, targetMessage = getEditableFloorStyleTarget(player, payload)
+
+		if not ownerPlayer or not activeRoomModel then
+			roomSettingsResult:FireClient(player, {
+				Kind = "CancelRoomFloorStylePreview",
+				Action = "CancelRoomFloorStylePreview",
+				RequestId = requestId,
+				Silent = silent,
+				Success = false,
+				Message = targetMessage or "Join the room before reverting floor preview.",
+				RoomId = roomId,
+			})
+			return
+		end
+
+		local currentFloorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId)
+		local renderOk, applied, renderMessage = pcall(function()
+			return RoomFloorStyleRenderer.ApplyFloorStyle(activeRoomModel, currentFloorStyleId)
+		end)
+		local success = renderOk and applied == true
+
+		roomSettingsResult:FireClient(player, {
+			Kind = "CancelRoomFloorStylePreview",
+			Action = "CancelRoomFloorStylePreview",
+			RequestId = requestId,
+			Silent = silent,
+			Success = success,
+			Message = success and "Floor preview reverted." or (renderOk and renderMessage or tostring(applied)),
+			RoomId = roomId,
+			CurrentFloorStyleId = currentFloorStyleId,
+			Styles = buildRoomFloorStyleEntries(ownerPlayer, currentFloorStyleId),
+		})
+		return
+	end
+
 	if safeActionName == "ApplyRoomFloorStyle" then
 		local requestId = getRoomFloorStyleRequestId(payload)
 
@@ -3616,7 +3702,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			return
 		end
 
-		local success, message = RoomPersistence.SetRoomFloorStyleForRoom(ownerPlayer, roomId, floorStyleId)
+		local success, message, applyResult = RoomPersistence.ApplyRoomFloorStylePaid(ownerPlayer, roomId, floorStyleId)
 		local currentFloorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId)
 
 		if success and activeRoomModel then
@@ -3637,11 +3723,16 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			Action = "ApplyRoomFloorStyle",
 			RequestId = requestId,
 			Success = success == true,
-			Message = success and "Floor updated." or (message or "Could not update floor style."),
+			Message = success and (message or "Floor updated.") or (message or "Could not update floor style."),
 			RoomId = roomId,
 			CurrentFloorStyleId = currentFloorStyleId,
 			Style = buildRoomFloorStyleEntry(ownerPlayer, styleConfig, currentFloorStyleId),
 			Styles = buildRoomFloorStyleEntries(ownerPlayer, currentFloorStyleId),
+			Charged = typeof(applyResult) == "table" and applyResult.Charged == true,
+			ChargedAmount = typeof(applyResult) == "table" and applyResult.ChargedAmount or nil,
+			CurrencyKey = typeof(applyResult) == "table" and applyResult.CurrencyKey or nil,
+			Price = typeof(applyResult) == "table" and applyResult.Price or nil,
+			NewCurrencyBalance = typeof(applyResult) == "table" and applyResult.NewCurrencyBalance or nil,
 		})
 		return
 	end
