@@ -1005,9 +1005,9 @@ local function renderFloorTab()
 		local isPreviewing = state.previewingFloorStyleId == floorStyleId
 		local isPreviewed = state.previewFloorStyleId == floorStyleId
 		local isBusy = state.floorRequestInFlight == true
-		local isUnavailable = style.Unavailable == true or style.CanApply == false
+		local isUnavailable = (style.Unavailable == true or style.CanApply == false) and not isCurrent
 		local previewable = isFloorStylePreviewable(style)
-		local applyable = isFloorStyleApplyable(style)
+		local applyable = isFloorStyleApplyable(style) and not isCurrent
 		local priceText = getFloorStylePriceText(style)
 		local unavailableReason = getFloorUnavailableReason(style)
 		local cardTextColor = isUnavailable and THEME.DisabledText or THEME.Text

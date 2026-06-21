@@ -2064,26 +2064,50 @@ local function buildRoomFloorStyleEntry(ownerPlayer, style, currentFloorStyleId)
 	local isStarter = style.IsDefault == true or style.IsStarter == true
 	local isFree = RoomFloorStyleConfig.IsFreeStyle(style.FloorStyleId)
 	local applyPrice, currencyKey = RoomFloorStyleConfig.GetApplyCost(style.FloorStyleId)
-	local previewable = RoomFloorStyleConfig.CanPreviewStyle(style.FloorStyleId)
+	applyPrice = typeof(applyPrice) == "number" and math.floor(applyPrice) or 0
+	currencyKey = typeof(currencyKey) == "string" and currencyKey or "Dollars"
+
+	local canPreview = RoomFloorStyleConfig.CanPreviewStyle(style.FloorStyleId)
 	local intentionallyUnavailable = style.Unavailable == true
 		or style.IsUnavailable == true
 		or style.Available == false
-	local canApply = not intentionallyUnavailable
-		and (
-			isFree
-			or (
-				style.CanPurchase == true
-				and typeof(applyPrice) == "number"
-				and applyPrice >= 0
-				and currencyKey == "Dollars"
-			)
-		)
+	local isCurrent = style.FloorStyleId == currentFloorStyleId
+	local previewable = canPreview == true and not intentionallyUnavailable
+	local applyCost = isCurrent and 0 or applyPrice
+	local canApply = false
+	local unavailable = false
 	local unavailableReason = nil
 
-	if not canApply then
-		unavailableReason = style.UnavailableReason
-			or (currencyKey ~= "Dollars" and "Unavailable")
-			or "Unavailable"
+	if isCurrent then
+		canApply = false
+	elseif intentionallyUnavailable then
+		unavailable = true
+		unavailableReason = style.UnavailableReason or "Unavailable"
+	elseif isFree then
+		canApply = true
+	elseif style.CanPurchase ~= true then
+		unavailable = true
+		unavailableReason = "Unavailable"
+	elseif applyPrice <= 0 then
+		unavailable = true
+		unavailableReason = "Unavailable"
+	elseif currencyKey ~= "Dollars" then
+		unavailable = true
+		unavailableReason = "Unavailable"
+	else
+		local currencies = ownerPlayer and RoomPersistence.GetCurrenciesSnapshot(ownerPlayer) or nil
+		local dollarsBalance = typeof(currencies) == "table" and currencies.Dollars or 0
+
+		if typeof(dollarsBalance) ~= "number" then
+			dollarsBalance = 0
+		end
+
+		if dollarsBalance >= applyPrice then
+			canApply = true
+		else
+			unavailable = true
+			unavailableReason = "Not enough Dollars"
+		end
 	end
 
 	if DEBUG_FLOOR_STYLE_OWNERSHIP then
@@ -2093,7 +2117,10 @@ local function buildRoomFloorStyleEntry(ownerPlayer, style, currentFloorStyleId)
 			style.FloorStyleId,
 			"isFree=" .. tostring(isFree),
 			"price=" .. tostring(applyPrice),
-			"currency=" .. tostring(currencyKey)
+			"currency=" .. tostring(currencyKey),
+			"canApply=" .. tostring(canApply),
+			"unavailable=" .. tostring(unavailable),
+			"reason=" .. tostring(unavailableReason)
 		)
 	end
 
@@ -2107,16 +2134,17 @@ local function buildRoomFloorStyleEntry(ownerPlayer, style, currentFloorStyleId)
 		Price = typeof(style.Price) == "number" and style.Price or (applyPrice or 0),
 		CurrencyKey = currencyKey or style.CurrencyKey or "Dollars",
 		ApplyPrice = applyPrice,
-		ApplyCost = applyPrice,
+		ApplyCost = applyCost,
 		ApplyCurrencyKey = currencyKey,
 		IsFree = isFree,
 		CanPreview = previewable == true,
 		Previewable = previewable == true,
 		CanApply = canApply,
-		Unavailable = not canApply,
+		AlreadyCurrent = isCurrent,
+		Unavailable = unavailable == true,
 		UnavailableReason = unavailableReason,
 		SortOrder = style.SortOrder,
-		Current = style.FloorStyleId == currentFloorStyleId,
+		Current = isCurrent,
 	}
 end
 
