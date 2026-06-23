@@ -10,6 +10,7 @@ local RoomPersistence = {}
 local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
 local RoomLayoutConfig = require(sharedFolder:WaitForChild("RoomLayoutConfig"))
 local RoomFloorStyleConfig = require(sharedFolder:WaitForChild("RoomFloorStyleConfig"))
+local RoomWallStyleConfig = require(sharedFolder:WaitForChild("RoomWallStyleConfig"))
 
 local DATASTORE_NAME = "PlayerProfiles_v1"
 local SAVE_DELAY_SECONDS = 12
@@ -111,6 +112,7 @@ local function createDefaultProfile()
 				RoomState = {},
 				Style = {
 					FloorStyleId = RoomFloorStyleConfig.GetDefaultStyleId(),
+					WallStyleId = RoomWallStyleConfig.GetDefaultStyleId(),
 					UpdatedAt = now,
 				},
 				Category = "Chat Rooms",
@@ -1002,6 +1004,16 @@ local function getDefaultFloorStyleId()
 	return "Grid"
 end
 
+local function getDefaultWallStyleId()
+	local defaultStyleId = RoomWallStyleConfig.GetDefaultStyleId()
+
+	if isNonEmptyString(defaultStyleId) and RoomWallStyleConfig.IsValidStyleId(defaultStyleId) then
+		return defaultStyleId
+	end
+
+	return "Default"
+end
+
 local function isRoomDecorFloorEntryUnlocked(entry)
 	if entry == true then
 		return true
@@ -1103,6 +1115,15 @@ local function normalizeRoomStyle(style, defaults)
 			or getDefaultFloorStyleId()
 	end
 
+	if not isNonEmptyString(style.WallStyleId)
+		or not RoomWallStyleConfig.IsValidStyleId(style.WallStyleId) then
+
+		style.WallStyleId = isNonEmptyString(defaults.WallStyleId)
+			and RoomWallStyleConfig.IsValidStyleId(defaults.WallStyleId)
+			and defaults.WallStyleId
+			or getDefaultWallStyleId()
+	end
+
 	local now = os.time()
 	style.UpdatedAt = isNonNegativeInteger(style.UpdatedAt)
 		and math.floor(style.UpdatedAt)
@@ -1124,6 +1145,7 @@ local function normalizeRoomStyleForRecord(roomRecord, defaults)
 
 	roomRecord.Style = normalizeRoomStyle(style, {
 		FloorStyleId = typeof(styleDefaults) == "table" and styleDefaults.FloorStyleId or nil,
+		WallStyleId = typeof(styleDefaults) == "table" and styleDefaults.WallStyleId or nil,
 		UpdatedAt = typeof(styleDefaults) == "table" and styleDefaults.UpdatedAt or roomRecord.UpdatedAt,
 	})
 
@@ -2312,6 +2334,96 @@ function RoomPersistence.SetRoomFloorStyleForRoom(player, roomId, floorStyleId, 
 	RoomPersistence.QueueSave(player)
 
 	return true, "Floor style saved.", deepCopy(style)
+end
+
+function RoomPersistence.GetRoomWallStyleForRoom(player, roomId)
+	local profile, profileMessage = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return nil, profileMessage
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return nil, "Room not found."
+	end
+
+	return getRoomStyleSnapshot(roomRecord), "Room wall style loaded."
+end
+
+function RoomPersistence.GetRoomWallStyle(player, roomId)
+	local defaultStyleId = getDefaultWallStyleId()
+	local profile = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return defaultStyleId
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return defaultStyleId
+	end
+
+	local style = normalizeRoomStyleForRecord(roomRecord, {
+		UpdatedAt = roomRecord.UpdatedAt,
+	})
+	local wallStyleId = style and style.WallStyleId
+
+	if RoomWallStyleConfig.IsValidStyleId(wallStyleId) then
+		return wallStyleId
+	end
+
+	return defaultStyleId
+end
+
+function RoomPersistence.SetRoomWallStyleForRoom(player, roomId, wallStyleId, _options)
+	local profile, profileMessage = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return false, profileMessage, nil
+	end
+
+	ensureRoomsSchema(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found.", nil
+	end
+
+	local normalizedWallStyleId = trimString(wallStyleId)
+
+	if not isNonEmptyString(normalizedWallStyleId)
+		or not RoomWallStyleConfig.IsValidStyleId(normalizedWallStyleId) then
+
+		return false, "Wall style not found.", nil
+	end
+
+	local canUseStyle = RoomWallStyleConfig.CanApplyWithoutPayment(normalizedWallStyleId)
+
+	if not canUseStyle then
+		return false, "Paid wall styles will be available in a later patch.", nil
+	end
+
+	local now = os.time()
+	local style = normalizeRoomStyleForRecord(roomRecord, {
+		UpdatedAt = roomRecord.UpdatedAt,
+	})
+
+	style.WallStyleId = normalizedWallStyleId
+	style.UpdatedAt = now
+	roomRecord.UpdatedAt = now
+	profile.UpdatedAt = now
+
+	RoomPersistence.QueueSave(player)
+
+	return true, "Wall style saved.", deepCopy(style)
 end
 
 function RoomPersistence.ApplyRoomFloorStylePaid(player, roomId, floorStyleId, options)

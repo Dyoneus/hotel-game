@@ -12,9 +12,79 @@ local RoomPermissionService = require(ServerScriptService:WaitForChild("RoomPerm
 local PublicRoomConfig = require(sharedFolder:WaitForChild("PublicRoomConfig"))
 local RoomLayoutConfig = require(sharedFolder:WaitForChild("RoomLayoutConfig"))
 local RoomFloorStyleConfig = require(sharedFolder:WaitForChild("RoomFloorStyleConfig"))
-local RoomFloorStyleRenderer = require(sharedFolder:WaitForChild("RoomFloorStyleRenderer"))
 local RoomTextPolicyConfig = require(sharedFolder:WaitForChild("RoomTextPolicyConfig"))
 local GridConfig = require(sharedFolder:WaitForChild("GridConfig"))
+
+local RoomStyleRuntime = {}
+
+do
+	local roomFloorStyleRenderer = require(sharedFolder:WaitForChild("RoomFloorStyleRenderer"))
+	local roomWallStyleRenderer = require(sharedFolder:WaitForChild("RoomWallStyleRenderer"))
+
+	RoomStyleRuntime.applyFloorStyle = function(roomModel, floorStyleId, options)
+		return roomFloorStyleRenderer.ApplyFloorStyle(roomModel, floorStyleId, options)
+	end
+
+	RoomStyleRuntime.applyPersistedFloorStyle = function(roomModel, ownerPlayer, roomId)
+		if not roomModel or not roomModel:IsA("Model") then
+			return
+		end
+
+		local floorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId)
+		local success, applied, message = pcall(function()
+			return roomFloorStyleRenderer.ApplyFloorStyle(roomModel, floorStyleId)
+		end)
+
+		if not success then
+			warn(
+				"Could not apply owned room floor style:",
+				ownerPlayer and ownerPlayer.Name or "unknown",
+				tostring(roomId),
+				applied
+			)
+			return
+		end
+
+		if not applied then
+			warn(
+				"Could not apply owned room floor style:",
+				ownerPlayer and ownerPlayer.Name or "unknown",
+				tostring(roomId),
+				message
+			)
+		end
+	end
+
+	RoomStyleRuntime.applyPersistedWallStyle = function(roomModel, ownerPlayer, roomId)
+		if not roomModel or not roomModel:IsA("Model") then
+			return
+		end
+
+		local wallStyleId = RoomPersistence.GetRoomWallStyle(ownerPlayer, roomId)
+		local success, applied, message = pcall(function()
+			return roomWallStyleRenderer.ApplyWallStyle(roomModel, wallStyleId)
+		end)
+
+		if not success then
+			warn(
+				"Could not apply owned room wall style:",
+				ownerPlayer and ownerPlayer.Name or "unknown",
+				tostring(roomId),
+				applied
+			)
+			return
+		end
+
+		if not applied then
+			warn(
+				"Could not apply owned room wall style:",
+				ownerPlayer and ownerPlayer.Name or "unknown",
+				tostring(roomId),
+				message
+			)
+		end
+	end
+end
 
 local playerRooms = {}
 local playerRoomSlots = {}
@@ -810,36 +880,6 @@ local function removeEditorHelpers(roomModel)
 	end
 end
 
-local function applyOwnedRoomFloorStyle(roomModel, ownerPlayer, roomId)
-	if not roomModel or not roomModel:IsA("Model") then
-		return
-	end
-
-	local floorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId)
-	local success, applied, message = pcall(function()
-		return RoomFloorStyleRenderer.ApplyFloorStyle(roomModel, floorStyleId)
-	end)
-
-	if not success then
-		warn(
-			"Could not apply owned room floor style:",
-			ownerPlayer and ownerPlayer.Name or "unknown",
-			tostring(roomId),
-			applied
-		)
-		return
-	end
-
-	if not applied then
-		warn(
-			"Could not apply owned room floor style:",
-			ownerPlayer and ownerPlayer.Name or "unknown",
-			tostring(roomId),
-			message
-		)
-	end
-end
-
 local function cloneRoomForPlayer(player, layoutId, roomId)
 	local template, templateError, templateName = resolveOwnedRoomTemplate(layoutId, true, player)
 
@@ -893,7 +933,8 @@ local function cloneRoomForPlayer(player, layoutId, roomId)
 	roomClone:SetAttribute("RoomId", normalizedRoomId)
 	roomClone:SetAttribute("RoomKey", roomClone.Name)
 	roomClone:SetAttribute("DisplayName", player.DisplayName .. "'s Room")
-	applyOwnedRoomFloorStyle(roomClone, player, normalizedRoomId)
+	RoomStyleRuntime.applyPersistedFloorStyle(roomClone, player, normalizedRoomId)
+	RoomStyleRuntime.applyPersistedWallStyle(roomClone, player, normalizedRoomId)
 	warnRoomGridValidation(roomClone, "PlayerRoom")
 
 	playerRooms[player] = roomClone
@@ -3652,7 +3693,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 		end
 
 		local renderOk, applied, renderMessage = pcall(function()
-			return RoomFloorStyleRenderer.ApplyFloorStyle(activeRoomModel, floorStyleId, {
+			return RoomStyleRuntime.applyFloorStyle(activeRoomModel, floorStyleId, {
 				IsPreview = true,
 			})
 		end)
@@ -3692,7 +3733,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 
 		local currentFloorStyleId = RoomPersistence.GetRoomFloorStyle(ownerPlayer, roomId)
 		local renderOk, applied, renderMessage = pcall(function()
-			return RoomFloorStyleRenderer.ApplyFloorStyle(activeRoomModel, currentFloorStyleId)
+			return RoomStyleRuntime.applyFloorStyle(activeRoomModel, currentFloorStyleId)
 		end)
 		local success = renderOk and applied == true
 
@@ -3759,7 +3800,7 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 
 		if success and activeRoomModel then
 			local renderOk, applied, renderMessage = pcall(function()
-				return RoomFloorStyleRenderer.ApplyFloorStyle(activeRoomModel, floorStyleId)
+				return RoomStyleRuntime.applyFloorStyle(activeRoomModel, floorStyleId)
 			end)
 
 			if not renderOk or not applied then
