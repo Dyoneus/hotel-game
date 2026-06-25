@@ -34,6 +34,14 @@ ui.FloorFinishes = {
 		SubcategoryName = "Floors",
 	},
 }
+ui.WallFinishes = {
+	Offers = {},
+	RequestInFlight = false,
+	Config = {
+		PageName = "Room Finishes",
+		SubcategoryName = "Walls",
+	},
+}
 ui.placementMask = {}
 ui.placementPreviewVisual = {}
 ui.placementStartup = {
@@ -132,6 +140,7 @@ local CATALOG_PAGE = {
 	FURNITURE_WALLPAPER = "FurnitureWallpaper",
 	FURNITURE_WINDOW = "FurnitureWindow",
 	ROOM_FINISHES_FLOORS = "RoomFinishesFloors",
+	ROOM_FINISHES_WALLS = "RoomFinishesWalls",
 	PETS = "Pets",
 	SPECIAL_OFFERS = "SpecialOffers",
 	MARKETPLACE_OFFERS = "MarketplaceOffers",
@@ -178,11 +187,18 @@ local CATALOG_SHOP_CATEGORIES = {
 	{ Page = CATALOG_PAGE.FURNITURE_WINDOW, Label = "Window", Category = "Window" },
 }
 
-ui.FloorFinishes.Pages = {
-	{
-		Page = CATALOG_PAGE.ROOM_FINISHES_FLOORS,
-		Label = ui.FloorFinishes.Config.SubcategoryName,
-		Icon = "-",
+ui.RoomFinishes = {
+	Pages = {
+		{
+			Page = CATALOG_PAGE.ROOM_FINISHES_FLOORS,
+			Label = ui.FloorFinishes.Config.SubcategoryName,
+			Icon = "-",
+		},
+		{
+			Page = CATALOG_PAGE.ROOM_FINISHES_WALLS,
+			Label = ui.WallFinishes.Config.SubcategoryName,
+			Icon = "-",
+		},
 	},
 }
 
@@ -972,7 +988,7 @@ rebuildCatalogNavigation = function()
 			)
 
 			if catalogNavExpanded.RoomFinishes then
-				for _, page in ipairs(ui.FloorFinishes.Pages) do
+				for _, page in ipairs(ui.RoomFinishes.Pages) do
 					order += 1
 					addCatalogNavButton(
 						page.Page,
@@ -3445,6 +3461,8 @@ do
 		return tostring(math.floor(price)) .. " " .. currencyKey
 	end
 
+	ui.WallFinishes.getPriceText = floorFinishes.getPriceText
+
 	floorFinishes.requestOffers = function(options)
 		options = options or {}
 
@@ -3472,13 +3490,45 @@ do
 		end)
 	end
 
+	ui.WallFinishes.requestOffers = function(options)
+		options = options or {}
+
+		if ui.WallFinishes.RequestInFlight then
+			return
+		end
+
+		ui.WallFinishes.RequestInFlight = true
+
+		if options.SetStatus ~= false then
+			setStatus("Loading wall finishes...")
+		end
+
+		furnitureCatalogRequest:FireServer("GetWallStyleOffers", {})
+
+		task.delay(REQUEST_TIMEOUT_SECONDS, function()
+			if ui.WallFinishes.RequestInFlight then
+				ui.WallFinishes.RequestInFlight = false
+
+				if selectedCatalogPage == CATALOG_PAGE.ROOM_FINISHES_WALLS then
+					ui.WallFinishes.renderPage()
+					setStatus("Wall finishes request timed out.")
+				end
+			end
+		end)
+	end
+
 	floorFinishes.createCard = function(styleData, layoutOrder)
-		local floorStyleId = tostring(styleData.FloorStyleId or "")
+		local isWallStyle = typeof(styleData.WallStyleId) == "string"
+		local styleId = tostring(isWallStyle and styleData.WallStyleId or styleData.FloorStyleId or "")
+		local categoryText = isWallStyle
+			and tostring(styleData.Pattern or styleData.Group or "Wall")
+			or tostring(styleData.Pattern or "Floor")
+		local priceText = isWallStyle and ui.WallFinishes.getPriceText(styleData) or floorFinishes.getPriceText(styleData)
 		local isStarter = styleData.Starter == true or styleData.IsStarter == true
-		local isFree = styleData.IsFree == true or isStarter or floorFinishes.getPriceText(styleData) == "0 Dollars"
+		local isFree = styleData.IsFree == true or isStarter or priceText == "0 Dollars"
 
 		local card = Instance.new("Frame")
-		card.Name = "FloorStyleOffer_" .. floorStyleId
+		card.Name = (isWallStyle and "WallStyleOffer_" or "FloorStyleOffer_") .. styleId
 		card.LayoutOrder = layoutOrder
 		card.Size = UDim2.new(1, -4, 0, 124)
 		card.BackgroundColor3 = Color3.fromRGB(246, 239, 209)
@@ -3503,7 +3553,7 @@ do
 		swatchText.Name = "PatternText"
 		swatchText.Size = UDim2.fromScale(1, 1)
 		swatchText.BackgroundTransparency = 1
-		swatchText.Text = tostring(styleData.Pattern or "?")
+		swatchText.Text = categoryText
 		swatchText.TextColor3 = Color3.fromRGB(255, 247, 219)
 		swatchText.TextSize = 11
 		swatchText.TextWrapped = true
@@ -3515,7 +3565,7 @@ do
 		nameLabel.Position = UDim2.fromOffset(78, 10)
 		nameLabel.Size = UDim2.new(1, -210, 0, 24)
 		nameLabel.BackgroundTransparency = 1
-		nameLabel.Text = tostring(styleData.DisplayName or floorStyleId)
+		nameLabel.Text = tostring(styleData.DisplayName or styleId)
 		nameLabel.TextColor3 = Color3.fromRGB(59, 48, 34)
 		nameLabel.TextSize = 15
 		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -3528,7 +3578,7 @@ do
 		descriptionLabel.Position = UDim2.fromOffset(78, 36)
 		descriptionLabel.Size = UDim2.new(1, -210, 0, 36)
 		descriptionLabel.BackgroundTransparency = 1
-		descriptionLabel.Text = tostring(styleData.Description or "Room floor finish.")
+		descriptionLabel.Text = tostring(styleData.Description or (isWallStyle and "Room wall finish." or "Room floor finish."))
 		descriptionLabel.TextColor3 = Color3.fromRGB(88, 76, 60)
 		descriptionLabel.TextSize = 12
 		descriptionLabel.TextWrapped = true
@@ -3538,13 +3588,13 @@ do
 		descriptionLabel.Parent = card
 
 		local metaParts = {
-			"Pattern: " .. tostring(styleData.Pattern or "Floor"),
+			(isWallStyle and not styleData.Pattern and "Group: " or "Pattern: ") .. categoryText,
 		}
 
 		if isStarter then
 			table.insert(metaParts, "Starter")
 		elseif styleData.CanPurchase == true then
-			table.insert(metaParts, "Apply: " .. floorFinishes.getPriceText(styleData))
+			table.insert(metaParts, (isWallStyle and "Price: " or "Apply: ") .. priceText)
 		else
 			table.insert(metaParts, "Free")
 		end
@@ -3567,7 +3617,9 @@ do
 		helperLabel.Position = UDim2.fromOffset(78, 96)
 		helperLabel.Size = UDim2.new(1, -210, 0, 16)
 		helperLabel.BackgroundTransparency = 1
-		helperLabel.Text = "Preview and apply floors from Room Settings."
+		helperLabel.Text = isWallStyle
+			and "Preview and apply walls from Room Settings."
+			or "Preview and apply floors from Room Settings."
 		helperLabel.TextColor3 = Color3.fromRGB(116, 98, 72)
 		helperLabel.TextSize = 10
 		helperLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -3591,23 +3643,25 @@ do
 		createCorner(badge, 7)
 
 		local actionButton = Instance.new("TextButton")
-		actionButton.Name = "FloorStyleActionButton"
+		actionButton.Name = isWallStyle and "WallStyleInfoButton" or "FloorStyleActionButton"
 		actionButton.AnchorPoint = Vector2.new(1, 1)
 		actionButton.Position = UDim2.new(1, -12, 1, -12)
-		actionButton.Size = UDim2.fromOffset(104, 30)
+		actionButton.Size = UDim2.fromOffset(isWallStyle and 132 or 104, 30)
 		actionButton.BorderSizePixel = 0
 		actionButton.TextSize = 12
 		actionButton.Font = Enum.Font.GothamBold
 		actionButton.Parent = card
 
 		actionButton.BackgroundColor3 = Color3.fromRGB(155, 160, 155)
-		actionButton.Text = "Room Settings"
+		actionButton.Text = isWallStyle and "Use Room Settings" or "Room Settings"
 		actionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 		actionButton.Active = false
 		actionButton.AutoButtonColor = false
 
 		createCorner(actionButton, 7)
 	end
+
+	ui.WallFinishes.createCard = floorFinishes.createCard
 
 	floorFinishes.renderPage = function()
 		updateCatalogChrome()
@@ -3647,6 +3701,51 @@ do
 			setStatus("Loading floor finishes...")
 		elseif #offers > 0 then
 			setStatus("Preview and apply floors from Room Settings.")
+		end
+
+		task.defer(function()
+			ui.ItemList.CanvasSize = UDim2.fromOffset(0, ui.ListLayout.AbsoluteContentSize.Y + 20)
+		end)
+	end
+
+	ui.WallFinishes.renderPage = function()
+		updateCatalogChrome()
+		clearItemRows()
+
+		createPageLabel(
+			"RoomWallFinishesTitle",
+			"Room Finishes: Walls",
+			UDim2.new(1, -4, 0, 32),
+			22,
+			Enum.Font.GothamBold,
+			Color3.fromRGB(62, 48, 34)
+		).LayoutOrder = 1
+
+		createPageLabel(
+			"RoomWallFinishesSubtitle",
+			"Browse room finishes here. Preview and apply walls from Room Settings.",
+			UDim2.new(1, -4, 0, 42),
+			14,
+			Enum.Font.Gotham,
+			Color3.fromRGB(88, 76, 60)
+		).LayoutOrder = 2
+
+		local offers = ui.WallFinishes.Offers
+
+		if ui.WallFinishes.RequestInFlight and #offers == 0 then
+			createEmptyCatalogState("Loading wall finishes...")
+		elseif #offers == 0 then
+			createEmptyCatalogState("No wall finishes found.")
+		end
+
+		for index, styleData in ipairs(offers) do
+			ui.WallFinishes.createCard(styleData, index + 2)
+		end
+
+		if ui.WallFinishes.RequestInFlight then
+			setStatus("Loading wall finishes...")
+		elseif #offers > 0 then
+			setStatus("Preview and apply walls from Room Settings.")
 		end
 
 		task.defer(function()
@@ -5134,18 +5233,24 @@ selectCatalogPage = function(page)
 		return
 	end
 
-	if selectedCatalogPage == CATALOG_PAGE.ROOM_FINISHES_FLOORS then
+	if selectedCatalogPage == CATALOG_PAGE.ROOM_FINISHES_FLOORS
+		or selectedCatalogPage == CATALOG_PAGE.ROOM_FINISHES_WALLS then
+
+		local finishes = selectedCatalogPage == CATALOG_PAGE.ROOM_FINISHES_WALLS
+			and ui.WallFinishes
+			or ui.FloorFinishes
+
 		catalogNavExpanded.RoomFinishes = true
 		catalogViewMode = CATALOG_VIEW.ROOM_FINISHES
 		rebuildCatalogNavigation()
-		ui.FloorFinishes.renderPage()
+		finishes.renderPage()
 
-		if #ui.FloorFinishes.Offers == 0 then
-			ui.FloorFinishes.requestOffers({
+		if #finishes.Offers == 0 then
+			finishes.requestOffers({
 				SetStatus = true,
 			})
 		else
-			ui.FloorFinishes.requestOffers({
+			finishes.requestOffers({
 				SetStatus = false,
 			})
 		end
@@ -5813,7 +5918,7 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 			ui.FloorFinishes.Offers = {}
 		end
 
-		if catalogViewMode == CATALOG_VIEW.ROOM_FINISHES then
+		if selectedCatalogPage == CATALOG_PAGE.ROOM_FINISHES_FLOORS then
 			ui.FloorFinishes.renderPage()
 
 			if not success then
@@ -5824,8 +5929,34 @@ furnitureCatalogResult.OnClientEvent:Connect(function(response)
 		return
 	end
 
+	if kind == "GetWallStyleOffers" then
+		ui.WallFinishes.RequestInFlight = false
+
+		local styles = response.Styles
+
+		if typeof(data) == "table" and typeof(data.Styles) == "table" then
+			styles = data.Styles
+		end
+
+		if success and typeof(styles) == "table" then
+			ui.WallFinishes.Offers = styles
+		elseif not success then
+			ui.WallFinishes.Offers = {}
+		end
+
+		if selectedCatalogPage == CATALOG_PAGE.ROOM_FINISHES_WALLS then
+			ui.WallFinishes.renderPage()
+
+			if not success then
+				setStatus(message ~= "" and message or "Could not load wall finishes.")
+			end
+		end
+
+		return
+	end
+
 	if kind == "PurchaseFloorStyle" then
-		if catalogViewMode == CATALOG_VIEW.ROOM_FINISHES then
+		if selectedCatalogPage == CATALOG_PAGE.ROOM_FINISHES_FLOORS then
 			ui.FloorFinishes.renderPage()
 			setStatus(message ~= "" and message or "Preview and apply floors from Room Settings.")
 		end

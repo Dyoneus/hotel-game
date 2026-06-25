@@ -9,6 +9,7 @@ local shared = ReplicatedStorage:WaitForChild("Shared")
 local FurnitureCatalogConfig = require(shared:WaitForChild("FurnitureCatalogConfig"))
 local GridConfig = require(shared:WaitForChild("GridConfig"))
 local RoomFloorStyleConfig = require(shared:WaitForChild("RoomFloorStyleConfig"))
+local RoomWallStyleConfig = require(shared:WaitForChild("RoomWallStyleConfig"))
 
 local remoteEvents = ReplicatedStorage:WaitForChild("RemoteEvents")
 local activeRooms = workspace:WaitForChild("ActiveRooms")
@@ -110,6 +111,24 @@ local function sendFloorStyleOffersResult(player, success, message, styles)
 	})
 end
 
+local function sendWallStyleOffersResult(player, success, message, styles)
+	if not player or player.Parent ~= Players then
+		return
+	end
+
+	styles = typeof(styles) == "table" and styles or {}
+
+	furnitureCatalogResult:FireClient(player, {
+		Kind = "GetWallStyleOffers",
+		Success = success == true,
+		Message = tostring(message or ""),
+		Styles = styles,
+		Data = {
+			Styles = styles,
+		},
+	})
+end
+
 local function sendPurchaseFloorStyleResult(player, success, message, result)
 	if not player or player.Parent ~= Players then
 		return
@@ -169,6 +188,52 @@ local function getFloorStyleOffers(player)
 
 	for _, style in ipairs(RoomFloorStyleConfig.GetAllStyles()) do
 		local offer = buildFloorStyleOffer(player, style)
+
+		if offer then
+			table.insert(offers, offer)
+		end
+	end
+
+	return offers
+end
+
+local function buildWallStyleOffer(_player, style)
+	if typeof(style) ~= "table"
+		or typeof(style.WallStyleId) ~= "string"
+		or not RoomWallStyleConfig.IsValidStyleId(style.WallStyleId) then
+
+		return nil
+	end
+
+	if style.Hidden == true or style.IsHidden == true or style.DevOnly == true then
+		return nil
+	end
+
+	local isStarter = style.IsDefault == true or style.IsStarter == true
+
+	return {
+		WallStyleId = style.WallStyleId,
+		DisplayName = style.DisplayName,
+		Description = style.Description,
+		Group = style.Group,
+		Pattern = style.Pattern,
+		IsStarter = isStarter,
+		Starter = isStarter,
+		IsDefault = style.IsDefault == true,
+		IsFree = RoomWallStyleConfig.IsFreeStyle(style.WallStyleId),
+		CanPurchase = style.CanPurchase == true,
+		CurrencyKey = style.CurrencyKey,
+		Price = style.Price,
+		InfoOnly = true,
+		SortOrder = style.SortOrder,
+	}
+end
+
+local function getWallStyleOffers(player)
+	local offers = {}
+
+	for _, style in ipairs(RoomWallStyleConfig.GetAllStyles()) do
+		local offer = buildWallStyleOffer(player, style)
 
 		if offer then
 			table.insert(offers, offer)
@@ -1658,6 +1723,11 @@ furnitureCatalogRequest.OnServerEvent:Connect(function(player, actionName, paylo
 
 	if actionName == "GetFloorStyleOffers" then
 		sendFloorStyleOffersResult(player, true, "Floor styles loaded.", getFloorStyleOffers(player))
+		return
+	end
+
+	if actionName == "GetWallStyleOffers" then
+		sendWallStyleOffersResult(player, true, "Wall styles loaded.", getWallStyleOffers(player))
 		return
 	end
 
