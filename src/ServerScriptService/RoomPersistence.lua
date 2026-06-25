@@ -2426,6 +2426,171 @@ function RoomPersistence.SetRoomWallStyleForRoom(player, roomId, wallStyleId, _o
 	return true, "Wall style saved.", deepCopy(style)
 end
 
+function RoomPersistence.ApplyRoomWallStylePaid(player, roomId, wallStyleId, options)
+	local normalizedWallStyleId = trimString(wallStyleId)
+
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return false, "Invalid player.", nil
+	end
+
+	if not isNonEmptyString(normalizedWallStyleId)
+		or not RoomWallStyleConfig.IsValidStyleId(normalizedWallStyleId) then
+
+		return false, "Wall style not found.", nil
+	end
+
+	local styleConfig = RoomWallStyleConfig.GetStyle(normalizedWallStyleId)
+
+	if typeof(styleConfig) ~= "table" then
+		return false, "Wall style not found.", nil
+	end
+
+	local profile, profileMessage = getOrLoadProfileForFloorStyle(player)
+
+	if not profile then
+		return false, profileMessage, nil
+	end
+
+	ensureRoomsSchema(profile)
+	ensureCurrencies(profile)
+
+	local roomRecord = getMutableRoomRecord(profile, roomId)
+
+	if not roomRecord then
+		return false, "Room not found.", nil
+	end
+
+	local currentStyle = normalizeRoomStyleForRecord(roomRecord, {
+		UpdatedAt = roomRecord.UpdatedAt,
+	})
+
+	if currentStyle.WallStyleId == normalizedWallStyleId then
+		return true, "This wall is already applied.", {
+			WallStyleId = normalizedWallStyleId,
+			CurrentWallStyleId = normalizedWallStyleId,
+			Style = deepCopy(currentStyle),
+			Charged = false,
+			ChargedAmount = 0,
+			CurrencyKey = styleConfig.CurrencyKey or "Dollars",
+			Price = styleConfig.Price or 0,
+			NewCurrencyBalance = getCurrencyBalance(profile, styleConfig.CurrencyKey or "Dollars"),
+		}
+	end
+
+	local isFreeStyle = RoomWallStyleConfig.IsFreeStyle(normalizedWallStyleId)
+	local price, currencyKey = RoomWallStyleConfig.GetApplyCost(normalizedWallStyleId)
+	price = typeof(price) == "number" and math.floor(price) or 0
+	currencyKey = trimString(currencyKey)
+
+	if isFreeStyle then
+		local now = os.time()
+
+		currentStyle.WallStyleId = normalizedWallStyleId
+		currentStyle.UpdatedAt = now
+		roomRecord.UpdatedAt = now
+		profile.UpdatedAt = now
+
+		RoomPersistence.QueueSave(player)
+
+		return true, "Wall updated.", {
+			WallStyleId = normalizedWallStyleId,
+			CurrentWallStyleId = normalizedWallStyleId,
+			Style = deepCopy(currentStyle),
+			Charged = false,
+			ChargedAmount = 0,
+			CurrencyKey = currencyKey ~= "" and currencyKey or "Dollars",
+			Price = 0,
+			NewCurrencyBalance = getCurrencyBalance(profile, currencyKey ~= "" and currencyKey or "Dollars"),
+		}
+	end
+
+	if not isValidCurrencyKey(currencyKey) then
+		return false, "This wall style is not available yet.", {
+			WallStyleId = normalizedWallStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+		}
+	end
+
+	if currencyKey ~= "Dollars" then
+		return false, "This wall style uses an unsupported currency.", {
+			WallStyleId = normalizedWallStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+		}
+	end
+
+	if not isPositiveInteger(price) then
+		return false, "This wall style is missing a valid price.", {
+			WallStyleId = normalizedWallStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+		}
+	end
+
+	local currentBalance = getCurrencyBalance(profile, currencyKey)
+
+	if currentBalance < price then
+		return false, "Not enough Dollars.", {
+			WallStyleId = normalizedWallStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+			NewCurrencyBalance = currentBalance,
+		}
+	end
+
+	local rollbackSnapshot = {
+		Currencies = deepCopy(profile.Currencies),
+		RoomStyle = deepCopy(roomRecord.Style),
+		RoomUpdatedAt = roomRecord.UpdatedAt,
+		ProfileUpdatedAt = profile.UpdatedAt,
+	}
+	local now = os.time()
+	local newBalance = currentBalance - price
+
+	setCurrencyBalance(profile, currencyKey, newBalance)
+	currentStyle.WallStyleId = normalizedWallStyleId
+	currentStyle.UpdatedAt = now
+	roomRecord.UpdatedAt = now
+	profile.UpdatedAt = now
+
+	local saveOk, saveMessage = RoomPersistence.SavePlayer(player)
+
+	if not saveOk then
+		profile.Currencies = deepCopy(rollbackSnapshot.Currencies)
+		roomRecord.Style = deepCopy(rollbackSnapshot.RoomStyle)
+		roomRecord.UpdatedAt = rollbackSnapshot.RoomUpdatedAt
+		profile.UpdatedAt = rollbackSnapshot.ProfileUpdatedAt
+		ensureCurrencies(profile)
+		normalizeRoomStyleForRecord(roomRecord, {
+			UpdatedAt = roomRecord.UpdatedAt,
+		})
+
+		return false, "Wall style apply failed: " .. tostring(saveMessage), {
+			WallStyleId = normalizedWallStyleId,
+			CurrencyKey = currencyKey,
+			Price = price,
+			Charged = false,
+			NewCurrencyBalance = currentBalance,
+		}
+	end
+
+	return true, "Wall updated.", {
+		WallStyleId = normalizedWallStyleId,
+		CurrentWallStyleId = normalizedWallStyleId,
+		Style = deepCopy(currentStyle),
+		Charged = true,
+		ChargedAmount = price,
+		CurrencyKey = currencyKey,
+		Price = price,
+		NewCurrencyBalance = newBalance,
+	}
+end
+
 function RoomPersistence.ApplyRoomFloorStylePaid(player, roomId, floorStyleId, options)
 	local normalizedFloorStyleId = trimString(floorStyleId)
 

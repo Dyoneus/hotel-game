@@ -19,10 +19,17 @@ local RoomStyleRuntime = {}
 
 do
 	local roomFloorStyleRenderer = require(sharedFolder:WaitForChild("RoomFloorStyleRenderer"))
+	local roomWallStyleConfig = require(sharedFolder:WaitForChild("RoomWallStyleConfig"))
 	local roomWallStyleRenderer = require(sharedFolder:WaitForChild("RoomWallStyleRenderer"))
+
+	RoomStyleRuntime.wallConfig = roomWallStyleConfig
 
 	RoomStyleRuntime.applyFloorStyle = function(roomModel, floorStyleId, options)
 		return roomFloorStyleRenderer.ApplyFloorStyle(roomModel, floorStyleId, options)
+	end
+
+	RoomStyleRuntime.applyWallStyle = function(roomModel, wallStyleId, options)
+		return roomWallStyleRenderer.ApplyWallStyle(roomModel, wallStyleId, options)
 	end
 
 	RoomStyleRuntime.applyPersistedFloorStyle = function(roomModel, ownerPlayer, roomId)
@@ -2263,6 +2270,169 @@ local function sendRoomFloorStylesResult(player, ownerPlayer, roomId, success, m
 	})
 end
 
+RoomStyleRuntime.buildWallStyleEntry = function(ownerPlayer, style, currentWallStyleId)
+	local wallConfig = RoomStyleRuntime.wallConfig
+
+	if typeof(style) ~= "table" or typeof(style.WallStyleId) ~= "string" then
+		return nil
+	end
+
+	if not wallConfig.IsValidStyleId(style.WallStyleId) then
+		return nil
+	end
+
+	if style.Hidden == true or style.IsHidden == true or style.DevOnly == true then
+		return nil
+	end
+
+	local isStarter = style.IsDefault == true or style.IsStarter == true
+	local isFree = wallConfig.IsFreeStyle(style.WallStyleId)
+	local applyPrice, currencyKey = wallConfig.GetApplyCost(style.WallStyleId)
+	applyPrice = typeof(applyPrice) == "number" and math.floor(applyPrice) or 0
+	currencyKey = typeof(currencyKey) == "string" and currencyKey or "Dollars"
+
+	local canPreview = wallConfig.CanPreviewStyle(style.WallStyleId)
+	local intentionallyUnavailable = style.Unavailable == true
+		or style.IsUnavailable == true
+		or style.Available == false
+	local isCurrent = style.WallStyleId == currentWallStyleId
+	local previewable = canPreview == true and not intentionallyUnavailable
+	local applyCost = isCurrent and 0 or applyPrice
+	local canApply = false
+	local unavailable = false
+	local unavailableReason = nil
+
+	if isCurrent then
+		canApply = false
+	elseif intentionallyUnavailable then
+		unavailable = true
+		unavailableReason = style.UnavailableReason or "Unavailable"
+	elseif isFree then
+		canApply = true
+	elseif style.CanPurchase ~= true then
+		unavailable = true
+		unavailableReason = "Unavailable"
+	elseif applyPrice <= 0 then
+		unavailable = true
+		unavailableReason = "Unavailable"
+	elseif currencyKey ~= "Dollars" then
+		unavailable = true
+		unavailableReason = "Unavailable"
+	else
+		local currencies = ownerPlayer and RoomPersistence.GetCurrenciesSnapshot(ownerPlayer) or nil
+		local dollarsBalance = typeof(currencies) == "table" and currencies.Dollars or 0
+
+		if typeof(dollarsBalance) ~= "number" then
+			dollarsBalance = 0
+		end
+
+		if dollarsBalance >= applyPrice then
+			canApply = true
+		else
+			unavailable = true
+			unavailableReason = "Not enough Dollars"
+		end
+	end
+
+	return {
+		WallStyleId = style.WallStyleId,
+		DisplayName = style.DisplayName,
+		Description = style.Description,
+		Group = style.Group,
+		Pattern = style.Pattern,
+		IsStarter = isStarter,
+		CanPurchase = style.CanPurchase == true,
+		Price = typeof(style.Price) == "number" and style.Price or (applyPrice or 0),
+		CurrencyKey = currencyKey or style.CurrencyKey or "Dollars",
+		ApplyPrice = applyPrice,
+		ApplyCost = applyCost,
+		ApplyCurrencyKey = currencyKey,
+		IsFree = isFree,
+		CanPreview = previewable == true,
+		Previewable = previewable == true,
+		CanApply = canApply,
+		AlreadyCurrent = isCurrent,
+		Unavailable = unavailable == true,
+		UnavailableReason = unavailableReason,
+		SortOrder = style.SortOrder,
+		Current = isCurrent,
+	}
+end
+
+RoomStyleRuntime.buildWallStyleEntries = function(ownerPlayer, currentWallStyleId)
+	local entries = {}
+
+	for _, style in ipairs(RoomStyleRuntime.wallConfig.GetAllStyles()) do
+		local entry = RoomStyleRuntime.buildWallStyleEntry(ownerPlayer, style, currentWallStyleId)
+
+		if entry then
+			table.insert(entries, entry)
+		end
+	end
+
+	return entries
+end
+
+RoomStyleRuntime.getOwnedWallStyleTarget = function(player, payload, requireActiveRoom)
+	local roomId = getSettingsPayloadRoomId(payload)
+
+	if not roomId then
+		return nil, nil, nil, nil, "Room not found."
+	end
+
+	local currentRoomModel = getCurrentActiveRoomModel(player)
+
+	if currentRoomModel then
+		local currentRoomId = normalizeRoomId(currentRoomModel:GetAttribute("RoomId"))
+
+		if currentRoomId == roomId then
+			if currentRoomModel:GetAttribute("RoomType") == "PublicSpace" then
+				return nil, roomId, nil, nil, "Room styling is only available in your own rooms."
+			end
+
+			if currentRoomModel:GetAttribute("OwnerUserId") ~= player.UserId then
+				return nil, roomId, nil, nil, "Wall styling is only available in your own rooms."
+			end
+
+			local roomRecord = RoomPersistence.GetRoomRecord(player, roomId)
+
+			if typeof(roomRecord) ~= "table" then
+				return nil, roomId, nil, currentRoomModel, "Room not found."
+			end
+
+			return player, roomId, roomRecord, currentRoomModel, nil
+		end
+	end
+
+	if requireActiveRoom == true then
+		return nil, roomId, nil, nil, "Join the room before updating wall styles."
+	end
+
+	local roomRecord = RoomPersistence.GetRoomRecord(player, roomId)
+
+	if typeof(roomRecord) == "table" then
+		return player, roomId, roomRecord, getActiveOwnedRoomModel(player, roomId), nil
+	end
+
+	return nil, roomId, nil, nil, "Wall styling is only available in your own rooms."
+end
+
+RoomStyleRuntime.sendWallStylesResult = function(player, ownerPlayer, roomId, success, message, requestId, silent)
+	local currentWallStyleId = ownerPlayer and RoomPersistence.GetRoomWallStyle(ownerPlayer, roomId) or nil
+
+	roomSettingsResult:FireClient(player, {
+		Kind = "GetRoomWallStyles",
+		Action = "GetRoomWallStyles",
+		RequestId = requestId,
+		Silent = silent == true,
+		Success = success == true,
+		Message = message,
+		RoomId = roomId,
+		CurrentWallStyleId = currentWallStyleId,
+		Styles = success and RoomStyleRuntime.buildWallStyleEntries(ownerPlayer, currentWallStyleId) or {},
+	})
+end
+
 local function getCurrentPlayerRoomForFurniturePermissions(player)
 	local roomName = player:GetAttribute("CurrentRoomName")
 
@@ -3599,15 +3769,19 @@ end)
 roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 	local safeActionName = typeof(actionName) == "string" and actionName or "Unknown"
 
-	if (safeActionName == "UpdateSettings" or safeActionName == "ApplyRoomFloorStyle")
+	if (safeActionName == "UpdateSettings"
+			or safeActionName == "ApplyRoomFloorStyle"
+			or safeActionName == "ApplyRoomWallStyle")
 		and isRoomSettingsRequestRateLimited(player) then
 
 		roomSettingsResult:FireClient(player, {
-			Kind = safeActionName == "ApplyRoomFloorStyle" and "ApplyRoomFloorStyle" or "RoomSettings",
+			Kind = (safeActionName == "ApplyRoomFloorStyle" or safeActionName == "ApplyRoomWallStyle")
+				and safeActionName
+				or "RoomSettings",
 			Action = safeActionName,
 			Success = false,
-			Message = safeActionName == "ApplyRoomFloorStyle"
-				and "Please wait a moment before updating floor style."
+			Message = (safeActionName == "ApplyRoomFloorStyle" or safeActionName == "ApplyRoomWallStyle")
+				and "Please wait a moment before updating room style."
 				or "Please wait a moment before updating room settings.",
 		})
 		return
@@ -3821,6 +3995,219 @@ roomSettingsRequest.OnServerEvent:Connect(function(player, actionName, payload)
 			CurrentFloorStyleId = currentFloorStyleId,
 			Style = buildRoomFloorStyleEntry(ownerPlayer, styleConfig, currentFloorStyleId),
 			Styles = buildRoomFloorStyleEntries(ownerPlayer, currentFloorStyleId),
+			Charged = typeof(applyResult) == "table" and applyResult.Charged == true,
+			ChargedAmount = typeof(applyResult) == "table" and applyResult.ChargedAmount or nil,
+			CurrencyKey = typeof(applyResult) == "table" and applyResult.CurrencyKey or nil,
+			Price = typeof(applyResult) == "table" and applyResult.Price or nil,
+			NewCurrencyBalance = typeof(applyResult) == "table" and applyResult.NewCurrencyBalance or nil,
+		})
+		return
+	end
+
+	if safeActionName == "GetRoomWallStyles" then
+		local requestId = getRoomFloorStyleRequestId(payload)
+		local silent = typeof(payload) == "table" and payload.Silent == true
+		local ownerPlayer, roomId, _, _, targetMessage = RoomStyleRuntime.getOwnedWallStyleTarget(player, payload, false)
+
+		if not ownerPlayer then
+			roomSettingsResult:FireClient(player, {
+				Kind = "GetRoomWallStyles",
+				Action = "GetRoomWallStyles",
+				RequestId = requestId,
+				Silent = silent,
+				Success = false,
+				Message = targetMessage or "Wall styling is only available in your own rooms.",
+				RoomId = roomId,
+				Styles = {},
+			})
+			return
+		end
+
+		RoomStyleRuntime.sendWallStylesResult(player, ownerPlayer, roomId, true, "Wall styles loaded.", requestId, silent)
+		return
+	end
+
+	if safeActionName == "PreviewRoomWallStyle" then
+		local requestId = getRoomFloorStyleRequestId(payload)
+
+		if typeof(payload) ~= "table" then
+			roomSettingsResult:FireClient(player, {
+				Kind = "PreviewRoomWallStyle",
+				Action = "PreviewRoomWallStyle",
+				RequestId = requestId,
+				Success = false,
+				Message = "Invalid wall style request.",
+			})
+			return
+		end
+
+		local ownerPlayer, roomId, _, activeRoomModel, targetMessage =
+			RoomStyleRuntime.getOwnedWallStyleTarget(player, payload, true)
+
+		if not ownerPlayer or not activeRoomModel then
+			roomSettingsResult:FireClient(player, {
+				Kind = "PreviewRoomWallStyle",
+				Action = "PreviewRoomWallStyle",
+				RequestId = requestId,
+				Success = false,
+				Message = targetMessage or "Join the room before previewing wall styles.",
+				RoomId = roomId,
+			})
+			return
+		end
+
+		local wallStyleId = typeof(payload.WallStyleId) == "string" and trimRoomText(payload.WallStyleId) or nil
+		local canPreview, previewMessage = RoomStyleRuntime.wallConfig.CanPreviewStyle(wallStyleId)
+
+		if not canPreview then
+			roomSettingsResult:FireClient(player, {
+				Kind = "PreviewRoomWallStyle",
+				Action = "PreviewRoomWallStyle",
+				RequestId = requestId,
+				Success = false,
+				Message = previewMessage or "Wall style not found.",
+				RoomId = roomId,
+				CurrentWallStyleId = RoomPersistence.GetRoomWallStyle(ownerPlayer, roomId),
+			})
+			return
+		end
+
+		local renderOk, applied, renderMessage = pcall(function()
+			return RoomStyleRuntime.applyWallStyle(activeRoomModel, wallStyleId, {
+				IsPreview = true,
+			})
+		end)
+		local success = renderOk and applied == true
+		local currentWallStyleId = RoomPersistence.GetRoomWallStyle(ownerPlayer, roomId)
+
+		roomSettingsResult:FireClient(player, {
+			Kind = "PreviewRoomWallStyle",
+			Action = "PreviewRoomWallStyle",
+			RequestId = requestId,
+			Success = success,
+			Message = success and "Previewing wall. Apply to save." or (renderOk and renderMessage or tostring(applied)),
+			RoomId = roomId,
+			PreviewWallStyleId = success and wallStyleId or nil,
+			CurrentWallStyleId = currentWallStyleId,
+			Styles = RoomStyleRuntime.buildWallStyleEntries(ownerPlayer, currentWallStyleId),
+		})
+		return
+	end
+
+	if safeActionName == "CancelRoomWallStylePreview" then
+		local requestId = getRoomFloorStyleRequestId(payload)
+		local silent = typeof(payload) == "table" and payload.Silent == true
+		local ownerPlayer, roomId, _, activeRoomModel, targetMessage =
+			RoomStyleRuntime.getOwnedWallStyleTarget(player, payload, true)
+
+		if not ownerPlayer or not activeRoomModel then
+			roomSettingsResult:FireClient(player, {
+				Kind = "CancelRoomWallStylePreview",
+				Action = "CancelRoomWallStylePreview",
+				RequestId = requestId,
+				Silent = silent,
+				Success = false,
+				Message = targetMessage or "Join the room before reverting wall preview.",
+				RoomId = roomId,
+			})
+			return
+		end
+
+		local currentWallStyleId = RoomPersistence.GetRoomWallStyle(ownerPlayer, roomId)
+		local renderOk, applied, renderMessage = pcall(function()
+			return RoomStyleRuntime.applyWallStyle(activeRoomModel, currentWallStyleId)
+		end)
+		local success = renderOk and applied == true
+
+		roomSettingsResult:FireClient(player, {
+			Kind = "CancelRoomWallStylePreview",
+			Action = "CancelRoomWallStylePreview",
+			RequestId = requestId,
+			Silent = silent,
+			Success = success,
+			Message = success and "Wall preview reverted." or (renderOk and renderMessage or tostring(applied)),
+			RoomId = roomId,
+			CurrentWallStyleId = currentWallStyleId,
+			Styles = RoomStyleRuntime.buildWallStyleEntries(ownerPlayer, currentWallStyleId),
+		})
+		return
+	end
+
+	if safeActionName == "ApplyRoomWallStyle" then
+		local requestId = getRoomFloorStyleRequestId(payload)
+
+		if typeof(payload) ~= "table" then
+			roomSettingsResult:FireClient(player, {
+				Kind = "ApplyRoomWallStyle",
+				Action = "ApplyRoomWallStyle",
+				RequestId = requestId,
+				Success = false,
+				Message = "Invalid wall style request.",
+			})
+			return
+		end
+
+		local ownerPlayer, roomId, _, activeRoomModel, targetMessage =
+			RoomStyleRuntime.getOwnedWallStyleTarget(player, payload, true)
+
+		if not ownerPlayer or not activeRoomModel then
+			roomSettingsResult:FireClient(player, {
+				Kind = "ApplyRoomWallStyle",
+				Action = "ApplyRoomWallStyle",
+				RequestId = requestId,
+				Success = false,
+				Message = targetMessage or "Join the room before updating wall styles.",
+				RoomId = roomId,
+			})
+			return
+		end
+
+		local wallStyleId = typeof(payload.WallStyleId) == "string" and trimRoomText(payload.WallStyleId) or nil
+		local styleConfig = wallStyleId and RoomStyleRuntime.wallConfig.GetStyle(wallStyleId) or nil
+
+		if typeof(styleConfig) ~= "table" then
+			roomSettingsResult:FireClient(player, {
+				Kind = "ApplyRoomWallStyle",
+				Action = "ApplyRoomWallStyle",
+				RequestId = requestId,
+				Success = false,
+				Message = "Wall style not found.",
+				RoomId = roomId,
+				CurrentWallStyleId = RoomPersistence.GetRoomWallStyle(ownerPlayer, roomId),
+			})
+			return
+		end
+
+		local previousWallStyleId = RoomPersistence.GetRoomWallStyle(ownerPlayer, roomId)
+		local renderOk, applied, renderMessage = pcall(function()
+			return RoomStyleRuntime.applyWallStyle(activeRoomModel, wallStyleId)
+		end)
+		local success = renderOk and applied == true
+		local message = success and nil or (renderOk and renderMessage or tostring(applied))
+		local applyResult = nil
+
+		if success then
+			success, message, applyResult = RoomPersistence.ApplyRoomWallStylePaid(ownerPlayer, roomId, wallStyleId)
+
+			if not success then
+				pcall(function()
+					RoomStyleRuntime.applyWallStyle(activeRoomModel, previousWallStyleId)
+				end)
+			end
+		end
+
+		local currentWallStyleId = RoomPersistence.GetRoomWallStyle(ownerPlayer, roomId)
+
+		roomSettingsResult:FireClient(player, {
+			Kind = "ApplyRoomWallStyle",
+			Action = "ApplyRoomWallStyle",
+			RequestId = requestId,
+			Success = success == true,
+			Message = success and (message or "Wall updated.") or (message or "Could not update wall style."),
+			RoomId = roomId,
+			CurrentWallStyleId = currentWallStyleId,
+			Style = RoomStyleRuntime.buildWallStyleEntry(ownerPlayer, styleConfig, currentWallStyleId),
+			Styles = RoomStyleRuntime.buildWallStyleEntries(ownerPlayer, currentWallStyleId),
 			Charged = typeof(applyResult) == "table" and applyResult.Charged == true,
 			ChargedAmount = typeof(applyResult) == "table" and applyResult.ChargedAmount or nil,
 			CurrencyKey = typeof(applyResult) == "table" and applyResult.CurrencyKey or nil,

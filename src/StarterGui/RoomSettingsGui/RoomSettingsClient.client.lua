@@ -32,6 +32,7 @@ local ROOM_DESCRIPTION_MAX_LENGTH = 100
 local TAB_BASIC = "Basic"
 local TAB_RIGHTS = "Rights"
 local TAB_FLOOR = "Floor"
+local TAB_WALL = "Wall"
 local TAB_BANNED = "Banned Users"
 local TAB_MODERATION = "Moderation"
 local THEME = {
@@ -64,14 +65,22 @@ local state = {
 	editors = {},
 	floorStyles = {},
 	currentFloorStyleId = nil,
+	wallStyles = {},
+	currentWallStyleId = nil,
 	editorRequestInFlight = false,
 	settingsRequestInFlight = false,
 	floorRequestInFlight = false,
+	wallRequestInFlight = false,
 	applyingFloorStyleId = nil,
+	applyingWallStyleId = nil,
 	previewFloorStyleId = nil,
 	previewingFloorStyleId = nil,
+	previewWallStyleId = nil,
+	previewingWallStyleId = nil,
 	cancelPreviewAfterResponse = false,
+	cancelWallPreviewAfterResponse = false,
 	floorRequestId = 0,
+	wallRequestId = 0,
 	restoreNavigatorState = nil,
 	openRoomName = nil,
 }
@@ -275,11 +284,21 @@ ui.tabLayout.Padding = UDim.new(0, 8)
 ui.tabLayout.Parent = ui.tabBar
 
 ui.tabs = {}
-for index, tabName in ipairs({ TAB_BASIC, TAB_RIGHTS, TAB_FLOOR, TAB_BANNED, TAB_MODERATION }) do
-	local button = createTextButton("Tab_" .. tabName:gsub("%W", ""), tabName, UDim2.new(0.2, -7, 1, 0), ui.tabBar)
-	button.LayoutOrder = index
-	button.TextTruncate = Enum.TextTruncate.AtEnd
-	ui.tabs[tabName] = button
+do
+	local tabNames = { TAB_BASIC, TAB_RIGHTS, TAB_FLOOR, TAB_WALL, TAB_BANNED, TAB_MODERATION }
+	local tabWidthScale = 1 / #tabNames
+
+	for index, tabName in ipairs(tabNames) do
+		local button = createTextButton(
+			"Tab_" .. tabName:gsub("%W", ""),
+			tabName,
+			UDim2.new(tabWidthScale, -7, 1, 0),
+			ui.tabBar
+		)
+		button.LayoutOrder = index
+		button.TextTruncate = Enum.TextTruncate.AtEnd
+		ui.tabs[tabName] = button
+	end
 end
 
 ui.content = Instance.new("ScrollingFrame")
@@ -694,6 +713,14 @@ local function requestFloorStyleApply(floorStyleId)
 end
 
 ui.previewApplyButton.MouseButton1Click:Connect(function()
+	if state.previewWallStyleId then
+		if ui.wallStyles and ui.wallStyles.applyPreview then
+			ui.wallStyles.applyPreview()
+		end
+
+		return
+	end
+
 	local floorStyleId = state.previewFloorStyleId
 	local style = getFloorStyleById(floorStyleId)
 
@@ -710,14 +737,593 @@ ui.previewApplyButton.MouseButton1Click:Connect(function()
 end)
 
 ui.previewCancelButton.MouseButton1Click:Connect(function()
+	if state.previewWallStyleId then
+		if state.wallRequestInFlight then
+			return
+		end
+
+		if ui.wallStyles and ui.wallStyles.cancelPreview then
+			ui.wallStyles.cancelPreview({
+				SetStatus = true,
+			})
+		end
+
+		return
+	end
+
 	if state.floorRequestInFlight then
 		return
 	end
 
-	cancelFloorPreview({
+cancelFloorPreview({
 		SetStatus = true,
 	})
 end)
+
+ui.wallStyles = {}
+
+do
+	local wall = ui.wallStyles
+
+	local function nextWallRequestId()
+		state.wallRequestId = state.wallRequestId + 1
+		return state.wallRequestId
+	end
+
+	local function getStyleById(wallStyleId)
+		if typeof(state.wallStyles) ~= "table" then
+			return nil
+		end
+
+		for _, style in ipairs(state.wallStyles) do
+			if tostring(style.WallStyleId or "") == tostring(wallStyleId or "") then
+				return style
+			end
+		end
+
+		return nil
+	end
+
+	local function getPriceText(style)
+		local price = style.ApplyPrice or style.ApplyCost or style.Price
+		local currencyKey = style.ApplyCurrencyKey or style.CurrencyKey or "Dollars"
+
+		if typeof(price) ~= "number"
+			or price ~= price
+			or price < 0
+			or price == math.huge
+			or style.IsFree == true then
+
+			return "Free"
+		end
+
+		price = math.floor(price)
+
+		if price <= 0 then
+			return "Free"
+		end
+
+		return tostring(price) .. " " .. tostring(currencyKey)
+	end
+
+	local function getApplyButtonText(style, isApplying)
+		if isApplying then
+			return "Applying..."
+		end
+
+		local priceText = getPriceText(style)
+
+		if priceText == "Free" then
+			return "Apply"
+		end
+
+		return "Apply - " .. priceText
+	end
+
+	local function isPreviewable(style)
+		return typeof(style) == "table"
+			and style.Previewable ~= false
+			and style.CanPreview ~= false
+	end
+
+	local function isApplyable(style)
+		return typeof(style) == "table"
+			and style.CanApply ~= false
+			and style.Unavailable ~= true
+	end
+
+	local function getUnavailableReason(style)
+		if typeof(style) == "table"
+			and typeof(style.UnavailableReason) == "string"
+			and style.UnavailableReason ~= "" then
+
+			return style.UnavailableReason
+		end
+
+		return "Unavailable"
+	end
+
+	function wall.isAction(action)
+		return action == "GetRoomWallStyles"
+			or action == "ApplyRoomWallStyle"
+			or action == "PreviewRoomWallStyle"
+			or action == "CancelRoomWallStylePreview"
+	end
+
+	function wall.requestStyles(options)
+		options = options or {}
+
+		state.wallRequestInFlight = true
+		state.applyingWallStyleId = nil
+		state.previewingWallStyleId = nil
+		local requestId = nextWallRequestId()
+
+		if options.ClearStyles ~= false then
+			state.wallStyles = {}
+		end
+
+		if options.SetStatus ~= false then
+			setStatus("Loading wall styles...", false)
+		end
+
+		roomSettingsRequest:FireServer("GetRoomWallStyles", {
+			RoomId = state.roomId,
+			RequestId = requestId,
+			Silent = options.Silent == true,
+		})
+	end
+
+	function wall.updatePreviewBar()
+		local wallStyleId = state.previewWallStyleId
+		local style = getStyleById(wallStyleId)
+		local displayName = style and tostring(style.DisplayName or wallStyleId) or tostring(wallStyleId or "Wall")
+		local applyable = isApplyable(style)
+		local isApplying = state.applyingWallStyleId == wallStyleId and state.wallRequestInFlight == true
+
+		ui.previewTitle.Text = "Previewing: " .. displayName
+		ui.previewNote.Text = applyable
+			and "Apply to save, or Cancel to revert."
+			or getUnavailableReason(style)
+		ui.previewApplyButton.Text = applyable
+			and getApplyButtonText(style or {}, isApplying)
+			or "Unavailable"
+		ui.previewApplyButton.BackgroundColor3 = applyable and THEME.Confirm or THEME.ButtonMuted
+		ui.previewApplyButton.Active = applyable and state.wallRequestInFlight ~= true
+		ui.previewApplyButton.AutoButtonColor = ui.previewApplyButton.Active
+		ui.previewCancelButton.Active = state.wallRequestInFlight ~= true
+		ui.previewCancelButton.AutoButtonColor = ui.previewCancelButton.Active
+	end
+
+	function wall.showPreviewBar(wallStyleId)
+		state.previewWallStyleId = wallStyleId
+		wall.updatePreviewBar()
+		setFloorPreviewChromeVisible(true)
+	end
+
+	function wall.cancelPreview(options)
+		if not state.previewWallStyleId then
+			if state.previewingWallStyleId then
+				state.cancelWallPreviewAfterResponse = true
+			end
+
+			if typeof(options) == "table" and options.ShowMainPanel == false then
+				ui.previewBar.Visible = false
+			elseif state.isOpen then
+				setFloorPreviewChromeVisible(false)
+			end
+
+			return
+		end
+
+		options = options or {}
+		state.previewWallStyleId = nil
+		state.previewingWallStyleId = nil
+		state.cancelWallPreviewAfterResponse = false
+
+		if options.ShowMainPanel == false then
+			ui.previewBar.Visible = false
+		else
+			setFloorPreviewChromeVisible(false)
+		end
+
+		local requestId = nextWallRequestId()
+
+		if options.SetStatus == true then
+			setStatus("Reverting wall preview...", false)
+		end
+
+		roomSettingsRequest:FireServer("CancelRoomWallStylePreview", {
+			RoomId = state.roomId,
+			RequestId = requestId,
+			Silent = options.Silent == true,
+		})
+	end
+
+	function wall.requestPreview(wallStyleId)
+		if state.wallRequestInFlight then
+			return false
+		end
+
+		if state.previewFloorStyleId then
+			cancelFloorPreview({
+				Silent = true,
+				SetStatus = false,
+			})
+		end
+
+		state.wallRequestInFlight = true
+		state.previewingWallStyleId = wallStyleId
+		local requestId = nextWallRequestId()
+
+		setStatus("Previewing wall style...", false)
+		roomSettingsRequest:FireServer("PreviewRoomWallStyle", {
+			RoomId = state.roomId,
+			WallStyleId = wallStyleId,
+			RequestId = requestId,
+		})
+
+		return true
+	end
+
+	function wall.requestApply(wallStyleId)
+		if state.wallRequestInFlight then
+			return false
+		end
+
+		state.wallRequestInFlight = true
+		state.applyingWallStyleId = wallStyleId
+		local requestId = nextWallRequestId()
+
+		wall.updatePreviewBar()
+		setStatus("Applying wall style...", false)
+		roomSettingsRequest:FireServer("ApplyRoomWallStyle", {
+			RoomId = state.roomId,
+			WallStyleId = wallStyleId,
+			RequestId = requestId,
+		})
+
+		return true
+	end
+
+	function wall.applyPreview()
+		local wallStyleId = state.previewWallStyleId
+		local style = getStyleById(wallStyleId)
+
+		if state.wallRequestInFlight or not wallStyleId then
+			return
+		end
+
+		if not isApplyable(style) then
+			ui.previewNote.Text = getUnavailableReason(style)
+			return
+		end
+
+		wall.requestApply(wallStyleId)
+	end
+
+	function wall.fireCurrencyLocalDelta(response)
+		if typeof(response) ~= "table" or response.Charged ~= true then
+			return
+		end
+
+		local currencyKey = response.CurrencyKey
+		local balance = response.NewCurrencyBalance
+
+		if typeof(currencyKey) ~= "string" or currencyKey == "" then
+			return
+		end
+
+		if typeof(balance) ~= "number" then
+			return
+		end
+
+		currencyLocalDelta:Fire({
+			CurrencyKey = currencyKey,
+			Balance = balance,
+		})
+		currencyRefreshRequested:Fire({
+			Reason = "WallStyleApply",
+			Force = true,
+		})
+	end
+
+	function wall.applyStyles(response)
+		if typeof(response.CurrentWallStyleId) == "string" then
+			state.currentWallStyleId = response.CurrentWallStyleId
+		end
+
+		if typeof(response.Styles) == "table" then
+			state.wallStyles = response.Styles
+		end
+
+		if state.previewWallStyleId then
+			wall.updatePreviewBar()
+		end
+
+		if state.activeTab == TAB_WALL then
+			wall.renderTab()
+		end
+	end
+
+	function wall.renderTab()
+		clearGuiObjects(ui.content)
+		ui.content.CanvasPosition = Vector2.zero
+
+		local styles = typeof(state.wallStyles) == "table" and state.wallStyles or {}
+		local cardHeight = 138
+		local cardGap = 10
+		local contentHeight = math.max(150, 72 + (#styles * (cardHeight + cardGap)))
+
+		ui.content.CanvasSize = UDim2.fromOffset(0, contentHeight)
+
+		createLabel("WallTitle", "Wall Style", UDim2.fromOffset(18, 16), UDim2.new(1, -36, 0, 24), ui.content, {
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+		})
+		createLabel(
+			"WallNote",
+			"Preview for free. Applying a paid wall charges each time.",
+			UDim2.fromOffset(18, 40),
+			UDim2.new(1, -36, 0, 20),
+			ui.content,
+			{ TextColor3 = THEME.SubtleText, TextSize = 12 }
+		)
+
+		if #styles == 0 then
+			createLabel(
+				"WallEmpty",
+				state.wallRequestInFlight and "Loading wall styles..." or "Wall styling is only available in your own rooms.",
+				UDim2.fromOffset(18, 78),
+				UDim2.new(1, -36, 0, 26),
+				ui.content,
+				{ TextColor3 = THEME.SubtleText, TextSize = 12, Font = Enum.Font.GothamMedium }
+			)
+			return
+		end
+
+		for index, style in ipairs(styles) do
+			local wallStyleId = tostring(style.WallStyleId or "")
+			local isCurrent = style.Current == true or wallStyleId == state.currentWallStyleId
+			local isApplying = state.applyingWallStyleId == wallStyleId
+			local isPreviewing = state.previewingWallStyleId == wallStyleId
+			local isPreviewed = state.previewWallStyleId == wallStyleId
+			local isBusy = state.wallRequestInFlight == true
+			local isUnavailable = (style.Unavailable == true or style.CanApply == false) and not isCurrent
+			local previewable = isPreviewable(style)
+			local applyable = isApplyable(style) and not isCurrent
+			local priceText = getPriceText(style)
+			local unavailableReason = getUnavailableReason(style)
+			local cardTextColor = isUnavailable and THEME.DisabledText or THEME.Text
+			local subtleTextColor = isUnavailable and THEME.DisabledText or THEME.SubtleText
+			local y = 72 + ((index - 1) * (cardHeight + cardGap))
+
+			local card = Instance.new("Frame")
+			card.Name = "WallStyleCard_" .. wallStyleId
+			card.Position = UDim2.fromOffset(18, y)
+			card.Size = UDim2.new(1, -36, 0, cardHeight)
+			card.BackgroundColor3 = isUnavailable
+				and THEME.DisabledPanel
+				or (
+					isCurrent
+						and THEME.PanelAlt
+						or (isPreviewed and Color3.fromRGB(244, 249, 232) or Color3.fromRGB(255, 248, 230))
+				)
+			card.BorderSizePixel = 0
+			card.Parent = ui.content
+
+			createCorner(card, 6)
+			createStroke(
+				card,
+				(isCurrent or isPreviewed) and not isUnavailable and THEME.Confirm or THEME.PanelStroke,
+				1,
+				isUnavailable and 0.45 or ((isCurrent or isPreviewed) and 0.1 or 0.25)
+			)
+
+			createLabel(
+				"StyleName",
+				tostring(style.DisplayName or wallStyleId),
+				UDim2.fromOffset(12, 8),
+				UDim2.new(1, -182, 0, 22),
+				card,
+				{
+					Font = Enum.Font.GothamBold,
+					TextSize = 13,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+					TextColor3 = cardTextColor,
+				}
+			)
+			createLabel(
+				"StyleDescription",
+				tostring(style.Description or ""),
+				UDim2.fromOffset(12, 32),
+				UDim2.new(1, -182, 0, 40),
+				card,
+				{
+					TextColor3 = subtleTextColor,
+					TextSize = 11,
+					TextWrapped = true,
+					TextYAlignment = Enum.TextYAlignment.Top,
+				}
+			)
+
+			createLabel(
+				"StyleMeta",
+				"Pattern: " .. tostring(style.Pattern or "Wall") .. " | " .. (isUnavailable and "Unavailable" or priceText),
+				UDim2.fromOffset(12, 78),
+				UDim2.new(1, -182, 0, 18),
+				card,
+				{ TextColor3 = subtleTextColor, TextSize = 11, TextTruncate = Enum.TextTruncate.AtEnd }
+			)
+
+			if isCurrent then
+				local currentBadge = createTextButton("CurrentBadge", "Current", UDim2.fromOffset(86, 28), card)
+				currentBadge.AnchorPoint = Vector2.new(1, 0)
+				currentBadge.Position = UDim2.new(1, -12, 0, 8)
+				currentBadge.BackgroundColor3 = THEME.Confirm
+				currentBadge.Active = false
+				currentBadge.AutoButtonColor = false
+			elseif isPreviewed then
+				local previewBadge = createTextButton("PreviewBadge", "Preview", UDim2.fromOffset(86, 28), card)
+				previewBadge.AnchorPoint = Vector2.new(1, 0)
+				previewBadge.Position = UDim2.new(1, -12, 0, 8)
+				previewBadge.BackgroundColor3 = THEME.ButtonMuted
+				previewBadge.Active = false
+				previewBadge.AutoButtonColor = false
+			elseif isUnavailable then
+				local unavailableBadge = createTextButton("UnavailableBadge", "Unavailable", UDim2.fromOffset(112, 28), card)
+				unavailableBadge.AnchorPoint = Vector2.new(1, 0)
+				unavailableBadge.Position = UDim2.new(1, -12, 0, 8)
+				unavailableBadge.BackgroundColor3 = THEME.ButtonMuted
+				unavailableBadge.Active = false
+				unavailableBadge.AutoButtonColor = false
+
+				createLabel(
+					"UnavailableReason",
+					unavailableReason,
+					UDim2.new(1, -152, 0, 38),
+					UDim2.fromOffset(140, 18),
+					card,
+					{
+						TextColor3 = THEME.DisabledText,
+						TextSize = 10,
+						TextXAlignment = Enum.TextXAlignment.Right,
+						TextTruncate = Enum.TextTruncate.AtEnd,
+					}
+				)
+
+				if previewable then
+					local previewButton = createTextButton(
+						"PreviewButton",
+						isPreviewing and "Previewing..." or "Preview",
+						UDim2.fromOffset(140, 28),
+						card
+					)
+					previewButton.AnchorPoint = Vector2.new(1, 0)
+					previewButton.Position = UDim2.new(1, -12, 0, 78)
+					previewButton.BackgroundColor3 = THEME.ButtonMuted
+					previewButton.Active = not isBusy
+					previewButton.AutoButtonColor = previewButton.Active
+					previewButton.MouseButton1Click:Connect(function()
+						if wall.requestPreview(wallStyleId) then
+							previewButton.Text = "Previewing..."
+							previewButton.Active = false
+							previewButton.AutoButtonColor = false
+						end
+					end)
+				end
+			else
+				local previewButton = createTextButton(
+					"PreviewButton",
+					isPreviewing and "Previewing..." or "Preview",
+					UDim2.fromOffset(140, 28),
+					card
+				)
+				previewButton.AnchorPoint = Vector2.new(1, 0)
+				previewButton.Position = UDim2.new(1, -12, 0, 8)
+				previewButton.BackgroundColor3 = THEME.Button
+				previewButton.Active = previewable and not isBusy
+				previewButton.AutoButtonColor = previewButton.Active
+				previewButton.MouseButton1Click:Connect(function()
+					if wall.requestPreview(wallStyleId) then
+						previewButton.Text = "Previewing..."
+						previewButton.Active = false
+						previewButton.AutoButtonColor = false
+					end
+				end)
+			end
+
+			if applyable then
+				local applyButton = createTextButton(
+					"ApplyButton",
+					getApplyButtonText(style, isApplying),
+					UDim2.fromOffset(140, 30),
+					card
+				)
+				applyButton.AnchorPoint = Vector2.new(1, 0)
+				applyButton.Position = UDim2.new(1, -12, 0, 44)
+				applyButton.BackgroundColor3 = THEME.Confirm
+				applyButton.Active = not isBusy
+				applyButton.AutoButtonColor = applyButton.Active
+				applyButton.MouseButton1Click:Connect(function()
+					if wall.requestApply(wallStyleId) then
+						applyButton.Text = "Applying..."
+						applyButton.Active = false
+						applyButton.AutoButtonColor = false
+					end
+				end)
+			end
+		end
+	end
+
+	function wall.handleResponse(action, response)
+		wall.applyStyles(response)
+
+		if response.Success ~= true then
+			if action == "ApplyRoomWallStyle" and state.previewWallStyleId then
+				wall.cancelPreview({
+					Silent = true,
+					SetStatus = false,
+				})
+			end
+
+			if action == "ApplyRoomWallStyle"
+				or action == "CancelRoomWallStylePreview" then
+
+				setFloorPreviewChromeVisible(false)
+			end
+
+			setStatus(response.Message or "Wall style update failed.", true)
+			return
+		end
+
+		if action == "ApplyRoomWallStyle" then
+			state.previewWallStyleId = nil
+			state.cancelWallPreviewAfterResponse = false
+			setFloorPreviewChromeVisible(false)
+			state.activeTab = TAB_WALL
+			updateTabs()
+			wall.fireCurrencyLocalDelta(response)
+			setStatus(response.Message or "Wall updated.", false)
+			wall.requestStyles({
+				ClearStyles = false,
+				SetStatus = false,
+				Silent = true,
+			})
+		elseif action == "PreviewRoomWallStyle" then
+			state.previewWallStyleId = response.PreviewWallStyleId
+			local shouldCancelPreview = state.cancelWallPreviewAfterResponse
+				or not state.isOpen
+				or state.activeTab ~= TAB_WALL
+			state.cancelWallPreviewAfterResponse = false
+
+			if shouldCancelPreview then
+				wall.cancelPreview({
+					Silent = true,
+					SetStatus = false,
+				})
+				return
+			end
+
+			wall.showPreviewBar(response.PreviewWallStyleId)
+		elseif action == "CancelRoomWallStylePreview" then
+			state.previewWallStyleId = nil
+			state.cancelWallPreviewAfterResponse = false
+			setFloorPreviewChromeVisible(false)
+			state.activeTab = TAB_WALL
+			updateTabs()
+
+			if state.activeTab == TAB_WALL then
+				wall.renderTab()
+			end
+
+			if response.Silent ~= true then
+				setStatus(response.Message or "Wall preview reverted.", false)
+			end
+		elseif response.Silent ~= true then
+			setStatus("", false)
+		end
+	end
+end
 
 local function enforceTextLimit(textBox, maxLength)
 	local text = textBox.Text or ""
@@ -1220,6 +1826,9 @@ renderActiveTab = function()
 	elseif state.activeTab == TAB_FLOOR then
 		requestFloorStyles()
 		renderFloorTab()
+	elseif state.activeTab == TAB_WALL then
+		ui.wallStyles.requestStyles()
+		ui.wallStyles.renderTab()
 	elseif state.activeTab == TAB_BANNED then
 		renderPlaceholderTab("Banned users are coming soon.", false)
 	elseif state.activeTab == TAB_MODERATION then
@@ -1257,7 +1866,7 @@ local function applyFloorStyles(response)
 		state.floorStyles = response.Styles
 	end
 
-	if ui.previewBar.Visible then
+	if state.previewFloorStyleId then
 		updateFloorPreviewBar()
 	end
 
@@ -1273,13 +1882,20 @@ local function openWindow(payload)
 	state.editors = {}
 	state.floorStyles = {}
 	state.currentFloorStyleId = nil
+	state.wallStyles = {}
+	state.currentWallStyleId = nil
 	state.editorRequestInFlight = false
 	state.settingsRequestInFlight = false
 	state.floorRequestInFlight = false
+	state.wallRequestInFlight = false
 	state.applyingFloorStyleId = nil
+	state.applyingWallStyleId = nil
 	state.previewFloorStyleId = nil
 	state.previewingFloorStyleId = nil
+	state.previewWallStyleId = nil
+	state.previewingWallStyleId = nil
 	state.cancelPreviewAfterResponse = false
+	state.cancelWallPreviewAfterResponse = false
 	state.restoreNavigatorState = nil
 	state.openRoomName = player:GetAttribute("CurrentRoomName")
 
@@ -1304,6 +1920,14 @@ local function openWindow(payload)
 			Silent = true,
 		})
 	end
+
+	if state.activeTab ~= TAB_WALL then
+		ui.wallStyles.requestStyles({
+			ClearStyles = false,
+			SetStatus = false,
+			Silent = true,
+		})
+	end
 end
 
 local function closeWindow(options)
@@ -1312,6 +1936,11 @@ local function closeWindow(options)
 	local restoreState = state.restoreNavigatorState
 
 	cancelFloorPreview({
+		Silent = true,
+		SetStatus = false,
+		ShowMainPanel = false,
+	})
+	ui.wallStyles.cancelPreview({
 		Silent = true,
 		SetStatus = false,
 		ShowMainPanel = false,
@@ -1342,6 +1971,13 @@ for tabName, button in pairs(ui.tabs) do
 
 		if state.activeTab == TAB_FLOOR and tabName ~= TAB_FLOOR then
 			cancelFloorPreview({
+				Silent = true,
+				SetStatus = false,
+			})
+		end
+
+		if state.activeTab == TAB_WALL and tabName ~= TAB_WALL then
+			ui.wallStyles.cancelPreview({
 				Silent = true,
 				SetStatus = false,
 			})
@@ -1399,7 +2035,10 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		return
 	end
 
-	if not state.isOpen and response.Kind ~= "PreviewRoomFloorStyle" then
+	if not state.isOpen
+		and response.Kind ~= "PreviewRoomFloorStyle"
+		and response.Kind ~= "PreviewRoomWallStyle" then
+
 		return
 	end
 
@@ -1414,6 +2053,14 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		action = "PreviewRoomFloorStyle"
 	elseif responseKind == "CancelRoomFloorStylePreview" then
 		action = "CancelRoomFloorStylePreview"
+	elseif responseKind == "GetRoomWallStyles" then
+		action = "GetRoomWallStyles"
+	elseif responseKind == "ApplyRoomWallStyle" then
+		action = "ApplyRoomWallStyle"
+	elseif responseKind == "PreviewRoomWallStyle" then
+		action = "PreviewRoomWallStyle"
+	elseif responseKind == "CancelRoomWallStylePreview" then
+		action = "CancelRoomWallStylePreview"
 	elseif responseKind ~= "RoomSettings" then
 		return
 	end
@@ -1438,6 +2085,12 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		if typeof(responseRequestId) == "number" and responseRequestId < state.floorRequestId then
 			return
 		end
+	elseif ui.wallStyles.isAction(action) then
+		local responseRequestId = response.RequestId
+
+		if typeof(responseRequestId) == "number" and responseRequestId < state.wallRequestId then
+			return
+		end
 	end
 
 	if action == "GetSettings" or action == "UpdateSettings" then
@@ -1457,6 +2110,15 @@ roomSettingsResult.OnClientEvent:Connect(function(response)
 		state.floorRequestInFlight = false
 		state.applyingFloorStyleId = nil
 		state.previewingFloorStyleId = nil
+	elseif ui.wallStyles.isAction(action) then
+		state.wallRequestInFlight = false
+		state.applyingWallStyleId = nil
+		state.previewingWallStyleId = nil
+	end
+
+	if ui.wallStyles.isAction(action) then
+		ui.wallStyles.handleResponse(action, response)
+		return
 	end
 
 	if response.Success ~= true then
