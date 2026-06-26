@@ -5,6 +5,62 @@ to the game. The goal is to make imported furniture safe for Catalog purchase,
 Inventory placement, TileMask rooms, movement, rotation, saving, selling, and
 marketplace rules.
 
+## Roblox Assistant Procedural Furniture
+
+Roblox Assistant or procedural model output should be treated as a source draft,
+not as the runtime furniture template. The runtime furniture pipeline expects a
+stable direct-child `Model` under `ReplicatedStorage.FurnitureTemplates`.
+
+Recommended workflow:
+
+1. Generate the draft with Roblox Assistant or the procedural model tool.
+2. Bake, convert, or finalize the generated procedural object into a normal
+   `Model` with `BasePart` or `MeshPart` descendants.
+3. Move the baked `Model` under `ReplicatedStorage.FurnitureTemplates`.
+4. Rename it with a stable ASCII template id, for example `Chair_Hotel_002`.
+5. Select the baked model and run `docs/tools/PrepareImportedFurnitureTemplate.lua`.
+6. Set or review the metadata: `DisplayName`, `Description`, `Category`,
+   `CurrencyKey`, `Price`, `SellPrice`, `TradableOnPurchase`,
+   `SellableOnPurchase`, `FootprintWidth`, and `FootprintDepth`.
+7. Confirm `PlacementBounds`, pivot, `PrimaryPart`, and visual part collision
+   settings.
+8. Run `docs/tools/ValidateFurnitureTemplates.lua`.
+9. Test purchase, inventory placement, move, rotate, TileMask rejection,
+   save/rejoin, sell, and marketplace behavior in Studio.
+10. Export/source-control the baked template as `.rbxmx`.
+11. Set `AutoCatalogEnabled = true` only after validation and in-game tests pass.
+
+Raw `ProceduralModel` roots are not supported as runtime templates because:
+
+- Catalog lookup and auto-catalog discovery check for `Model` templates.
+- Placement uses model pivots, model bounds, `PivotTo`, footprint attributes,
+  and `PlacementBounds`.
+- Room persistence restores saved catalog furniture from `Model` templates.
+- Source control should store stable baked `.rbxmx` model assets.
+- Raw procedural roots may serialize unpredictably or contain unsupported
+  internal state.
+
+Do not:
+
+- Do not place raw `ProceduralModel` roots directly under
+  `ReplicatedStorage.FurnitureTemplates`.
+- Do not enable `AutoCatalogEnabled` on procedural drafts.
+- Do not rely on procedural model bounds for placement.
+- Do not skip `PlacementBounds`.
+- Do not publish before validation and in-game tests.
+
+Prompt examples for Roblox Assistant:
+
+- Stylized hotel chair: "Create a compact stylized hotel lounge chair for a
+  Roblox room, low-poly, warm fabric cushion, simple wooden legs, fits one 4x4
+  stud tile."
+- Small table: "Create a small square hotel side table for Roblox, stylized,
+  clean silhouette, wood top, fits one 4x4 stud tile."
+- Bed: "Create a stylized single hotel bed for Roblox, simple headboard,
+  blanket and pillow shapes, fits a compact grid footprint."
+- Lamp: "Create a small bedside lamp for Roblox, stylized base and shade,
+  simple mesh parts, suitable for a hotel room."
+
 ## 1. Add the Template
 
 Place every runtime furniture template under:
@@ -15,7 +71,8 @@ ReplicatedStorage.FurnitureTemplates
 
 Each direct child should be one furniture `Model`. Do not place imported shop
 templates in room templates, StarterGui, ServerScriptService, or workspace-only
-folders.
+folders. Do not place raw `ProceduralModel` roots here; bake or convert them to
+normal `Model` templates first.
 
 Optional setup helper: after placing and selecting one imported model in Studio,
 run `docs/tools/PrepareImportedFurnitureTemplate.lua` from the Command Bar. It

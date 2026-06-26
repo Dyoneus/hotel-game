@@ -8,6 +8,7 @@ local Selection = game:GetService("Selection")
 local TOOL_PREFIX = "[PrepareImportedFurnitureTemplate]"
 local FURNITURE_TEMPLATES_FOLDER_NAME = "FurnitureTemplates"
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
+local PROCEDURAL_MODEL_CLASS_NAME = "ProceduralModel"
 
 local AUTO_SCALE_TO_TARGET_SIZE = false
 local TARGET_VISUAL_WIDTH = 5.0
@@ -38,6 +39,7 @@ local SET_PRIMARY_PART_TO_PLACEMENT_BOUNDS = true
 
 local RENAME_UNSAFE_MODEL = false
 local REMOVE_EMBEDDED_SCRIPTS = false
+local ALLOW_PROCEDURAL_MODEL_ROOT = false
 
 local VISUAL_BOUNDS_HELPER_PART_NAMES = {
 	CollisionBuffer = true,
@@ -102,6 +104,93 @@ local function stopWithInstructions(message)
 	end
 
 	printInfo("Select exactly one furniture Model under ReplicatedStorage.FurnitureTemplates, then run this script again.")
+end
+
+local function formatYesNo(value)
+	return value and "yes" or "no"
+end
+
+local function isProceduralModelInstance(instance)
+	return typeof(instance) == "Instance"
+		and instance.ClassName == PROCEDURAL_MODEL_CLASS_NAME
+end
+
+local function classNameSuggestsProceduralOutput(instance)
+	if typeof(instance) ~= "Instance" then
+		return false
+	end
+
+	return string.find(string.lower(instance.ClassName), "procedural", 1, true) ~= nil
+end
+
+local function getProceduralDescendants(root)
+	local proceduralDescendants = {}
+
+	if typeof(root) ~= "Instance" then
+		return proceduralDescendants
+	end
+
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if isProceduralModelInstance(descendant) then
+			table.insert(proceduralDescendants, descendant)
+		end
+	end
+
+	return proceduralDescendants
+end
+
+local function getProceduralInfo(root)
+	local proceduralDescendants = getProceduralDescendants(root)
+
+	return {
+		RootDetected = isProceduralModelInstance(root),
+		Descendants = proceduralDescendants,
+		DescendantCount = #proceduralDescendants,
+	}
+end
+
+local function printProceduralInfo(proceduralInfo)
+	printInfo("Procedural root detected: " .. formatYesNo(proceduralInfo.RootDetected))
+	printInfo("Procedural descendants count: " .. tostring(proceduralInfo.DescendantCount))
+end
+
+local function printBakeFirstReminder()
+	printWarning("Bake/convert this ProceduralModel into a normal Model before preparing it as furniture.")
+	printInfo("Treat Roblox Assistant procedural output as a source draft, then prepare the baked normal Model.")
+end
+
+local function hasBasePartDescendant(root)
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function warnAboutProceduralDescendants(proceduralInfo)
+	if proceduralInfo.DescendantCount <= 0 then
+		return
+	end
+
+	printWarning(
+		"Selected Model contains "
+			.. tostring(proceduralInfo.DescendantCount)
+			.. " ProceduralModel descendant(s). Bake/finalize nested procedural content before publishing."
+	)
+	printInfo("Bake-first reminder: baked furniture templates should be normal Models with BasePart or MeshPart descendants.")
+
+	local sampleLimit = math.min(proceduralInfo.DescendantCount, 5)
+
+	for index = 1, sampleLimit do
+		local descendant = proceduralInfo.Descendants[index]
+		printWarning("Procedural descendant: " .. descendant:GetFullName())
+	end
+
+	if proceduralInfo.DescendantCount > sampleLimit then
+		printWarning("Additional ProceduralModel descendants: " .. tostring(proceduralInfo.DescendantCount - sampleLimit))
+	end
 end
 
 local function hasTrueAttribute(instance, attributeNames)
@@ -216,13 +305,44 @@ local function getSelectedModel()
 	end
 
 	local selectedInstance = selected[1]
+	local proceduralInfo = getProceduralInfo(selectedInstance)
 
-	if not selectedInstance:IsA("Model") then
+	if proceduralInfo.RootDetected then
+		if not ALLOW_PROCEDURAL_MODEL_ROOT then
+			printProceduralInfo(proceduralInfo)
+			printBakeFirstReminder()
+			stopWithInstructions("Raw ProceduralModel roots are not supported as furniture templates.")
+			return nil, proceduralInfo
+		end
+
+		printWarning(
+			"ALLOW_PROCEDURAL_MODEL_ROOT = true; direct ProceduralModel runtime support is experimental and not recommended."
+		)
+
+		if not selectedInstance:IsA("Model") then
+			printProceduralInfo(proceduralInfo)
+			printBakeFirstReminder()
+			stopWithInstructions("Selected instance is a " .. selectedInstance.ClassName .. ", not a Model.")
+			return nil, proceduralInfo
+		end
+
+		if not hasBasePartDescendant(selectedInstance) then
+			printProceduralInfo(proceduralInfo)
+			printBakeFirstReminder()
+			stopWithInstructions("Selected ProceduralModel has no BasePart descendants to prepare.")
+			return nil, proceduralInfo
+		end
+	elseif not selectedInstance:IsA("Model") then
+		if classNameSuggestsProceduralOutput(selectedInstance) then
+			printProceduralInfo(proceduralInfo)
+			printBakeFirstReminder()
+		end
+
 		stopWithInstructions("Selected instance is a " .. selectedInstance.ClassName .. ", not a Model.")
-		return nil
+		return nil, proceduralInfo
 	end
 
-	return selectedInstance
+	return selectedInstance, proceduralInfo
 end
 
 local function ensureTemplateFolderMembership(model)
@@ -681,13 +801,20 @@ local function formatList(list)
 	return table.concat(list, ", ")
 end
 
-local model = getSelectedModel()
+local model, proceduralInfo = getSelectedModel()
 
 if not model then
 	return
 end
 
 printInfo("Preparing selected model: " .. model.Name)
+printProceduralInfo(proceduralInfo)
+
+if proceduralInfo.RootDetected then
+	printBakeFirstReminder()
+end
+
+warnAboutProceduralDescendants(proceduralInfo)
 
 if not ensureTemplateFolderMembership(model) then
 	return

@@ -8,6 +8,7 @@ local SHARED_FOLDER_NAME = "Shared"
 local FURNITURE_CATALOG_CONFIG_MODULE_NAME = "FurnitureCatalogConfig"
 local FURNITURE_TEMPLATES_FOLDER_NAME = "FurnitureTemplates"
 local PLACEMENT_BOUNDS_PART_NAME = "PlacementBounds"
+local PROCEDURAL_MODEL_CLASS_NAME = "ProceduralModel"
 
 local TILE_SIZE = 4
 local FOOTPRINT_MARGIN = 0.4
@@ -16,6 +17,7 @@ local VISUAL_OVERHANG_TOLERANCE = 0.05
 local MAX_FOOTPRINT_TILES = 20
 local EXTREME_BOUNDS_XZ_STUDS = TILE_SIZE * (MAX_FOOTPRINT_TILES + 4)
 local EXTREME_BOUNDS_Y_STUDS = 80
+local ALLOW_PROCEDURAL_MODEL_ROOT = false
 
 local CLASSIFICATION = {
 	StaticCatalog = "StaticCatalog",
@@ -110,6 +112,8 @@ local function createSummary()
 		StrictPublic = 0,
 		InventoryOnlyOrTest = 0,
 		Unclassified = 0,
+		ProceduralRoots = 0,
+		ProceduralDescendantWarnings = 0,
 		Passed = 0,
 		WarningCount = 0,
 		ErrorCount = 0,
@@ -203,6 +207,23 @@ end
 
 local function isNonEmptyString(value)
 	return typeof(value) == "string" and value:match("%S") ~= nil
+end
+
+local function isProceduralModelInstance(instance)
+	return typeof(instance) == "Instance"
+		and instance.ClassName == PROCEDURAL_MODEL_CLASS_NAME
+end
+
+local function getProceduralDescendants(root)
+	local proceduralDescendants = {}
+
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if isProceduralModelInstance(descendant) then
+			append(proceduralDescendants, descendant)
+		end
+	end
+
+	return proceduralDescendants
 end
 
 local function hasTrueAttribute(instance, attributeNames)
@@ -600,6 +621,21 @@ local function formatInstanceSamples(root, instances, limit)
 	end
 
 	return table.concat(samples, ", ")
+end
+
+local function validateProceduralDescendants(report, model)
+	local proceduralDescendants = getProceduralDescendants(model)
+
+	if #proceduralDescendants <= 0 then
+		return
+	end
+
+	summary.ProceduralDescendantWarnings = summary.ProceduralDescendantWarnings + 1
+	addWarning(
+		report,
+		"Contains ProceduralModel descendant(s). Bake/finalize/remove procedural descendants before publishing: "
+			.. formatInstanceSamples(model, proceduralDescendants, 6)
+	)
 end
 
 local function validateEmbeddedScripts(report, model)
@@ -1355,6 +1391,7 @@ local function validateTemplate(model)
 
 	reportClassificationIssues(report, model)
 	validateName(report, model)
+	validateProceduralDescendants(report, model)
 	validateEmbeddedScripts(report, model)
 
 	local footprintWidth, footprintDepth = validateFootprint(report, model)
@@ -1405,6 +1442,8 @@ local function printSummary()
 	print("  StrictPublic:", summary.StrictPublic)
 	print("  InventoryOnlyOrTest:", summary.InventoryOnlyOrTest)
 	print("  Unclassified:", summary.Unclassified)
+	print("  ProceduralRoots:", summary.ProceduralRoots)
+	print("  ProceduralDescendantWarnings:", summary.ProceduralDescendantWarnings)
 	print("  passed (no errors):", summary.Passed)
 	print("  warnings:", summary.WarningCount)
 	print("  errors:", summary.ErrorCount)
@@ -1428,6 +1467,46 @@ local function printSummary()
 	end
 end
 
+local function validateDirectChildTemplate(child)
+	if isProceduralModelInstance(child) then
+		summary.ProceduralRoots = summary.ProceduralRoots + 1
+
+		local message =
+			"Raw ProceduralModel roots are not supported as runtime furniture templates. Bake/convert to a normal Model first."
+
+		if not child:IsA("Model") then
+			addGlobalError("Direct child " .. child.Name .. ": " .. message)
+			return
+		end
+
+		if not ALLOW_PROCEDURAL_MODEL_ROOT then
+			addGlobalError("Direct child " .. child.Name .. ": " .. message)
+			return
+		end
+
+		addGlobalWarning(
+			"Direct child "
+				.. child.Name
+				.. " is a ProceduralModel root. Experimental validation is enabled, but baked normal Models are recommended."
+		)
+		validateTemplate(child)
+		return
+	end
+
+	if child:IsA("Model") then
+		validateTemplate(child)
+		return
+	end
+
+	addGlobalWarning(
+		"Direct child "
+			.. child.Name
+			.. " is a "
+			.. child.ClassName
+			.. "; furniture templates should be direct child Models."
+	)
+end
+
 local furnitureTemplates = ReplicatedStorage:FindFirstChild(FURNITURE_TEMPLATES_FOLDER_NAME)
 
 if not furnitureTemplates then
@@ -1446,17 +1525,7 @@ local catalogConfig, catalogModule = loadFurnitureCatalogConfig()
 staticCatalogLookup = buildStaticCatalogLookup(catalogConfig, catalogModule, furnitureTemplates)
 
 for _, child in ipairs(furnitureTemplates:GetChildren()) do
-	if child:IsA("Model") then
-		validateTemplate(child)
-	else
-		addGlobalWarning(
-			"Direct child "
-				.. child.Name
-				.. " is a "
-				.. child.ClassName
-				.. "; furniture templates should be direct child Models."
-		)
-	end
+	validateDirectChildTemplate(child)
 end
 
 if summary.TotalTemplates == 0 then
