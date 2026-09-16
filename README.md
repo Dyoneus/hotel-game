@@ -1,6 +1,6 @@
 # Hotel Game
 
-This is a Roblox Habbo-inspired social room game.
+Habbo-inspired social room game.
 
 Important rules:
 - Server is authoritative.
