@@ -1,0 +1,186 @@
+{
+  "name": "hotel-game",
+  "servePort": 34872,
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "$ignoreUnknownInstances": true,
+
+      "Shared": {
+        "$className": "Folder",
+        "$path": "src/ReplicatedStorage/Shared"
+      },
+
+      "FurnitureTemplates": {
+        "$className": "Folder",
+        "$path": "src/ReplicatedStorage/FurnitureTemplates"
+      }
+    },
+
+    "ReplicatedFirst": {
+      "$className": "ReplicatedFirst",
+      "$ignoreUnknownInstances": true,
+
+      "LoadingClient": {
+        "$path": "src/ReplicatedFirst/LoadingClient.client.lua"
+      }
+    },
+
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$ignoreUnknownInstances": true,
+
+      "AdminCommandServer": {
+        "$path": "src/ServerScriptService/AdminCommandServer.server.lua"
+      },
+      "AdminConfig": {
+        "$path": "src/ServerScriptService/AdminConfig.lua"
+      },
+      "AdminDataTools": {
+        "$path": "src/ServerScriptService/AdminDataTools.lua"
+      },
+      "CurrencyServer": {
+        "$path": "src/ServerScriptService/CurrencyServer.server.lua"
+      },
+      "FurnitureActionServer": {
+        "$path": "src/ServerScriptService/FurnitureActionServer.server.lua"
+      },
+      "FurnitureCatalogServer": {
+        "$path": "src/ServerScriptService/FurnitureCatalogServer.server.lua"
+      },
+      "FurnitureClickServer": {
+        "$path": "src/ServerScriptService/FurnitureClickServer.server.lua"
+      },
+      "InventoryServer": {
+        "$path": "src/ServerScriptService/InventoryServer.server.lua"
+      },
+      "MarketplaceService": {
+        "$path": "src/ServerScriptService/MarketplaceService.lua"
+      },
+      "MarketplaceServer": {
+        "$path": "src/ServerScriptService/MarketplaceServer.server.lua"
+      },
+      "PlayerRoomServer": {
+        "$path": "src/ServerScriptService/PlayerRoomServer.server.lua"
+      },
+      "PlayerCollisionServer": {
+        "$path": "src/ServerScriptService/PlayerCollisionServer.server.lua"
+      },
+      "RoomModeServer": {
+        "$path": "src/ServerScriptService/RoomModeServer.server.lua"
+      },
+      "RoomPermissionService": {
+        "$path": "src/ServerScriptService/RoomPermissionService.lua"
+      },
+      "RoomPersistence": {
+        "$path": "src/ServerScriptService/RoomPersistence.lua"
+      },
+      "WorkActivityServer": {
+        "$path": "src/ServerScriptService/WorkActivityServer.server.lua"
+      }
+    },
+
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "$ignoreUnknownInstances": true,
+
+        "ClickToMoveController": {
+          "$path": "src/StarterPlayerScripts/ClickToMoveController.client.lua"
+        },
+        "ControlModeController": {
+          "$path": "src/StarterPlayerScripts/ControlModeController.client.lua"
+        },
+        "FixedHotelCamera": {
+          "$path": "src/StarterPlayerScripts/FixedHotelCamera.client.lua"
+        },
+        "FloorGridHoverClient": {
+          "$path": "src/StarterPlayerScripts/FloorGridHoverClient.client.lua"
+        },
+        "GridDebugOverlayClient": {
+          "$path": "src/StarterPlayerScripts/GridDebugOverlayClient.client.lua"
+        },
+        "HotelVoidBackgroundClient": {
+          "$path": "src/StarterPlayerScripts/HotelVoidBackgroundClient.client.lua"
+        },
+        "MainMenuCameraClient": {
+          "$path": "src/StarterPlayerScripts/MainMenuCameraClient.client.lua"
+        },
+        "MainMenuAmbientNpcClient": {
+          "$path": "src/StarterPlayerScripts/MainMenuAmbientNpcClient.client.lua"
+        },
+        "PublicRoomAmbienceClient": {
+          "$path": "src/StarterPlayerScripts/PublicRoomAmbienceClient.client.lua"
+        },
+        "RoomTransitionClient": {
+          "$path": "src/StarterPlayerScripts/RoomTransitionClient.client.lua"
+        },
+        "RoomEntryController": {
+          "$path": "src/StarterPlayerScripts/RoomEntryController.client.lua"
+        }
+      }
+    },
+
+    "StarterGui": {
+      "$className": "StarterGui",
+      "$ignoreUnknownInstances": true,
+
+      "AdminPanelGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/AdminPanelGui"
+      },
+      "CharacterCreationGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/CharacterCreationGui"
+      },
+      "CurrencyGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/CurrencyGui"
+      },
+      "FurnitureCatalogGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/FurnitureCatalogGui"
+      },
+      "InventoryGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/InventoryGui"
+      },
+      "MainMenuGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/MainMenuGui"
+      },
+      "MainHudGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/MainHudGui"
+      },
+      "RoomCreationGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomCreationGui"
+      },
+      "RoomNavigatorGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomNavigatorGui"
+      },
+      "RoomPlannerGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomPlannerGui"
+      },
+      "RoomSettingsGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomSettingsGui"
+      },
+      "RoomModeGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/RoomModeGui"
+      },
+      "TutorialGui": {
+        "$className": "ScreenGui",
+        "$path": "src/StarterGui/TutorialGui"
+      }
+    }
+  }
+}
